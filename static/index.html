@@ -182,7 +182,6 @@
 
     .src-dot {
       r: 4;
-      filter: url(#glow-orange);
     }
 
     /* Log panel */
@@ -326,16 +325,37 @@
   }
 
   makeGlow('glow-blue',   '#4fc3f7');
-  makeGlow('glow-orange', '#ff9800');
-  makeGlow('glow-green',  '#66bb6a');
+  // glow-orange and glow-green removed — only self-dot uses glow-blue
 
-  // Gradient for arcs
-  function makeArcGradient(id, c1, c2) {
-    const g = defs.append('linearGradient').attr('id', id)
-      .attr('gradientUnits', 'userSpaceOnUse');
-    g.append('stop').attr('offset', '0%').attr('stop-color', c1).attr('stop-opacity', 0.9);
-    g.append('stop').attr('offset', '100%').attr('stop-color', c2).attr('stop-opacity', 0.9);
-    return g;
+  // Gradient pool for arcs — reuse gradients by color pair instead of
+  // creating a new <linearGradient> per arc.  Each key is "c1|c2".
+  const gradientPool = new Map(); // key -> { el, refCount }
+
+  function acquireGradient(c1, c2, x0, y0, x1, y1) {
+    const key = c1 + '|' + c2;
+    let entry = gradientPool.get(key);
+    if (!entry) {
+      const id = `arc-grad-${gradientPool.size}`;
+      const g = defs.append('linearGradient').attr('id', id)
+        .attr('gradientUnits', 'userSpaceOnUse');
+      g.append('stop').attr('offset', '0%').attr('stop-color', c1).attr('stop-opacity', 0.9);
+      g.append('stop').attr('offset', '100%').attr('stop-color', c2).attr('stop-opacity', 0.9);
+      entry = { el: g, id, refCount: 0 };
+      gradientPool.set(key, entry);
+    }
+    entry.refCount++;
+    // Update coordinates to latest arc (good enough — gradients are similar angles)
+    entry.el.attr('x1', x0).attr('y1', y0).attr('x2', x1).attr('y2', y1);
+    return entry;
+  }
+
+  function releaseGradient(c1, c2) {
+    const key = c1 + '|' + c2;
+    const entry = gradientPool.get(key);
+    if (entry) {
+      entry.refCount--;
+      // Keep gradient in DOM even at refCount 0 — it will be reused
+    }
   }
 
   const sphereGroup = svg.append('g');
@@ -432,8 +452,19 @@
   let logRafScheduled = false;
 
   // ── Sidebar renders on a 2-second interval (decoupled from events) ──
-  // Only touches DOM when dirty flags are set; otherwise no-ops cheaply.
-  setInterval(renderSidebar, 2000);
+  // Uses requestIdleCallback to avoid competing with arc animations.
+  // Falls back to setTimeout for browsers without rIC support.
+  const scheduleIdle = window.requestIdleCallback
+    ? (fn) => requestIdleCallback(fn, { timeout: 3000 })
+    : (fn) => setTimeout(fn, 100);
+
+  function sidebarLoop() {
+    scheduleIdle(() => {
+      renderSidebar();
+      setTimeout(sidebarLoop, 2000);
+    });
+  }
+  setTimeout(sidebarLoop, 2000);
 
   function renderSidebar() {
     renderLegend();
@@ -757,49 +788,58 @@
       : PALETTE[arcSeq % PALETTE.length];
     arcSeq++;
 
-    const gradId = `arc-grad-${arcSeq}`;
     const [x0, y0] = projection(srcPt);
     const [x1, y1] = projection(dstPt);
-    const grad = makeArcGradient(gradId, c1, c2)
-      .attr('x1', x0).attr('y1', y0)
-      .attr('x2', x1).attr('y2', y1);
 
-    // Great-circle path via d3.geoInterpolate sampling
+    // Reuse pooled gradient by color pair
+    const gradEntry = acquireGradient(c1, c2, x0, y0, x1, y1);
+
+    // Great-circle path — 20 samples with natural curve (3x cheaper than 60 + CatmullRom)
     const interp = d3.geoInterpolate(srcPt, dstPt);
-    const N = 60;
-    const lineData = d3.range(N + 1).map(i => projection(interp(i / N)));
-    const lineGen = d3.line().x(d => d[0]).y(d => d[1]).curve(d3.curveCatmullRom);
+    const N = 20;
+    const lineData = [];
+    for (let i = 0; i <= N; i++) lineData.push(projection(interp(i / N)));
+    const lineGen = d3.line().x(d => d[0]).y(d => d[1]).curve(d3.curveNatural);
     const fullD = lineGen(lineData);
 
     const sw = arcWidth(hitCount);
     const arcPath = arcGroup.append('path')
       .attr('class', 'arc-path')
       .attr('d', fullD)
-      .attr('stroke', `url(#${gradId})`)
+      .attr('stroke', `url(#${gradEntry.id})`)
       .attr('stroke-width', sw)
       .attr('opacity', 0);
 
-    // Animate the stroke dash
-    const totalLen = arcPath.node().getTotalLength();
+    // Approximate path length from segment distances (avoids synchronous getTotalLength)
+    let totalLen = 0;
+    for (let i = 1; i < lineData.length; i++) {
+      const dx = lineData[i][0] - lineData[i - 1][0];
+      const dy = lineData[i][1] - lineData[i - 1][1];
+      totalLen += Math.sqrt(dx * dx + dy * dy);
+    }
+
+    // Animate stroke-dash draw-on, then fade and remove (~4s total lifespan)
     arcPath
       .attr('stroke-dasharray', totalLen)
       .attr('stroke-dashoffset', totalLen)
       .attr('opacity', 1)
       .transition()
-        .duration(900)
+        .duration(800)
         .ease(d3.easeQuadInOut)
         .attr('stroke-dashoffset', 0)
       .transition()
-        .delay(2500)
-        .duration(800)
-        .attr('opacity', 0.15)
+        .delay(1200)
+        .duration(600)
+        .attr('opacity', 0)
       .on('end', () => {
-        arcPath.transition().delay(4000).duration(600).attr('opacity', 0)
-          .on('end', () => { arcPath.remove(); grad.remove(); });
+        arcPath.remove();
+        releaseGradient(c1, c2);
       });
 
+    trackArc(arcPath.node());
+
     // Source dot — animates in bright, then settles as a persistent faded dot
-    const dotR = Math.min(6, 3 + Math.log2(hitCount));  // slightly larger for floods
+    const dotR = Math.min(6, 3 + Math.log2(hitCount));
     const srcDot = dotGroup.append('circle')
       .attr('class', 'src-dot')
       .attr('cx', x0)
@@ -807,17 +847,15 @@
       .attr('r', 0)
       .attr('fill', c1)
       .attr('opacity', 1)
-      .attr('filter', 'url(#glow-orange)')
       .style('cursor', 'crosshair')
       .datum(srcPt); // store [lon, lat] for reprojection on resize
 
     attachTooltip(srcDot, tooltipLabel(ev, hitCount));
 
     srcDot.transition().duration(300).attr('r', dotR + 1)
-      .transition().delay(3500).duration(600)
+      .transition().delay(2500).duration(600)
         .attr('r', dotR)
-        .attr('opacity', 0.35)
-        .attr('filter', null);
+        .attr('opacity', 0.35);
 
     trackDot(srcDot.node());
   }
@@ -830,6 +868,18 @@
     dotRing.push(node);
     while (dotRing.length > MAX_DOTS) {
       const old = dotRing.shift();
+      if (old.parentNode) old.parentNode.removeChild(old);
+    }
+  }
+
+  // ── Arc lifecycle cap ─────────────────────────────────────────────────
+  const MAX_ARCS = 150;
+  const arcRing = []; // circular buffer of arc path DOM nodes
+
+  function trackArc(node) {
+    arcRing.push(node);
+    while (arcRing.length > MAX_ARCS) {
+      const old = arcRing.shift();
       if (old.parentNode) old.parentNode.removeChild(old);
     }
   }
