@@ -10,7 +10,7 @@ PLATFORMS := \
 	windows/amd64 \
 	windows/arm64
 
-.PHONY: build run cap cap-dist install uninstall clean dist remote-install $(PLATFORMS) linux/armv6 linux/armv7
+.PHONY: build run cap cap-dist install uninstall clean dist remote-install firewall $(PLATFORMS) linux/armv6 linux/armv7
 
 # Build for the current host OS/arch
 build:
@@ -111,11 +111,13 @@ remote-install:
 	@echo "building for $(REMOTE_GOARCH)..."
 	@$(MAKE) $(REMOTE_GOARCH)
 	$(eval REMOTE_BIN := $(OUTDIR)/$(BINARY)_$(subst /,_,$(REMOTE_GOARCH)))
-	@echo "copying $(REMOTE_BIN) and install.sh to $(USER)@$(IP)..."
-	@scp $(REMOTE_BIN) $(USER)@$(IP):~/webtraffik
-	@scp install.sh    $(USER)@$(IP):~/install.sh
+	@echo "copying $(REMOTE_BIN), install.sh, firewall.sh, and nftables.conf to $(USER)@$(IP)..."
+	@scp $(REMOTE_BIN)  $(USER)@$(IP):~/webtraffik
+	@scp install.sh     $(USER)@$(IP):~/install.sh
+	@scp firewall.sh    $(USER)@$(IP):~/firewall.sh
+	@scp nftables.conf  $(USER)@$(IP):~/nftables.conf
 	@echo "running install.sh on remote..."
-	@ssh -t $(USER)@$(IP) 'sudo bash ~/install.sh ~/webtraffik && rm ~/webtraffik ~/install.sh'
+	@ssh -t $(USER)@$(IP) 'sudo bash ~/install.sh ~/webtraffik && rm ~/webtraffik ~/install.sh ~/firewall.sh ~/nftables.conf'
 
 # Remove binary, service, and data directory
 uninstall:
@@ -125,4 +127,11 @@ uninstall:
 	sudo rm -f /usr/local/bin/$(BINARY)
 	sudo rm -rf /var/lib/webtraffik
 	sudo userdel webtraffik 2>/dev/null || true
+	sudo rm -f /etc/nftables.d/webtraffik.conf
+	sudo systemctl restart nftables.service 2>/dev/null || true
 	@echo "$(BINARY) uninstalled"
+
+# Apply the nftables firewall ruleset on the local machine (must be root / sudo).
+# Useful for re-applying after editing nftables.conf without a full reinstall.
+firewall:
+	sudo bash firewall.sh
