@@ -1121,8 +1121,12 @@
 
     trackDot(srcDot.node());
 
-    // Trigger magnifier inset
-    magShowArc(ev, srcPt, dstPt, c1, c2, hitCount);
+    // Trigger magnifier inset only for short arcs (roughly US-width or less).
+    // Compare pixel distance between src and dst to a fraction of SVG width.
+    const arcPixelDist = Math.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2);
+    if (arcPixelDist < w * 0.25) {
+      magShowArc(ev, srcPt, dstPt, c1, c2, hitCount);
+    }
   }
 
   // ── Dot lifecycle cap ───────────────────────────────────────────────────
