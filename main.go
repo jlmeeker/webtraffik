@@ -3,12 +3,15 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io/fs"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -133,6 +136,29 @@ var capturePorts = []int{
 func main() {
 	log.Println("webTraffik starting...")
 
+	// Parse CLI flags
+	disablePortsFlag := flag.String("disable-ports", "",
+		"Comma-separated list of ports to skip binding (e.g. 22,80,443). "+
+			"These ports will not be listened on. Update your firewall rules accordingly.")
+	flag.Parse()
+
+	// Build a set of disabled ports from the flag value
+	disabledPorts := make(map[int]bool)
+	if *disablePortsFlag != "" {
+		for _, tok := range strings.Split(*disablePortsFlag, ",") {
+			tok = strings.TrimSpace(tok)
+			if tok == "" {
+				continue
+			}
+			p, err := strconv.Atoi(tok)
+			if err != nil {
+				log.Fatalf("Invalid port in -disable-ports: %q", tok)
+			}
+			disabledPorts[p] = true
+			log.Printf("Port %d disabled by flag", p)
+		}
+	}
+
 	// Determine working directory for persistent storage.
 	// When run as a systemd service the unit sets WorkingDirectory=/var/lib/webtraffik.
 	// For local dev runs we fall back to the current directory.
@@ -190,21 +216,32 @@ func main() {
 
 	// Start capture listeners on all common HTTP ports
 	for _, port := range capturePorts {
+		if disabledPorts[port] {
+			continue
+		}
 		go startCaptureListener(port)
 	}
 
 	// Start TCP service emulation listeners (non-HTTP protocols)
 	for _, svc := range tcpServices {
+		if disabledPorts[svc.Port] {
+			continue
+		}
 		go startTCPServiceListener(svc)
 	}
 
 	// Start UDP service listeners
 	for _, port := range udpServicePorts {
+		if disabledPorts[port] {
+			continue
+		}
 		go startUDPServiceListener(port)
 	}
 
 	// Start Minecraft Java Edition server-list-ping emulator
-	go startMinecraftListener()
+	if !disabledPorts[minecraftPort] {
+		go startMinecraftListener()
+	}
 
 	// Start dashboard server on 8999
 	go startDashboardServer()

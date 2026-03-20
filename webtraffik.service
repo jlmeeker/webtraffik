@@ -9,6 +9,9 @@ User=webtraffik
 Group=webtraffik
 
 # Binary and working directory (GeoLite2 DB stored here)
+# To disable specific ports (e.g. if they conflict with real services), add
+# -disable-ports to ExecStart. Update firewall.sh with DISABLE_PORTS= to match.
+# Example: ExecStart=/usr/local/bin/webtraffik -disable-ports=22,80,443
 ExecStart=/usr/local/bin/webtraffik
 WorkingDirectory=/var/lib/webtraffik
 

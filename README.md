@@ -18,6 +18,7 @@ A real-time network traffic sensor and visualization tool that captures incoming
 - **Port-Based Color Coding**: Each monitored port gets a unique color in the legend and arc animations
 - **Map Dot Tooltips**: Hovering over any source dot shows "City, CC" for that connection
 - **Performance Optimized**: Gradient pooling, reduced path sampling, arc lifecycle capping, decoupled sidebar rendering with requestIdleCallback
+- **Selective Port Disabling**: Skip individual ports at startup with `-disable-ports=22,80,443` to avoid conflicting with existing services on the host
 - **Automated nftables Firewall**: Auto-configured on install — restricts management ports (SSH, dashboard) to your subnet while exposing capture ports to the internet
 - **Zero Configuration**: Auto-downloads GeoLite2 database from GitHub mirror on first run (no license key needed)
 - **Systemd Integration**: Runs as non-root user with `CAP_NET_BIND_SERVICE` capability for ports <1024
@@ -50,7 +51,7 @@ The dashboard shows:
   - **Top-right**: Top Services (service names with bar charts showing relative traffic)
   - **Bottom-left**: Traffic by Country (top 10 countries by connection count)
   - **Bottom-right**: Traffic by IP (top 10 source IPs by connection count)
-- A scrolling log panel at the bottom showing all connections with timestamps and geolocation details
+- A scrolling log panel at the bottom showing all connections with timestamps, geolocation details, and service names (e.g., `:22 SSH`, `:3306 MySQL`); click any entry to replay its arc on the map
 
 ## Quick Start
 
@@ -190,6 +191,12 @@ sudo bash firewall.sh
 - `CAPTURE_PORTS_TCP` (around line 70) — must include all HTTP ports from `main.go` plus all TCP service ports from `services.go`
 - `CAPTURE_PORTS_UDP` (around line 75) — must include all UDP ports from `services.go`
 
+If you are disabling individual ports with `-disable-ports`, you must also pass them to `firewall.sh` via the `DISABLE_PORTS` environment variable:
+
+```bash
+sudo DISABLE_PORTS=22,443 bash firewall.sh
+```
+
 Then re-apply:
 
 ```bash
@@ -269,7 +276,7 @@ Dashboard receives event:
 - **Dots**: Animated circles; persistent after arc completes; no glow filters on dots (only on self-dot)
 - **Tooltips**: Mouseover on any source dot shows "City, CC" (or just CC if city is unavailable)
 - **Corner Panels**: Four transparent overlay panels with top-10 statistics, rendered via `requestIdleCallback` on a 2-second interval (decoupled from event processing)
-- **Log Panel**: Scrolling panel showing timestamp, source IP, city, country, port, and protocol; capped at 200 entries
+- **Log Panel**: Scrolling panel showing timestamp, source IP, city, country, port with service name (e.g., `:22 SSH`, `:3306 MySQL`), and protocol; capped at 200 entries; click any entry to replay its arc on the map
 - **Performance**: Gradient pooling (reuses SVG gradients by color pair), arc count capped at 150, dot count capped at 1000, adaptive flood control (batches events above 10/sec)
 
 ## Dependencies
@@ -297,6 +304,10 @@ webTraffik uses **zero-config defaults**:
 - **Working directory**: `/var/lib/webtraffik` (systemd), or current directory (manual run)
 - **SQLite database**: `events.db` in the working directory
 - **GeoLite2 DB**: Auto-downloaded to working directory on first run
+
+### Command-line Options
+
+- **`-disable-ports=<port1,port2,...>`**: Comma-separated list of port numbers to skip at startup. Use this to exclude ports that are already in use by other services on the host (e.g., `-disable-ports=22,80,443`). When disabling ports, you must also pass `DISABLE_PORTS=` to `firewall.sh` to exclude them from the firewall ruleset.
 
 To customize ports or buffer size, edit `main.go` and rebuild. If you change capture ports, also update `firewall.sh` and re-apply the firewall.
 
@@ -358,6 +369,65 @@ sudo systemctl stop webtraffik
 - **Firewall Required**: Without `firewall.sh` applied, port 8999 and SSH are exposed. Always run the firewall installer on internet-facing hosts.
 - **Geolocation Privacy**: Source IPs and geolocation data are logged to stdout (journald) and displayed on the dashboard. Ensure logs comply with your privacy policy.
 - **Resource Limits**: The ring buffer caps history at 1000 events in memory. The SQLite database grows unbounded — manage it manually if disk space is a concern. The frontend caps the log panel at 200 entries.
+
+## Port Conflicts & Warnings
+
+**⚠️ CRITICAL: webTraffik binds to many well-known service ports by default.**
+
+webTraffik listens on common ports including **22 (SSH)**, **80 (HTTP)**, **443 (HTTPS)**, **3306 (MySQL)**, **5432 (PostgreSQL)**, **6379 (Redis)**, and many others (see Architecture section above for full list).
+
+### The Risk
+
+1. **Bind Failure**: If a port is already in use by a real service on the host, webTraffik will log a warning and skip that port. The app continues running but will not capture traffic on that port.
+
+2. **Firewall Exposure** (more critical): The nftables firewall opens **all** configured capture ports to the entire internet by default. If you have a real service running on one of those ports (e.g., a real SSH daemon on :22), **the firewall will expose it to the internet**, bypassing the subnet-only management rule that normally protects it.
+
+### Solution
+
+**You MUST use `-disable-ports` to exclude any port that runs a real service**, and pass `DISABLE_PORTS=` to `firewall.sh` so the firewall rule is also excluded.
+
+#### Example: Protecting a Real SSH Server on Port 22
+
+If your host runs a real SSH server on port 22:
+
+1. **Edit the systemd service** to disable port 22 in the app:
+   ```bash
+   sudo systemctl edit webtraffik --full
+   ```
+   Change the `ExecStart` line to:
+   ```
+   ExecStart=/usr/local/bin/webtraffik -disable-ports=22
+   ```
+   Save and reload:
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl restart webtraffik
+   ```
+
+2. **Re-apply the firewall** with the same port exclusion:
+   ```bash
+   sudo DISABLE_PORTS=22 bash firewall.sh
+   ```
+
+This ensures:
+- webTraffik will not attempt to bind to port 22
+- The nftables firewall will not open port 22 to the internet (it remains protected by the subnet-only rule)
+
+#### Multiple Ports
+
+To disable multiple ports, use a comma-separated list:
+
+```bash
+# In systemd unit:
+ExecStart=/usr/local/bin/webtraffik -disable-ports=22,80,443
+
+# In firewall:
+sudo DISABLE_PORTS=22,80,443 bash firewall.sh
+```
+
+**Always verify your configuration** after applying changes:
+- Check listening ports: `ss -tlnp | grep webtraffik`
+- Check firewall rules: `nft list ruleset`
 
 ## Troubleshooting
 
