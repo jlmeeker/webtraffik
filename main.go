@@ -3,14 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io/fs"
 	"log"
 	"net"
 	"net/http"
-	"os"
-	"os/exec"
-	"runtime"
 	"sync"
 	"time"
 
@@ -110,15 +106,13 @@ func main() {
 		}
 	}
 
-	// Start port 80 HTTP capture listener
+	// Start port 8080 HTTP capture listener
 	go startCaptureServer()
 
 	// Start dashboard server on 8999
 	go startDashboardServer()
 
-	// Open browser
-	time.Sleep(500 * time.Millisecond)
-	openBrowser("http://localhost:8999")
+	log.Println("Dashboard available at http://localhost:8999")
 
 	// Block forever
 	select {}
@@ -235,29 +229,4 @@ func extractIP(remoteAddr string) string {
 		return remoteAddr
 	}
 	return host
-}
-
-func openBrowser(url string) {
-	var cmd string
-	var args []string
-	switch runtime.GOOS {
-	case "linux":
-		cmd = "xdg-open"
-		args = []string{url}
-	case "darwin":
-		cmd = "open"
-		args = []string{url}
-	case "windows":
-		cmd = "rundll32"
-		args = []string{"url.dll,FileProtocolHandler", url}
-	default:
-		fmt.Printf("Open browser manually: %s\n", url)
-		return
-	}
-	c := exec.Command(cmd, args...)
-	c.Stdout = os.Stdout
-	c.Stderr = os.Stderr
-	if err := c.Start(); err != nil {
-		log.Printf("Could not open browser: %v", err)
-	}
 }
