@@ -285,6 +285,8 @@
   // ── State ────────────────────────────────────────────────────────────────
   let selfPos = null;    // { lat, lon, ip, city, cc }
   let connCount = 0;
+  let inReplay = true; // true until first non-replay event arrives
+  let replayFlushTimer = null;
 
   // Port stats: { portStr -> { count, color } }
   const portStats = {};
@@ -914,7 +916,21 @@
 
       if (ev.replay) {
         drawHistoryDot(ev);
+        // Force synchronous render every 200 replay events so panels
+        // populate progressively instead of staying empty until rAF fires.
+        if (connCount % 200 === 0) renderAll();
+        // Schedule a post-replay flush — only the last one runs (after
+        // the message burst ends and the event loop yields).
+        clearTimeout(replayFlushTimer);
+        replayFlushTimer = setTimeout(() => {
+          if (inReplay) { inReplay = false; renderAll(); }
+        }, 0);
       } else {
+        // First live event after replay — flush any remaining dirty state.
+        if (inReplay) {
+          inReplay = false;
+          renderAll();
+        }
         handleArc(ev);  // instant at low rate, batched during floods
       }
     };
