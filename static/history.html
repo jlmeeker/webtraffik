@@ -717,8 +717,9 @@ function renderCharts(events) {
           data,
           borderColor: color(i),
           backgroundColor: color(i) + '22',
-          borderWidth: 1.5,
-          pointRadius: 0,
+          borderWidth: 2,
+          pointRadius: data.length <= 3 ? 4 : 0,
+          pointHoverRadius: 5,
           tension: 0.3,
           fill: false,
         }))
@@ -746,10 +747,11 @@ function renderCharts(events) {
         datasets: Object.entries(groupedCC).map(([label, data], i) => ({
           label,
           data,
-          borderColor: color(i + 5),
-          backgroundColor: color(i + 5) + '22',
-          borderWidth: 1.5,
-          pointRadius: 0,
+          borderColor: color(i),
+          backgroundColor: color(i) + '22',
+          borderWidth: 2,
+          pointRadius: data.length <= 3 ? 4 : 0,
+          pointHoverRadius: 5,
           tension: 0.3,
           fill: false,
         }))
