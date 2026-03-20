@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -92,6 +93,7 @@ func (h *hub) broadcast(ev ConnectionEvent) {
 
 var (
 	appHub   = newHub()
+	appDB    *eventDB
 	geo      *GeoLocator
 	selfIP   string
 	selfLat  float64
@@ -124,6 +126,32 @@ var capturePorts = []int{
 
 func main() {
 	log.Println("webTraffik starting...")
+
+	// Determine working directory for persistent storage.
+	// When run as a systemd service the unit sets WorkingDirectory=/var/lib/webtraffik.
+	// For local dev runs we fall back to the current directory.
+	workDir, err := os.Getwd()
+	if err != nil {
+		workDir = "."
+	}
+
+	// Open (or create) the SQLite event database.
+	appDB, err = openEventDB(workDir)
+	if err != nil {
+		log.Fatalf("Failed to open event database: %v", err)
+	}
+	defer appDB.close()
+
+	// Seed the in-memory ring buffer from persisted history so new clients
+	// get replayed events immediately while the DB query on /ws is also live.
+	if history, err := appDB.loadHistory(historySize); err == nil {
+		appHub.mu.Lock()
+		appHub.history = history
+		appHub.mu.Unlock()
+		log.Printf("Loaded %d historical events from DB", len(history))
+	} else {
+		log.Printf("Warning: could not load history from DB: %v", err)
+	}
 
 	// Ensure GeoLite2 DB exists
 	dbPath, err := ensureGeoDB()
@@ -214,6 +242,7 @@ func handleCapture(srcIP, dstPort string) {
 		DstCC:   selfCC,
 	}
 	appHub.broadcast(ev)
+	appDB.insert(ev)
 
 	evJSON, _ := json.Marshal(ev)
 	log.Printf("Connection: %s", string(evJSON))
@@ -255,8 +284,14 @@ func startDashboardServer() {
 
 		ctx := conn.CloseRead(context.Background())
 
-		// Replay history to the new client before subscribing to live events
-		for _, ev := range appHub.snapshot() {
+		// Replay history to the new client before subscribing to live events.
+		// Load directly from the DB so clients always get the full persisted
+		// history even if the in-memory ring buffer was just seeded.
+		history, err := appDB.loadHistory(historySize)
+		if err != nil {
+			log.Printf("WebSocket history load error: %v", err)
+		}
+		for _, ev := range history {
 			ev.Replay = true
 			if err := wsjson.Write(ctx, conn, ev); err != nil {
 				return
