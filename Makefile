@@ -10,7 +10,7 @@ PLATFORMS := \
 	windows/amd64 \
 	windows/arm64
 
-.PHONY: build run cap cap-dist install uninstall clean dist $(PLATFORMS) linux/armv6 linux/armv7
+.PHONY: build run cap cap-dist install uninstall clean dist remote-install $(PLATFORMS) linux/armv6 linux/armv7
 
 # Build for the current host OS/arch
 build:
@@ -82,6 +82,40 @@ install: build
 	sudo systemctl daemon-reload
 	sudo systemctl enable --now $(BINARY).service
 	@echo "Service installed and started — check with: journalctl -u $(BINARY) -f"
+
+# Deploy to a remote Linux host over SSH.
+# Usage: make remote-install IP=1.2.3.4
+#
+# Detects the remote arch, cross-compiles the matching binary, copies it along
+# with install.sh, then runs install.sh as root over SSH.
+# SSH connects as $(USER) (your current local username) and assumes a key is
+# already available in your ssh-agent or ~/.ssh/config.
+remote-install:
+	@if [ -z "$(IP)" ]; then \
+		echo "error: IP is required — usage: make remote-install IP=1.2.3.4"; \
+		exit 1; \
+	fi
+	$(eval REMOTE_ARCH := $(shell ssh $(USER)@$(IP) 'uname -m'))
+	@echo "remote arch: $(REMOTE_ARCH)"
+	$(eval REMOTE_GOARCH := $(shell \
+		echo "$(REMOTE_ARCH)" | sed \
+			-e 's/x86_64/linux\/amd64/' \
+			-e 's/aarch64/linux\/arm64/' \
+			-e 's/armv7.*/linux\/armv7/' \
+			-e 's/armv6.*/linux\/armv6/' \
+	))
+	@if [ -z "$(REMOTE_GOARCH)" ]; then \
+		echo "error: unsupported remote arch '$(REMOTE_ARCH)'"; \
+		exit 1; \
+	fi
+	@echo "building for $(REMOTE_GOARCH)..."
+	@$(MAKE) $(REMOTE_GOARCH)
+	$(eval REMOTE_BIN := $(OUTDIR)/$(BINARY)_$(subst /,_,$(REMOTE_GOARCH)))
+	@echo "copying $(REMOTE_BIN) and install.sh to $(USER)@$(IP)..."
+	@scp $(REMOTE_BIN) $(USER)@$(IP):~/webtraffik
+	@scp install.sh    $(USER)@$(IP):~/install.sh
+	@echo "running install.sh on remote..."
+	@ssh -t $(USER)@$(IP) 'sudo bash ~/install.sh ~/webtraffik && rm ~/webtraffik ~/install.sh'
 
 # Remove binary, service, and data directory
 uninstall:
