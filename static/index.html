@@ -196,7 +196,10 @@
       border-bottom: 1px solid rgba(30,58,95,0.3);
       padding: 2px 0;
       animation: fadeIn 0.3s ease;
+      cursor: pointer;
     }
+    .log-entry:hover { background: rgba(79,195,247,0.08); }
+    .log-entry.arc-flash { background: rgba(79,195,247,0.22); transition: background 0.15s; }
 
     @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; } }
 
@@ -1246,6 +1249,15 @@
         `<span class="log-src">${srcLabel}</span>` +
         `${portLabel ? '<span class="log-arrow">→</span><span class="log-port">' + portLabel + '</span>' : ''}` +
         `${protoLabel ? '<span class="log-proto">' + protoLabel + '</span>' : ''}`;
+      if (ev.src_lat && ev.src_lon) {
+        row.addEventListener('click', () => {
+          drawArc(ev, 1);
+          row.classList.add('arc-flash');
+          setTimeout(() => row.classList.remove('arc-flash'), 400);
+        });
+      } else {
+        row.style.cursor = 'default';
+      }
       frag.prepend ? frag.prepend(row) : frag.insertBefore(row, frag.firstChild);
     });
     logPanel.prepend(frag);
