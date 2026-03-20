@@ -42,6 +42,8 @@ The dashboard uses WebSocket for real-time event streaming. Each new connection 
 
 ## Screenshot
 
+![webTraffik Dashboard](screenshot.png)
+
 The dashboard shows:
 - A full-width world map with your server location marked in cyan
 - Animated arcs from visitor IPs to your server (optimized with gradient pooling and 20-point path sampling)
