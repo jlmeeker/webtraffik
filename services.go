@@ -7,8 +7,28 @@ import (
 	"io"
 	"log"
 	"net"
+	"strings"
 	"time"
 )
+
+// tcpServiceNames maps well-known TCP service ports to a display name.
+// This is the canonical source used by portServiceName() and portsForService().
+var tcpServiceNames = map[int]string{
+	21:    "FTP",
+	22:    "SSH",
+	23:    "Telnet",
+	25:    "SMTP",
+	110:   "POP3",
+	143:   "IMAP",
+	443:   "HTTPS",
+	445:   "SMB",
+	1433:  "MSSQL",
+	3306:  "MySQL",
+	3389:  "RDP",
+	5432:  "PostgreSQL",
+	6379:  "Redis",
+	27017: "MongoDB",
+}
 
 // serviceEntry describes a TCP service the app impersonates.
 type serviceEntry struct {
@@ -557,4 +577,76 @@ func startMinecraftListener() {
 			handleMinecraftConn(c)
 		}(conn)
 	}
+}
+
+// portServiceName returns a human-readable service name for a given port number
+// string, used by the history API to annotate events.
+func portServiceName(port string) string {
+	for p, name := range tcpServiceNames {
+		if fmt.Sprintf("%d", p) == port {
+			return name
+		}
+	}
+	// HTTP capture ports
+	switch port {
+	case "80":
+		return "HTTP"
+	case "443":
+		return "HTTPS"
+	case "8080", "8000", "8008", "8081", "8088", "8090", "8888":
+		return "HTTP-Alt"
+	case "3000", "3001":
+		return "Node/Dev"
+	case "3128":
+		return "Proxy"
+	case "4000":
+		return "Phoenix"
+	case "4200":
+		return "Angular"
+	case "5000", "5001":
+		return "Flask/Dev"
+	case "9000":
+		return "SonarQube"
+	case "9090":
+		return "Prometheus"
+	case fmt.Sprintf("%d", minecraftPort):
+		return "Minecraft"
+	}
+	for _, p := range udpServicePorts {
+		if fmt.Sprintf("%d", p) == port {
+			return "DNS"
+		}
+	}
+	return port
+}
+
+// portsForService returns all port number strings whose service name matches
+// the given name (case-insensitive). Used by the history query filter.
+func portsForService(serviceName string) []string {
+	upper := strings.ToUpper(serviceName)
+	var result []string
+	// Check all ports we know about
+	allPorts := []string{}
+	for _, svc := range tcpServices {
+		allPorts = append(allPorts, fmt.Sprintf("%d", svc.Port))
+	}
+	for _, p := range capturePorts {
+		allPorts = append(allPorts, fmt.Sprintf("%d", p))
+	}
+	for _, p := range udpServicePorts {
+		allPorts = append(allPorts, fmt.Sprintf("%d", p))
+	}
+	allPorts = append(allPorts, fmt.Sprintf("%d", minecraftPort))
+
+	seen := map[string]bool{}
+	for _, p := range allPorts {
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
+		if strings.ToUpper(portServiceName(p)) == upper {
+			result = append(result, p)
+		}
+	}
+	return result
 }

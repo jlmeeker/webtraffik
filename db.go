@@ -206,6 +206,110 @@ func (e *eventDB) loadHistory(limit int) ([]ConnectionEvent, error) {
 	return events, rows.Err()
 }
 
+// HistoryFilter holds optional filter criteria for queryHistory.
+// Zero values / empty strings mean "no filter" for that field.
+type HistoryFilter struct {
+	Country  string // src_cc (2-letter code, case-insensitive)
+	IP       string // src_ip prefix/exact match
+	Port     string // dst_port exact match
+	Service  string // resolved via portServiceName(); matched against dst_port
+	DateFrom string // RFC3339 / YYYY-MM-DD lower bound (inclusive)
+	DateTo   string // RFC3339 / YYYY-MM-DD upper bound (inclusive, treated as end-of-day)
+	Limit    int    // max rows returned; 0 → 10 000
+}
+
+// queryHistory executes a filtered SELECT against the events table and returns
+// matching events oldest-first.
+func (e *eventDB) queryHistory(f HistoryFilter) ([]ConnectionEvent, error) {
+	limit := f.Limit
+	if limit <= 0 {
+		limit = 10000
+	}
+
+	where := []string{}
+	args := []interface{}{}
+
+	if f.Country != "" {
+		where = append(where, "UPPER(src_cc) = UPPER(?)")
+		args = append(args, f.Country)
+	}
+	if f.IP != "" {
+		where = append(where, "src_ip LIKE ?")
+		args = append(args, f.IP+"%")
+	}
+	if f.Port != "" {
+		where = append(where, "dst_port = ?")
+		args = append(args, f.Port)
+	}
+	// Service filter: resolve port numbers that share the given service name
+	if f.Service != "" {
+		ports := portsForService(f.Service)
+		if len(ports) > 0 {
+			placeholders := ""
+			for i, p := range ports {
+				if i > 0 {
+					placeholders += ","
+				}
+				placeholders += "?"
+				args = append(args, p)
+			}
+			where = append(where, "dst_port IN ("+placeholders+")")
+		} else {
+			// No ports match → return empty result set
+			return []ConnectionEvent{}, nil
+		}
+	}
+	if f.DateFrom != "" {
+		where = append(where, "time >= ?")
+		args = append(args, f.DateFrom)
+	}
+	if f.DateTo != "" {
+		// Treat DateTo as end-of-day if only a date (no time component) is given
+		dateTo := f.DateTo
+		if len(dateTo) == 10 {
+			dateTo += "T23:59:59Z"
+		}
+		where = append(where, "time <= ?")
+		args = append(args, dateTo)
+	}
+
+	query := `SELECT time, src_ip, dst_ip, dst_port, protocol,
+	                 src_lat, src_lon, dst_lat, dst_lon,
+	                 src_city, dst_city, src_cc, dst_cc
+	          FROM events`
+	if len(where) > 0 {
+		query += " WHERE "
+		for i, w := range where {
+			if i > 0 {
+				query += " AND "
+			}
+			query += w
+		}
+	}
+	query += " ORDER BY id ASC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := e.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []ConnectionEvent
+	for rows.Next() {
+		var ev ConnectionEvent
+		if err := rows.Scan(
+			&ev.Time, &ev.SrcIP, &ev.DstIP, &ev.DstPort, &ev.Protocol,
+			&ev.SrcLat, &ev.SrcLon, &ev.DstLat, &ev.DstLon,
+			&ev.SrcCity, &ev.DstCity, &ev.SrcCC, &ev.DstCC,
+		); err != nil {
+			return nil, err
+		}
+		events = append(events, ev)
+	}
+	return events, rows.Err()
+}
+
 // close drains the insert queue and releases the database connection.
 func (e *eventDB) close() {
 	close(e.insertQ) // signal writeLoop to flush and exit
