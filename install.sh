@@ -2,9 +2,9 @@
 # install.sh — deploy webTraffik on a Linux host (no Go/make required)
 #
 # Usage:
-#   1. scp the correct binary alongside this script:
+#   1. scp the correct binary alongside this script AND firewall.sh + nftables.conf:
 #        scp dist/webtraffik_linux_amd64 user@host:webtraffik
-#        scp install.sh                  user@host:install.sh
+#        scp install.sh firewall.sh nftables.conf user@host:
 #   2. On the remote host:
 #        sudo bash install.sh [BINARY]
 #
@@ -18,6 +18,7 @@ INSTALL_BIN="/usr/local/bin/webtraffik"
 DATA_DIR="/var/lib/webtraffik"
 SERVICE_FILE="/etc/systemd/system/webtraffik.service"
 SERVICE_USER="webtraffik"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── Sanity checks ─────────────────────────────────────────────────────────────
 
@@ -97,12 +98,36 @@ EOF
 
 echo "wrote service unit: $SERVICE_FILE"
 
-# ── Enable and start ──────────────────────────────────────────────────────────
+# ── Firewall ──────────────────────────────────────────────────────────────────
+
+FIREWALL_SH="${SCRIPT_DIR}/firewall.sh"
+if [[ -f "$FIREWALL_SH" ]]; then
+  echo ""
+  echo "── Configuring firewall ──────────────────────────────────────────────────"
+  bash "$FIREWALL_SH"
+else
+  echo "warning: firewall.sh not found alongside install.sh — skipping firewall setup" >&2
+  echo "         Copy firewall.sh and nftables.conf next to install.sh and re-run to apply." >&2
+fi
+
+# ── Enable and restart (or start) services ────────────────────────────────────
+
+echo ""
+echo "── Starting services ─────────────────────────────────────────────────────"
 
 systemctl daemon-reload
-systemctl enable --now webtraffik.service
+systemctl enable webtraffik.service
+
+if systemctl is-active --quiet webtraffik.service; then
+  systemctl restart webtraffik.service
+  echo "  webtraffik : restarted"
+else
+  systemctl start webtraffik.service
+  echo "  webtraffik : started"
+fi
+
 echo ""
-echo "webTraffik installed and started."
-echo "  status : systemctl status webtraffik"
-echo "  logs   : journalctl -u webtraffik -f"
-echo "  dashboard: http://$(hostname -I | awk '{print $1}'):8999"
+echo "webTraffik installed and running."
+echo "  status    : systemctl status webtraffik"
+echo "  logs      : journalctl -u webtraffik -f"
+echo "  dashboard : http://$(hostname -I | awk '{print $1}'):8999"
