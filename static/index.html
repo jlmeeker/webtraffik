@@ -1235,7 +1235,9 @@
       const t = new Date(ev.time);
       const ts = t.toLocaleTimeString('en-US', { hour12: false });
       const srcLabel = [ev.src_ip, ev.src_city, ev.src_cc].filter(Boolean).join(' / ');
-      const portLabel = ev.dst_port && ev.dst_port !== 'unknown' ? `:${ev.dst_port}` : '';
+      const portNum = ev.dst_port && ev.dst_port !== 'unknown' ? ev.dst_port : '';
+      const svcName = portNum ? (PORT_SERVICE_NAMES[portNum] || '') : '';
+      const portLabel = portNum ? `:${portNum}${svcName ? ' ' + svcName : ''}` : '';
       const protoLabel = ev.protocol ? ev.protocol.toUpperCase() : '';
       const row = document.createElement('div');
       row.className = 'log-entry';
