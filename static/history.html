@@ -547,13 +547,15 @@ const CHART_DEFAULTS = {
   }
 };
 
-function timelineDefaults(unit) {
+function timelineDefaults(unit, minTime, maxTime) {
   return {
     ...CHART_DEFAULTS,
     scales: {
       x: {
         type: 'time',
         time: { unit },
+        min: minTime,
+        max: maxTime,
         ticks: { color: '#546e7a', font: { family: "'JetBrains Mono', monospace", size: 10 }, maxRotation: 0 },
         grid: { color: 'rgba(30,58,95,0.3)' }
       },
@@ -586,6 +588,11 @@ function renderCharts(events) {
     : bucketMs <= 24 * 3600e3 ? 'day'
     : 'week';
 
+  // Compute global time range across all events for consistent x-axis on all charts
+  const allTimes = events.map(e => new Date(e.time).getTime()).filter(t => !isNaN(t));
+  const globalMin = new Date(Math.min(...allTimes));
+  const globalMax = new Date(Math.max(...allTimes));
+
   // ── 1. Timeline ──
   const timelineData = bucketByTime(events, bucketMs);
   charts.timeline = new Chart(document.getElementById('chart-timeline'), {
@@ -600,10 +607,7 @@ function renderCharts(events) {
         borderRadius: 2,
       }]
     },
-    options: timelineDefaults(timeUnit),
-  });
-
-  // ── 2. Top Ports (bar) ──
+    options: timelineDefaults(timeUnit, globalMin, globalMax),
   const portMap = {};
   for (const ev of events) portMap[ev.dst_port] = (portMap[ev.dst_port] || 0) + 1;
   const topPorts = topN(portMap, 15);
@@ -716,11 +720,7 @@ function renderCharts(events) {
           fill: false,
         }))
       },
-      options: { ...timelineDefaults(timeUnit), plugins: { ...CHART_DEFAULTS.plugins } },
-    });
-  } else {
-    portTimelineRow.style.display = 'none';
-  }
+      options: { ...timelineDefaults(timeUnit, globalMin, globalMax), plugins: { ...CHART_DEFAULTS.plugins } },
 
   // ── 7. Per-country timeline (only if >1 distinct country) ──
   const distinctCC = Object.keys(ccMap);
@@ -747,11 +747,7 @@ function renderCharts(events) {
           fill: false,
         }))
       },
-      options: { ...timelineDefaults(timeUnit), plugins: { ...CHART_DEFAULTS.plugins } },
-    });
-  } else {
-    ccTimelineRow.style.display = 'none';
-  }
+      options: { ...timelineDefaults(timeUnit, globalMin, globalMax), plugins: { ...CHART_DEFAULTS.plugins } },
 }
 
 /* ─────────────────────────────────────────── Result table ── */
