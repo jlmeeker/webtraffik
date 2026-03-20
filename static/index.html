@@ -214,6 +214,7 @@
     .log-src   { color: #ffb74d; flex: 1; }
     .log-arrow { color: #455a64; }
     .log-port  { color: #4fc3f7; }
+    .log-proto { color: #78909c; font-size: 0.62rem; min-width: 28px; text-align: right; }
 
     #ws-status {
       width: 8px; height: 8px;
@@ -264,6 +265,10 @@
     <div class="sidebar-section">
       <h2>Traffic by IP</h2>
       <div id="ip-rows"></div>
+    </div>
+    <div class="sidebar-section">
+      <h2>Top Services</h2>
+      <div id="service-rows"></div>
     </div>
   </div>
 </div>
@@ -498,6 +503,54 @@
     });
   }
 
+  // ── Service stats ─────────────────────────────────────────────────────────
+  // Maps port number (string) → human-readable service name
+  const PORT_SERVICE_NAMES = {
+    '21': 'FTP', '22': 'SSH', '23': 'Telnet', '25': 'SMTP',
+    '53': 'DNS', '80': 'HTTP', '110': 'POP3', '143': 'IMAP',
+    '443': 'HTTPS', '445': 'SMB', '1433': 'MSSQL', '3000': 'Node/Express',
+    '3001': 'Node alt', '3128': 'Squid', '3306': 'MySQL', '3389': 'RDP',
+    '4000': 'Phoenix', '4200': 'Angular', '5000': 'Flask', '5001': 'Flask alt',
+    '5432': 'PostgreSQL', '6379': 'Redis', '8000': 'HTTP alt', '8008': 'HTTP alt',
+    '8080': 'HTTP proxy', '8081': 'HTTP proxy', '8088': 'HTTP alt', '8090': 'Confluence',
+    '8888': 'Jupyter', '9000': 'SonarQube', '9090': 'Prometheus',
+    '25565': 'Minecraft', '27017': 'MongoDB',
+  };
+
+  const serviceStats = {}; // { port -> count }
+  const serviceRowsEl = document.getElementById('service-rows');
+
+  function updateServiceStats(port) {
+    if (!port) return;
+    serviceStats[port] = (serviceStats[port] || 0) + 1;
+
+    // Rebuild top 10 by count
+    const top = Object.entries(serviceStats)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10);
+
+    serviceRowsEl.innerHTML = '';
+    top.forEach(([p, count]) => {
+      const svcName = PORT_SERVICE_NAMES[p] || `port ${p}`;
+      const portColor = portStats[p]?.color || '#546e7a';
+      const pct = Math.max(4, Math.round((count / (serviceStats[top[0][0]] || 1)) * 100));
+      const row = document.createElement('div');
+      row.className = 'stat-row';
+      row.style.flexDirection = 'column';
+      row.style.alignItems = 'stretch';
+      row.style.gap = '2px';
+      row.innerHTML =
+        `<div style="display:flex;align-items:center;gap:6px;">` +
+          `<span class="stat-label" style="color:${portColor}">:${p} <span style="color:#78909c;font-weight:400">${svcName}</span></span>` +
+          `<span class="stat-count">${count}</span>` +
+        `</div>` +
+        `<div style="height:3px;border-radius:2px;background:rgba(255,255,255,0.07);overflow:hidden;">` +
+          `<div style="height:100%;width:${pct}%;background:${portColor};opacity:0.7;border-radius:2px;"></div>` +
+        `</div>`;
+      serviceRowsEl.appendChild(row);
+    });
+  }
+
   // ── Arc drawing ──────────────────────────────────────────────────────────
   let arcSeq = 0;
 
@@ -591,13 +644,15 @@
     const ts = t.toLocaleTimeString('en-US', { hour12: false });
     const srcLabel = [ev.src_ip, ev.src_city, ev.src_cc].filter(Boolean).join(' / ');
     const portLabel = ev.dst_port && ev.dst_port !== 'unknown' ? `:${ev.dst_port}` : '';
+    const protoLabel = ev.protocol ? ev.protocol.toUpperCase() : '';
 
     const row = document.createElement('div');
     row.className = 'log-entry';
     row.innerHTML =
       `<span class="log-time">${ts}</span>` +
       `<span class="log-src">${srcLabel}</span>` +
-      `${portLabel ? '<span class="log-arrow">→</span><span class="log-port">' + portLabel + '</span>' : ''}`;
+      `${portLabel ? '<span class="log-arrow">→</span><span class="log-port">' + portLabel + '</span>' : ''}` +
+      `${protoLabel ? '<span class="log-proto">' + protoLabel + '</span>' : ''}`;
 
     logPanel.prepend(row);
 
@@ -667,6 +722,7 @@
       updateLegend(ev.dst_port || 'unknown');
       updateCountry(ev.src_cc);
       updateIP(ev.src_ip);
+      updateServiceStats(ev.dst_port || 'unknown');
       addLog(ev);
 
       if (ev.replay) {

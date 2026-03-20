@@ -18,19 +18,20 @@ import (
 
 // ConnectionEvent is sent to the browser over WebSocket
 type ConnectionEvent struct {
-	Time    string  `json:"time"`
-	SrcIP   string  `json:"src_ip"`
-	DstIP   string  `json:"dst_ip"`
-	DstPort string  `json:"dst_port"`
-	SrcLat  float64 `json:"src_lat"`
-	SrcLon  float64 `json:"src_lon"`
-	DstLat  float64 `json:"dst_lat"`
-	DstLon  float64 `json:"dst_lon"`
-	SrcCity string  `json:"src_city"`
-	DstCity string  `json:"dst_city"`
-	SrcCC   string  `json:"src_cc"`
-	DstCC   string  `json:"dst_cc"`
-	Replay  bool    `json:"replay,omitempty"` // true when replayed from history
+	Time     string  `json:"time"`
+	SrcIP    string  `json:"src_ip"`
+	DstIP    string  `json:"dst_ip"`
+	DstPort  string  `json:"dst_port"`
+	Protocol string  `json:"protocol"` // "tcp" or "udp"
+	SrcLat   float64 `json:"src_lat"`
+	SrcLon   float64 `json:"src_lon"`
+	DstLat   float64 `json:"dst_lat"`
+	DstLon   float64 `json:"dst_lon"`
+	SrcCity  string  `json:"src_city"`
+	DstCity  string  `json:"dst_city"`
+	SrcCC    string  `json:"src_cc"`
+	DstCC    string  `json:"dst_cc"`
+	Replay   bool    `json:"replay,omitempty"` // true when replayed from history
 }
 
 const historySize = 1000
@@ -187,6 +188,19 @@ func main() {
 		go startCaptureListener(port)
 	}
 
+	// Start TCP service emulation listeners (non-HTTP protocols)
+	for _, svc := range tcpServices {
+		go startTCPServiceListener(svc)
+	}
+
+	// Start UDP service listeners
+	for _, port := range udpServicePorts {
+		go startUDPServiceListener(port)
+	}
+
+	// Start Minecraft Java Edition server-list-ping emulator
+	go startMinecraftListener()
+
 	// Start dashboard server on 8999
 	go startDashboardServer()
 
@@ -196,16 +210,22 @@ func main() {
 	select {}
 }
 
-// startCaptureListener binds to the given port, returns empty 200 for all
-// requests and fires a ConnectionEvent tagged with that port number.
+// startCaptureListener binds to the given port, records every incoming HTTP
+// request, and returns a realistic HTTP/1.1 response that mimics a common
+// web server (nginx).
 func startCaptureListener(port int) {
 	addr := fmt.Sprintf(":%d", port)
 	portStr := fmt.Sprintf("%d", port)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		srcIP := extractIP(r.RemoteAddr)
+		// Return a convincing nginx-style 200 with a minimal HTML body.
+		w.Header().Set("Server", "nginx/1.24.0")
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Connection", "close")
 		w.WriteHeader(http.StatusOK)
-		go handleCapture(srcIP, portStr)
+		fmt.Fprint(w, "<html><head><title>Welcome to nginx!</title></head><body><h1>Welcome to nginx!</h1><p>If you see this page, the nginx web server is successfully installed and working.</p></body></html>")
+		go handleCapture(srcIP, portStr, "tcp")
 	})
 	log.Printf("Capture listener on %s", addr)
 	if err := http.ListenAndServe(addr, mux); err != nil {
@@ -213,7 +233,7 @@ func startCaptureListener(port int) {
 	}
 }
 
-func handleCapture(srcIP, dstPort string) {
+func handleCapture(srcIP, dstPort, protocol string) {
 	var srcLat, srcLon float64
 	var srcCity, srcCC string
 
@@ -228,18 +248,19 @@ func handleCapture(srcIP, dstPort string) {
 	}
 
 	ev := ConnectionEvent{
-		Time:    time.Now().UTC().Format(time.RFC3339),
-		SrcIP:   srcIP,
-		DstIP:   selfIP,
-		DstPort: dstPort,
-		SrcLat:  srcLat,
-		SrcLon:  srcLon,
-		DstLat:  selfLat,
-		DstLon:  selfLon,
-		SrcCity: srcCity,
-		DstCity: selfCity,
-		SrcCC:   srcCC,
-		DstCC:   selfCC,
+		Time:     time.Now().UTC().Format(time.RFC3339),
+		SrcIP:    srcIP,
+		DstIP:    selfIP,
+		DstPort:  dstPort,
+		Protocol: protocol,
+		SrcLat:   srcLat,
+		SrcLon:   srcLon,
+		DstLat:   selfLat,
+		DstLon:   selfLon,
+		SrcCity:  srcCity,
+		DstCity:  selfCity,
+		SrcCC:    srcCC,
+		DstCC:    selfCC,
 	}
 	appHub.broadcast(ev)
 	appDB.insert(ev)

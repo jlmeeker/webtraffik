@@ -66,16 +66,22 @@ echo "  primary interface : $IFACE"
 echo "  management subnet : $SUBNET"
 
 # ── Build the capture-port nft set literal ────────────────────────────────────
-# Matches the capturePorts slice in main.go.
-CAPTURE_PORTS="80, 8080, 8000, 8008, 8081, 8088, 8090, 8888, \
-3000, 3001, 3128, 4000, 4200, 5000, 5001, 9000, 9090"
+# TCP ports: existing HTTP ports + new service-emulation ports.
+# Matches the capturePorts slice in main.go AND tcpServices in services.go.
+CAPTURE_PORTS_TCP="21, 22, 23, 25, 80, 110, 143, 443, 445, \
+1433, 3000, 3001, 3128, 3306, 3389, 4000, 4200, 5000, 5001, 5432, \
+6379, 8000, 8008, 8080, 8081, 8088, 8090, 8888, 9000, 9090, 25565, 27017"
+
+# UDP ports: DNS and any other UDP services in services.go.
+CAPTURE_PORTS_UDP="53"
 
 # ── Substitute tokens and write the live config ───────────────────────────────
 mkdir -p "$CONF_DIR"
 
 sed \
     -e "s|__SUBNET__|${SUBNET}|g" \
-    -e "s|__CAPTURE_PORTS__|${CAPTURE_PORTS}|g" \
+    -e "s|__CAPTURE_PORTS_TCP__|${CAPTURE_PORTS_TCP}|g" \
+    -e "s|__CAPTURE_PORTS_UDP__|${CAPTURE_PORTS_UDP}|g" \
     "$TEMPLATE" > "$CONF_OUT"
 
 echo "  wrote ruleset     : $CONF_OUT"
@@ -127,5 +133,6 @@ fi
 
 echo ""
 echo "Firewall active.  Management access restricted to ${SUBNET}."
-echo "Capture ports open to the internet."
+echo "Capture TCP ports: ${CAPTURE_PORTS_TCP}"
+echo "Capture UDP ports: ${CAPTURE_PORTS_UDP}"
 echo "Run 'nft list ruleset' to inspect."
