@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"log"
 	"net"
@@ -75,6 +76,28 @@ var (
 	selfCC   string
 )
 
+// capturePorts are the common non-TLS HTTP ports the app listens on directly.
+// Point your firewall NAT rules at these same ports.
+var capturePorts = []int{
+	80,   // HTTP standard
+	8080, // Alt HTTP / proxies
+	8000, // Django, Python http.server
+	8008, // Alt HTTP, IoT/home automation
+	8081, // Alt proxy, Nexus
+	8088, // Alt HTTP
+	8090, // Confluence, misc
+	8888, // Jupyter Notebook
+	3000, // Node/Express, Grafana, Rails
+	3001, // React dev, alt 3000
+	3128, // Squid proxy
+	4000, // Phoenix (Elixir)
+	4200, // Angular dev
+	5000, // Flask, Docker registry
+	5001, // IPFS, alt Flask
+	9000, // SonarQube, Portainer
+	9090, // Prometheus, Cockpit
+}
+
 func main() {
 	log.Println("webTraffik starting...")
 
@@ -107,8 +130,10 @@ func main() {
 		}
 	}
 
-	// Start port 8080 HTTP capture listener
-	go startCaptureServer()
+	// Start capture listeners on all common HTTP ports
+	for _, port := range capturePorts {
+		go startCaptureListener(port)
+	}
 
 	// Start dashboard server on 8999
 	go startDashboardServer()
@@ -119,19 +144,20 @@ func main() {
 	select {}
 }
 
-// startCaptureServer listens on port 8080, returns empty 200 for all requests
-// and fires a ConnectionEvent for each one.
-func startCaptureServer() {
+// startCaptureListener binds to the given port, returns empty 200 for all
+// requests and fires a ConnectionEvent tagged with that port number.
+func startCaptureListener(port int) {
+	addr := fmt.Sprintf(":%d", port)
+	portStr := fmt.Sprintf("%d", port)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		srcIP := extractIP(r.RemoteAddr)
-		dstPort := originalPort(r)
 		w.WriteHeader(http.StatusOK)
-		go handleCapture(srcIP, dstPort)
+		go handleCapture(srcIP, portStr)
 	})
-	log.Println("Capture listener on :8080")
-	if err := http.ListenAndServe(":8080", mux); err != nil {
-		log.Fatalf("Port 8080 listener failed: %v", err)
+	log.Printf("Capture listener on %s", addr)
+	if err := http.ListenAndServe(addr, mux); err != nil {
+		log.Printf("Capture listener on %s failed: %v", addr, err)
 	}
 }
 
@@ -167,15 +193,6 @@ func handleCapture(srcIP, dstPort string) {
 
 	evJSON, _ := json.Marshal(ev)
 	log.Printf("Connection: %s", string(evJSON))
-}
-
-// originalPort reads the X-Original-Port header set by the NAT rule,
-// falling back to "unknown" if absent.
-func originalPort(r *http.Request) string {
-	if p := r.Header.Get("X-Original-Port"); p != "" {
-		return p
-	}
-	return "unknown"
 }
 
 // startDashboardServer serves the web UI and WebSocket endpoint on :8999
