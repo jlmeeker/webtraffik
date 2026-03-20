@@ -103,8 +103,15 @@ if ! nft -c -f "$CONF_OUT" 2>/dev/null; then
     exit 1
 fi
 
-# ── Apply atomically ──────────────────────────────────────────────────────────
-nft -f "$CONF_OUT"
+# ── Remove legacy parallel table from older installs (if present) ─────────────
+# Earlier versions used a separate "webtraffik_filter" table that could race
+# with the distro's inet filter chain.  Clean it up if it exists.
+nft delete table inet webtraffik_filter 2>/dev/null || true
+
+# ── Apply atomically via the main conf (includes our drop-in) ─────────────────
+# Loading through /etc/nftables.conf ensures the flush + redefinition of
+# inet filter happens in one transaction with no other chains racing.
+nft -f "$MAIN_CONF"
 echo "  ruleset applied"
 
 # ── Enable + restart (or start) nftables service ─────────────────────────────
