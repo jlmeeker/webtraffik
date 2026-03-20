@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>webTraffik</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0a0e1a;
+      color: #c8d8f0;
+      font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 18px;
+      background: rgba(12, 20, 40, 0.95);
+      border-bottom: 1px solid #1e3a5f;
+      flex-shrink: 0;
+      z-index: 10;
+    }
+
+    header h1 {
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: #4fc3f7;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    #self-info {
+      font-size: 0.72rem;
+      color: #78909c;
+    }
+
+    #self-info span { color: #80cbc4; }
+
+    #stats {
+      font-size: 0.72rem;
+      color: #78909c;
+    }
+    #stats span { color: #ffb74d; }
+
+    #map-container {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+    }
+
+    svg#map {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .graticule { fill: none; stroke: #0d2035; stroke-width: 0.5px; }
+    .sphere { fill: #060d1a; }
+    .land  { fill: #122035; stroke: #1e3a5f; stroke-width: 0.4px; }
+    .border { fill: none; stroke: #0d2035; stroke-width: 0.3px; }
+
+    .self-dot {
+      fill: #4fc3f7;
+      r: 5;
+      filter: url(#glow-blue);
+    }
+
+    .arc-path {
+      fill: none;
+      stroke-linecap: round;
+    }
+
+    .src-dot {
+      r: 4;
+      filter: url(#glow-orange);
+    }
+
+    /* Log panel */
+    #log-panel {
+      background: rgba(8, 15, 30, 0.92);
+      border-top: 1px solid #1e3a5f;
+      height: 130px;
+      overflow-y: auto;
+      flex-shrink: 0;
+      padding: 4px 12px;
+      font-size: 0.68rem;
+      line-height: 1.6;
+    }
+
+    #log-panel::-webkit-scrollbar { width: 4px; }
+    #log-panel::-webkit-scrollbar-thumb { background: #1e3a5f; }
+
+    .log-entry {
+      display: flex;
+      gap: 10px;
+      border-bottom: 1px solid rgba(30,58,95,0.3);
+      padding: 2px 0;
+      animation: fadeIn 0.3s ease;
+    }
+
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; } }
+
+    .log-time { color: #546e7a; min-width: 80px; }
+    .log-src  { color: #ffb74d; min-width: 130px; }
+    .log-arrow { color: #455a64; }
+    .log-dst  { color: #4fc3f7; min-width: 130px; }
+    .log-loc  { color: #78909c; }
+
+    #ws-status {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #546e7a;
+      display: inline-block;
+      margin-right: 6px;
+      transition: background 0.3s;
+    }
+    #ws-status.connected    { background: #66bb6a; box-shadow: 0 0 6px #66bb6a; }
+    #ws-status.disconnected { background: #ef5350; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1><span id="ws-status"></span>webTraffik</h1>
+  <div id="self-info">My IP: <span id="my-ip">—</span> &nbsp;|&nbsp; <span id="my-loc">—</span></div>
+  <div id="stats">Connections: <span id="conn-count">0</span></div>
+</header>
+
+<div id="map-container">
+  <svg id="map"></svg>
+</div>
+
+<div id="log-panel" id="log"></div>
+
+<!-- D3 v7 (self-contained) -->
+<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+<!-- TopoJSON -->
+<script src="https://cdn.jsdelivr.net/npm/topojson-client@3/dist/topojson-client.min.js"></script>
+
+<script>
+(() => {
+  // ── State ────────────────────────────────────────────────────────────────
+  let selfPos = null;    // { lat, lon, ip, city, cc }
+  let connCount = 0;
+
+  // ── Map setup ────────────────────────────────────────────────────────────
+  const svg = d3.select('#map');
+  const container = document.getElementById('map-container');
+
+  function dims() {
+    return { w: container.clientWidth, h: container.clientHeight };
+  }
+
+  let { w, h } = dims();
+
+  const projection = d3.geoNaturalEarth1()
+    .scale(w / 6.3)
+    .translate([w / 2, h / 2]);
+
+  const path = d3.geoPath().projection(projection);
+
+  // Defs: glow filters
+  const defs = svg.append('defs');
+
+  function makeGlow(id, color) {
+    const f = defs.append('filter').attr('id', id).attr('x', '-50%').attr('y', '-50%').attr('width', '200%').attr('height', '200%');
+    f.append('feGaussianBlur').attr('in', 'SourceGraphic').attr('stdDeviation', 3).attr('result', 'blur');
+    const merge = f.append('feMerge');
+    merge.append('feMergeNode').attr('in', 'blur');
+    merge.append('feMergeNode').attr('in', 'blur');
+    merge.append('feMergeNode').attr('in', 'SourceGraphic');
+  }
+
+  makeGlow('glow-blue',   '#4fc3f7');
+  makeGlow('glow-orange', '#ff9800');
+  makeGlow('glow-green',  '#66bb6a');
+
+  // Gradient for arcs
+  function makeArcGradient(id, c1, c2) {
+    const g = defs.append('linearGradient').attr('id', id)
+      .attr('gradientUnits', 'userSpaceOnUse');
+    g.append('stop').attr('offset', '0%').attr('stop-color', c1).attr('stop-opacity', 0.9);
+    g.append('stop').attr('offset', '100%').attr('stop-color', c2).attr('stop-opacity', 0.9);
+    return g;
+  }
+
+  const sphereGroup = svg.append('g');
+  const graticuleGroup = svg.append('g');
+  const landGroup = svg.append('g');
+  const arcGroup = svg.append('g');
+  const dotGroup = svg.append('g');
+
+  const graticule = d3.geoGraticule()();
+
+  // Draw sphere + graticule
+  sphereGroup.append('path')
+    .datum({ type: 'Sphere' })
+    .attr('class', 'sphere')
+    .attr('d', path);
+
+  graticuleGroup.append('path')
+    .datum(graticule)
+    .attr('class', 'graticule')
+    .attr('d', path);
+
+  // Load world TopoJSON
+  const WORLD_URL = 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json';
+
+  d3.json(WORLD_URL).then(world => {
+    landGroup.append('path')
+      .datum(topojson.feature(world, world.objects.land))
+      .attr('class', 'land')
+      .attr('d', path);
+
+    landGroup.append('path')
+      .datum(topojson.mesh(world, world.objects.countries, (a, b) => a !== b))
+      .attr('class', 'border')
+      .attr('d', path);
+  });
+
+  // ── Self dot ─────────────────────────────────────────────────────────────
+  let selfDotEl = null;
+
+  function drawSelfDot() {
+    if (!selfPos) return;
+    const [sx, sy] = projection([selfPos.lon, selfPos.lat]);
+    if (selfDotEl) selfDotEl.remove();
+    selfDotEl = dotGroup.append('circle')
+      .attr('class', 'self-dot')
+      .attr('cx', sx)
+      .attr('cy', sy)
+      .attr('r', 5)
+      .attr('filter', 'url(#glow-blue)');
+  }
+
+  // ── Resize ───────────────────────────────────────────────────────────────
+  function resize() {
+    const d = dims();
+    w = d.w; h = d.h;
+    projection
+      .scale(w / 6.3)
+      .translate([w / 2, h / 2]);
+
+    sphereGroup.select('path').attr('d', path);
+    graticuleGroup.select('path').attr('d', path);
+    landGroup.selectAll('path').attr('d', path);
+    drawSelfDot();
+  }
+
+  window.addEventListener('resize', () => resize());
+
+  // ── Self info ────────────────────────────────────────────────────────────
+  fetch('/api/self')
+    .then(r => r.json())
+    .then(data => {
+      selfPos = { lat: data.lat, lon: data.lon, ip: data.ip, city: data.city, cc: data.cc };
+      document.getElementById('my-ip').textContent = data.ip || '—';
+      document.getElementById('my-loc').textContent =
+        [data.city, data.cc].filter(Boolean).join(', ') || '—';
+      drawSelfDot();
+    })
+    .catch(e => console.warn('Self info fetch failed:', e));
+
+  // ── Arc drawing ──────────────────────────────────────────────────────────
+  let arcSeq = 0;
+
+  // Colour palette cycling for distinct arcs
+  const PALETTE = [
+    ['#ff9800', '#4fc3f7'],
+    ['#ef5350', '#80cbc4'],
+    ['#ab47bc', '#fff176'],
+    ['#26c6da', '#ff8a65'],
+    ['#66bb6a', '#f48fb1'],
+  ];
+
+  function drawArc(ev) {
+    const srcPt = [ev.src_lon, ev.src_lat];
+    const dstPt = [ev.dst_lon, ev.dst_lat];
+
+    if (!srcPt[0] && !srcPt[1]) return; // no geo data
+
+    const [c1, c2] = PALETTE[arcSeq % PALETTE.length];
+    arcSeq++;
+
+    const gradId = `arc-grad-${arcSeq}`;
+    const [x0, y0] = projection(srcPt);
+    const [x1, y1] = projection(dstPt);
+    const grad = makeArcGradient(gradId, c1, c2)
+      .attr('x1', x0).attr('y1', y0)
+      .attr('x2', x1).attr('y2', y1);
+
+    // Great-circle path via d3.geoInterpolate sampling
+    const interp = d3.geoInterpolate(srcPt, dstPt);
+    const N = 60;
+    const lineData = d3.range(N + 1).map(i => projection(interp(i / N)));
+    const lineGen = d3.line().x(d => d[0]).y(d => d[1]).curve(d3.curveCatmullRom);
+    const fullD = lineGen(lineData);
+
+    const arcPath = arcGroup.append('path')
+      .attr('class', 'arc-path')
+      .attr('d', fullD)
+      .attr('stroke', `url(#${gradId})`)
+      .attr('stroke-width', 1.5)
+      .attr('opacity', 0);
+
+    // Animate the stroke dash
+    const totalLen = arcPath.node().getTotalLength();
+    arcPath
+      .attr('stroke-dasharray', totalLen)
+      .attr('stroke-dashoffset', totalLen)
+      .attr('opacity', 1)
+      .transition()
+        .duration(900)
+        .ease(d3.easeQuadInOut)
+        .attr('stroke-dashoffset', 0)
+      .transition()
+        .delay(2500)
+        .duration(800)
+        .attr('opacity', 0.15)
+      .on('end', () => {
+        arcPath.transition().delay(4000).duration(600).attr('opacity', 0)
+          .on('end', () => { arcPath.remove(); grad.remove(); });
+      });
+
+    // Source dot
+    const srcDot = dotGroup.append('circle')
+      .attr('class', 'src-dot')
+      .attr('cx', x0)
+      .attr('cy', y0)
+      .attr('r', 0)
+      .attr('fill', c1)
+      .attr('filter', 'url(#glow-orange)');
+
+    srcDot.transition().duration(300).attr('r', 4)
+      .transition().delay(3500).duration(600).attr('r', 0)
+      .on('end', () => srcDot.remove());
+  }
+
+  // ── Log panel ─────────────────────────────────────────────────────────────
+  const logPanel = document.getElementById('log-panel');
+
+  function addLog(ev) {
+    const t = new Date(ev.time);
+    const ts = t.toLocaleTimeString('en-US', { hour12: false });
+    const srcLabel = [ev.src_ip, ev.src_city, ev.src_cc].filter(Boolean).join(' / ');
+    const dstLabel = [ev.dst_ip, ev.dst_city, ev.dst_cc].filter(Boolean).join(' / ');
+
+    const row = document.createElement('div');
+    row.className = 'log-entry';
+    row.innerHTML =
+      `<span class="log-time">${ts}</span>` +
+      `<span class="log-src">${srcLabel}</span>` +
+      `<span class="log-arrow">→</span>` +
+      `<span class="log-dst">${dstLabel}</span>`;
+
+    logPanel.prepend(row);
+
+    // Keep last 200 entries
+    while (logPanel.children.length > 200) {
+      logPanel.removeChild(logPanel.lastChild);
+    }
+  }
+
+  // ── WebSocket ─────────────────────────────────────────────────────────────
+  const wsStatus = document.getElementById('ws-status');
+  const connCountEl = document.getElementById('conn-count');
+
+  function connect() {
+    const ws = new WebSocket(`ws://${location.host}/ws`);
+
+    ws.onopen = () => {
+      wsStatus.className = 'connected';
+    };
+
+    ws.onmessage = (msg) => {
+      let ev;
+      try { ev = JSON.parse(msg.data); } catch { return; }
+
+      connCount++;
+      connCountEl.textContent = connCount;
+
+      drawArc(ev);
+      addLog(ev);
+    };
+
+    ws.onclose = () => {
+      wsStatus.className = 'disconnected';
+      // Reconnect after 2s
+      setTimeout(connect, 2000);
+    };
+
+    ws.onerror = () => ws.close();
+  }
+
+  connect();
+
+})();
+</script>
+</body>
+</html>
