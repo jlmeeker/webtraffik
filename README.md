@@ -1,0 +1,402 @@
+# webTraffik
+
+A real-time HTTP traffic visualization tool that captures incoming connections, geolocates them using MaxMind GeoLite2, and renders them on an interactive D3.js world map with animated great-circle arcs.
+
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
+![Go Version](https://img.shields.io/badge/go-1.26+-00ADD8.svg)
+![Platform](https://img.shields.io/badge/platform-linux%20%7C%20darwin%20%7C%20windows-lightgrey.svg)
+
+## Features
+
+- **Live Traffic Visualization**: Animated great-circle arcs showing connections from source to destination in real-time
+- **Automatic Geolocation**: MaxMind GeoLite2 City database with `rgeo` fallback for enhanced city-level accuracy
+- **Dark-Themed D3.js Map**: Beautiful Natural Earth projection with glowing effects and graticule
+- **Historical Replay**: New dashboard connections receive the last 1000 events as faded static dots
+- **Port-Based Color Coding**: Each monitored port gets a unique color in the legend and arc animations
+- **Zero Configuration**: Auto-downloads GeoLite2 database from GitHub mirror on first run (no license key needed)
+- **Systemd Integration**: Runs as non-root user with `CAP_NET_BIND_SERVICE` capability for ports <1024
+- **Cross-Platform**: Supports linux/amd64, linux/arm64, linux/armv6, linux/armv7, darwin, and windows
+
+## Architecture
+
+webTraffik listens directly on common non-TLS HTTP ports (80, 8080, 8000, 8008, 8081, 8088, 8090, 8888, 3000, 3001, 3128, 4000, 4200, 5000, 5001, 9000, 9090) and serves a dashboard on port **8999**.
+
+Traffic reaches the app via **pure NAT redirect** — your firewall forwards packets without injecting proxy headers, so `RemoteAddr` contains the original source IP.
+
+The dashboard uses WebSocket for real-time event streaming. Each new connection receives:
+1. **Historical events** (last 1000) as faded static dots
+2. **Live events** as animated arcs that settle into persistent dots
+
+## Screenshot
+
+The dashboard shows:
+- A world map with your server location marked in cyan
+- Animated arcs from visitor IPs to your server
+- A live port legend sorted by traffic count
+- A scrolling log of all connections with timestamps and geolocation details
+
+## Quick Start
+
+### Prerequisites
+
+- **Go 1.21+** (for building from source)
+- **Linux** (for systemd service) — also works on macOS/Windows for development
+- **Firewall NAT rules** to redirect traffic to capture ports
+
+### Build and Run Locally
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/webtraffik.git
+cd webtraffik
+
+# Build for your current platform
+make build
+
+# Run with capability (allows binding ports <1024 without root)
+make cap
+```
+
+Visit http://localhost:8999 to see the dashboard.
+
+### Install as systemd Service
+
+On the target Linux machine:
+
+```bash
+make install
+```
+
+This will:
+1. Build the binary
+2. Create a system user `webtraffik`
+3. Install to `/usr/local/bin/webtraffik`
+4. Set `cap_net_bind_service` capability
+5. Install and start the systemd service
+
+Check logs with:
+
+```bash
+journalctl -u webtraffik -f
+```
+
+## Installation Methods
+
+### Method 1: Local Install (requires Go and make)
+
+```bash
+make install
+```
+
+### Method 2: Remote Install via SSH
+
+Build on your local machine and deploy to a remote host in one command:
+
+```bash
+make remote-install IP=1.2.3.4
+```
+
+This automatically:
+- Detects the remote architecture
+- Cross-compiles the correct binary
+- Copies binary and install script via SSH
+- Runs the installer as root
+
+SSH connects as `$USER` — ensure your SSH key is configured on the remote host.
+
+### Method 3: Manual Install (no Go/make on target)
+
+For hosts without Go:
+
+1. Build the binary for the target architecture:
+   ```bash
+   make dist
+   ```
+
+2. Copy to the remote host:
+   ```bash
+   scp dist/webtraffik_linux_amd64 user@host:webtraffik
+   scp install.sh user@host:install.sh
+   ```
+
+3. Install on remote:
+   ```bash
+   ssh user@host
+   sudo bash install.sh
+   ```
+
+## Makefile Targets
+
+| Target | Description |
+|--------|-------------|
+| `make build` | Build for current OS/arch |
+| `make dist` | Cross-compile for all platforms into `dist/` |
+| `make run` | Build and run locally |
+| `make cap` | Build, set `cap_net_bind_service`, and run |
+| `make cap-dist` | Set capabilities on all Linux dist binaries |
+| `make install` | Install binary + systemd service |
+| `make remote-install IP=x.x.x.x` | Build, deploy, and install to remote host via SSH |
+| `make uninstall` | Remove service, binary, user, and data directory |
+| `make clean` | Remove build artifacts and GeoLite2 DB |
+
+## Firewall Configuration
+
+webTraffik expects your firewall to **redirect** traffic to the capture ports. The app responds with HTTP 200 to all requests.
+
+### nftables Example
+
+```nft
+table ip nat {
+  chain prerouting {
+    type nat hook prerouting priority -100; policy accept;
+    tcp dport { 80, 8080, 8000, 8008, 8081, 8088, 8090, 8888, 3000, 3001, 3128, 4000, 4200, 5000, 5001, 9000, 9090 } redirect
+  }
+}
+```
+
+### iptables Example
+
+```bash
+iptables -t nat -A PREROUTING -p tcp -m multiport \
+  --dports 80,8080,8000,8008,8081,8088,8090,8888,3000,3001,3128,4000,4200,5000,5001,9000,9090 \
+  -j REDIRECT
+```
+
+## File Structure
+
+```
+webTraffik/
+├── main.go              # Entry point, hub, WebSocket server, capture listeners
+├── geo.go               # GeoLite2 + rgeo reverse geocoding
+├── geodb.go             # Auto-download GeoLite2-City.mmdb from GitHub mirror
+├── iputil.go            # Public IP discovery via external APIs
+├── static_embed.go      # Go embed directive for static files
+├── static/
+│   └── index.html       # D3.js frontend: map, arcs, legend, log, WebSocket client
+├── webtraffik.service   # systemd service unit file
+├── install.sh           # Standalone installer for remote hosts
+├── Makefile             # Build, cross-compile, install, deploy targets
+├── go.mod
+└── go.sum
+```
+
+## How It Works
+
+### Geolocation Pipeline
+
+1. **GeoLite2 City Lookup**: Primary database with ~50MB of IP→City mappings
+2. **rgeo Fallback**: When GeoLite2 only has country-level data but provides coordinates, `rgeo` reverse-geocodes to find the nearest city using embedded Cities10 and Provinces10 datasets
+3. **Non-Blocking Init**: `rgeo` initializes in a background goroutine — early lookups simply skip the fallback if not ready
+
+### Event Flow
+
+```
+Incoming HTTP request
+  ↓
+Extract source IP from RemoteAddr
+  ↓
+Geolocate source IP (city, lat/lon, country)
+  ↓
+Create ConnectionEvent with src + dst coordinates
+  ↓
+Broadcast to WebSocket hub + ring buffer (1000 events)
+  ↓
+Dashboard receives event:
+  - If replay=true: render faded static dot
+  - If live: render animated arc + glowing dot
+```
+
+### Dashboard Components
+
+- **Map**: D3.js Natural Earth projection with TopoJSON world-atlas
+- **Arcs**: Great-circle paths using `d3.geoInterpolate` with 60-point sampling
+- **Dots**: Animated circles with glow filters (SVG `feGaussianBlur`)
+- **Legend**: Live port statistics sorted by count, each with unique color swatch
+- **Log**: Scrolling panel showing timestamp, source IP, city, country, and port
+
+## Dependencies
+
+### Go Modules
+
+- `github.com/oschwald/geoip2-golang` — MaxMind DB reader
+- `github.com/sams96/rgeo` — Embedded reverse geocoder
+- `nhooyr.io/websocket` — WebSocket server
+
+### Frontend (CDN)
+
+- D3.js v7
+- TopoJSON v3
+- world-atlas v2 (countries-110m.json)
+
+## Configuration
+
+webTraffik uses **zero-config defaults**:
+
+- **Dashboard port**: 8999 (hardcoded in `main.go`)
+- **Capture ports**: See `capturePorts` array in `main.go`
+- **History size**: 1000 events (ring buffer)
+- **Working directory**: `/var/lib/webtraffik` (systemd), or current directory (manual run)
+- **GeoLite2 DB**: Auto-downloaded to working directory on first run
+
+To customize ports or buffer size, edit `main.go` and rebuild.
+
+## Cross-Compilation
+
+The Makefile supports all major platforms:
+
+| Target | Build Command | Notes |
+|--------|---------------|-------|
+| linux/amd64 | `make linux/amd64` | Standard x86_64 Linux |
+| linux/arm64 | `make linux/arm64` | Pi 3B+, Pi 4, Pi 5, modern ARM servers |
+| linux/armv6 | `make linux/armv6` | Pi Zero, Pi 1 (32-bit hard-float) |
+| linux/armv7 | `make linux/armv7` | Pi 2, Pi 3 (32-bit), Pi Zero 2 W |
+| darwin/amd64 | `make darwin/amd64` | Intel Mac |
+| darwin/arm64 | `make darwin/arm64` | Apple Silicon (M1/M2/M3) |
+| windows/amd64 | `make windows/amd64` | 64-bit Windows |
+| windows/arm64 | `make windows/arm64` | ARM Windows |
+
+Build all platforms:
+
+```bash
+make dist
+```
+
+Binaries appear in `dist/` as `webtraffik_<os>_<arch>[.exe]`.
+
+## Systemd Service Details
+
+The service runs as a dedicated `webtraffik` system user with minimal privileges:
+
+- **User/Group**: `webtraffik:webtraffik`
+- **Capabilities**: `CAP_NET_BIND_SERVICE` (bind ports <1024)
+- **Sandboxing**: `ProtectSystem=strict`, `ProtectHome=true`, `PrivateTmp=true`, `NoNewPrivileges=true`
+- **Working Directory**: `/var/lib/webtraffik` (writable for GeoLite2 DB download)
+- **Auto-Restart**: `Restart=on-failure` with 5s delay
+
+View service status:
+
+```bash
+systemctl status webtraffik
+```
+
+Restart service:
+
+```bash
+sudo systemctl restart webtraffik
+```
+
+Stop service:
+
+```bash
+sudo systemctl stop webtraffik
+```
+
+## Security Considerations
+
+- **No Authentication**: The dashboard (port 8999) has no authentication. Use a firewall to restrict access to trusted IPs, or place behind a reverse proxy with auth.
+- **Public Ports**: Capture ports are meant to be exposed to the internet. The app returns HTTP 200 with no body — it's a blackhole for HTTP traffic.
+- **Geolocation Privacy**: Source IPs and geolocation data are logged to stdout (journald) and displayed on the dashboard. Ensure logs comply with your privacy policy.
+- **Resource Limits**: The ring buffer caps history at 1000 events. The frontend caps the log panel at 200 entries. Old events are evicted automatically.
+
+## Troubleshooting
+
+### Dashboard shows no connections
+
+- **Check firewall rules**: Ensure NAT redirect is active (`nft list ruleset` or `iptables -t nat -L`)
+- **Check capture ports**: Verify the app is listening on expected ports (`ss -tlnp | grep webtraffik`)
+- **Check public IP**: Ensure `selfIP` discovery succeeded (check logs)
+
+### GeoLite2 download fails
+
+- **Manual download**: Place `GeoLite2-City.mmdb` in the working directory before starting
+- **Mirror URL**: If GitHub mirror is down, update `geoliteURL` in `geodb.go` to an alternative source
+
+### Service fails to start
+
+- **Check logs**: `journalctl -u webtraffik -e`
+- **Check permissions**: Ensure `/var/lib/webtraffik` is owned by `webtraffik:webtraffik`
+- **Check capabilities**: Verify `cap_net_bind_service` is set on the binary: `getcap /usr/local/bin/webtraffik`
+
+### WebSocket reconnects constantly
+
+- **Check browser console**: Look for connection errors
+- **Check port 8999**: Ensure it's not blocked by firewall: `curl http://localhost:8999`
+- **Check reverse proxy**: If behind nginx/apache, ensure WebSocket upgrade headers are forwarded
+
+## Development
+
+### Running Locally (macOS/Linux)
+
+```bash
+# Build and run
+make run
+```
+
+Port 8999 will be accessible on `localhost`. Capture ports (80, etc.) will fail unless run with `sudo` or `make cap`.
+
+### Running Locally (Windows)
+
+```bash
+go build -o webtraffik.exe .
+.\webtraffik.exe
+```
+
+Ports <1024 require Administrator privileges on Windows.
+
+### Hot Reload
+
+Since static files are embedded via `//go:embed`, changes to `static/index.html` require a rebuild:
+
+```bash
+make build && ./webtraffik
+```
+
+For faster iteration, temporarily serve `static/` via a file server and remove the embed.
+
+## Uninstall
+
+```bash
+make uninstall
+```
+
+This removes:
+- systemd service
+- binary (`/usr/local/bin/webtraffik`)
+- data directory (`/var/lib/webtraffik`)
+- system user (`webtraffik`)
+
+## License
+
+MIT License — see [LICENSE](LICENSE) for details.
+
+## Credits
+
+- **MaxMind GeoLite2**: Free geolocation database (via [P3TERX/GeoLite.mmdb](https://github.com/P3TERX/GeoLite.mmdb) mirror)
+- **rgeo**: Embedded reverse geocoder by [@sams96](https://github.com/sams96/rgeo)
+- **D3.js**: Data-driven visualization library
+- **Natural Earth**: Public domain map data
+
+## Contributing
+
+Contributions welcome! Please open an issue or pull request.
+
+## Roadmap
+
+- [ ] Add HTTPS support for dashboard (TLS cert config)
+- [ ] Add optional HTTP basic auth for dashboard
+- [ ] Add JSON API endpoint for raw events
+- [ ] Add Prometheus metrics exporter
+- [ ] Add configurable port lists via environment variables or config file
+- [ ] Add IPv6 support
+- [ ] Add Docker image
+
+## Support
+
+For issues or questions:
+- Open a [GitHub Issue](https://github.com/yourusername/webtraffik/issues)
+- Check logs: `journalctl -u webtraffik -f`
+- Review [Troubleshooting](#troubleshooting) section
+
+---
+
+**Built with Go + D3.js** — Visualize your web traffic in real-time.
