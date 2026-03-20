@@ -215,6 +215,50 @@
     #ws-status.connected    { background: #66bb6a; box-shadow: 0 0 6px #66bb6a; }
     #ws-status.disconnected { background: #ef5350; }
 
+    /* ── Magnifier inset ── */
+    #magnifier {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 420px;
+      height: 300px;
+      background: rgba(6, 13, 26, 0.92);
+      border: 1px solid #1e3a5f;
+      border-radius: 8px;
+      z-index: 6;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.5s ease;
+      overflow: hidden;
+      box-shadow: 0 0 20px rgba(0, 0, 0, 0.6), 0 0 2px rgba(79, 195, 247, 0.15);
+    }
+    #magnifier.visible { opacity: 1; }
+    #magnifier svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    #magnifier .mag-label {
+      position: absolute;
+      top: 6px;
+      left: 10px;
+      font-size: 0.58rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #546e7a;
+      pointer-events: none;
+    }
+    #magnifier .mag-land   { fill: #122035; stroke: #1e3a5f; stroke-width: 0.5px; }
+    #magnifier .mag-border { fill: none; stroke: #0d2035; stroke-width: 0.3px; }
+    #magnifier .mag-sphere { fill: #060d1a; }
+    #magnifier .mag-arc    { fill: none; stroke-linecap: round; }
+    #magnifier .mag-dot    { }
+    #magnifier .mag-self-dot {
+      fill: #4fc3f7;
+      filter: url(#mag-glow-blue);
+    }
+
     /* ── Dot tooltip ── */
     #dot-tooltip {
       position: fixed;
@@ -259,6 +303,11 @@
   <div id="panel-ip" class="corner-panel bottom-right">
     <h2>Traffic by IP</h2>
     <div id="ip-rows"></div>
+  </div>
+  <!-- Magnifier inset -->
+  <div id="magnifier">
+    <span class="mag-label">zoom</span>
+    <svg id="mag-svg"></svg>
   </div>
 </div>
 
@@ -369,18 +418,242 @@
 
   // Load world TopoJSON
   const WORLD_URL = 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json';
+  let worldLandGeo = null;   // cached for magnifier
+  let worldBorderGeo = null; // cached for magnifier
 
   d3.json(WORLD_URL).then(world => {
+    worldLandGeo = topojson.feature(world, world.objects.land);
+    worldBorderGeo = topojson.mesh(world, world.objects.countries, (a, b) => a !== b);
+
     landGroup.append('path')
-      .datum(topojson.feature(world, world.objects.land))
+      .datum(worldLandGeo)
       .attr('class', 'land')
       .attr('d', path);
 
     landGroup.append('path')
-      .datum(topojson.mesh(world, world.objects.countries, (a, b) => a !== b))
+      .datum(worldBorderGeo)
       .attr('class', 'border')
       .attr('d', path);
+
+    // Initialize magnifier now that geo data is available
+    magInit();
   });
+
+  // ── Magnifier inset ─────────────────────────────────────────────────────
+  const MAG_IDLE_MS = 5000;       // fade out after 5s of no events
+  const MAG_PAD_DEG = 8;          // padding around bbox in degrees
+  const MAG_MIN_SPAN = 15;        // minimum bbox span in degrees (prevents over-zoom)
+  const MAG_W = 420;
+  const MAG_H = 300;
+
+  const magEl = document.getElementById('magnifier');
+  const magSvg = d3.select('#mag-svg');
+  let magIdleTimer = null;
+  let magVisible = false;
+  let magInitialized = false;
+
+  // Magnifier has its own projection, path generator, and SVG groups
+  // Use Mercator for the magnifier — it zooms cleanly to any region
+  // (geoNaturalEarth1 is designed for world-scale views and fitSize
+  // doesn't produce tight zoom on small bounding boxes)
+  const magProjection = d3.geoMercator();
+  const magPath = d3.geoPath().projection(magProjection);
+  let magSphereGroup, magLandGroup, magArcGroup, magDotGroup;
+
+  function magInit() {
+    if (magInitialized) return;
+    magInitialized = true;
+
+    // Magnifier needs its own glow filter (can't reference #map's defs)
+    const magDefs = magSvg.append('defs');
+    const mf = magDefs.append('filter').attr('id', 'mag-glow-blue')
+      .attr('x', '-50%').attr('y', '-50%').attr('width', '200%').attr('height', '200%');
+    mf.append('feGaussianBlur').attr('in', 'SourceGraphic').attr('stdDeviation', 3).attr('result', 'blur');
+    const mm = mf.append('feMerge');
+    mm.append('feMergeNode').attr('in', 'blur');
+    mm.append('feMergeNode').attr('in', 'blur');
+    mm.append('feMergeNode').attr('in', 'SourceGraphic');
+
+    magSphereGroup = magSvg.append('g');
+    magLandGroup = magSvg.append('g');
+    magArcGroup = magSvg.append('g');
+    magDotGroup = magSvg.append('g');
+
+    magSphereGroup.append('path')
+      .datum({ type: 'Sphere' })
+      .attr('class', 'mag-sphere')
+      .attr('d', magPath);
+
+    if (worldLandGeo) {
+      magLandGroup.append('path')
+        .datum(worldLandGeo)
+        .attr('class', 'mag-land')
+        .attr('d', magPath);
+    }
+    if (worldBorderGeo) {
+      magLandGroup.append('path')
+        .datum(worldBorderGeo)
+        .attr('class', 'mag-border')
+        .attr('d', magPath);
+    }
+  }
+
+  // Fit the magnifier projection to a bounding box around src and dst
+  function magFitBbox(srcPt, dstPt) {
+    let lonMin = Math.min(srcPt[0], dstPt[0]) - MAG_PAD_DEG;
+    let lonMax = Math.max(srcPt[0], dstPt[0]) + MAG_PAD_DEG;
+    let latMin = Math.min(srcPt[1], dstPt[1]) - MAG_PAD_DEG;
+    let latMax = Math.max(srcPt[1], dstPt[1]) + MAG_PAD_DEG;
+
+    // Enforce minimum span to prevent over-zoom on short arcs
+    const lonSpan = lonMax - lonMin;
+    const latSpan = latMax - latMin;
+    if (lonSpan < MAG_MIN_SPAN) {
+      const pad = (MAG_MIN_SPAN - lonSpan) / 2;
+      lonMin -= pad; lonMax += pad;
+    }
+    if (latSpan < MAG_MIN_SPAN) {
+      const pad = (MAG_MIN_SPAN - latSpan) / 2;
+      latMin -= pad; latMax += pad;
+    }
+
+    // Clamp to valid ranges
+    lonMin = Math.max(-180, lonMin);
+    lonMax = Math.min(180, lonMax);
+    latMin = Math.max(-85, latMin);
+    latMax = Math.min(85, latMax);
+
+    // Manually compute center, scale, and translate for Mercator.
+    // This avoids fitSize issues where D3's internal bbox computation
+    // doesn't produce meaningful zoom on small regions.
+    const centerLon = (lonMin + lonMax) / 2;
+    const centerLat = (latMin + latMax) / 2;
+
+    // Project corner points at scale=1, center=[0,0] to measure span
+    magProjection
+      .scale(1)
+      .center([0, 0])
+      .translate([0, 0]);
+
+    const topLeft = magProjection([lonMin, latMax]);
+    const bottomRight = magProjection([lonMax, latMin]);
+
+    const projW = Math.abs(bottomRight[0] - topLeft[0]);
+    const projH = Math.abs(bottomRight[1] - topLeft[1]);
+
+    // Scale to fit the inset with some margin
+    const margin = 0.85; // use 85% of inset area
+    const scale = margin * Math.min(MAG_W / projW, MAG_H / projH);
+
+    magProjection
+      .scale(scale)
+      .center([centerLon, centerLat])
+      .translate([MAG_W / 2, MAG_H / 2]);
+  }
+
+  // Redraw the magnifier's static map layers after projection change
+  function magRedrawMap() {
+    magSphereGroup.select('path').attr('d', magPath);
+    magLandGroup.selectAll('path').attr('d', magPath);
+  }
+
+  // Show the magnifier for a given arc event
+  function magShowArc(ev, srcPt, dstPt, c1, c2, hitCount) {
+    if (!magInitialized || !worldLandGeo) return;
+
+    // Fit projection to the arc's bounding box
+    magFitBbox(srcPt, dstPt);
+    magRedrawMap();
+
+    // Clear previous arc/dots in magnifier
+    magArcGroup.selectAll('*').remove();
+    magDotGroup.selectAll('*').remove();
+
+    // Project points in magnifier space
+    const [mx0, my0] = magProjection(srcPt);
+    const [mx1, my1] = magProjection(dstPt);
+
+    // Draw great-circle arc in magnifier
+    const interp = d3.geoInterpolate(srcPt, dstPt);
+    const N = 30; // higher fidelity for zoomed view
+    const lineData = [];
+    for (let i = 0; i <= N; i++) lineData.push(magProjection(interp(i / N)));
+    const lineGen = d3.line().x(d => d[0]).y(d => d[1]).curve(d3.curveNatural);
+    const fullD = lineGen(lineData);
+
+    // Approximate path length
+    let totalLen = 0;
+    for (let i = 1; i < lineData.length; i++) {
+      const dx = lineData[i][0] - lineData[i - 1][0];
+      const dy = lineData[i][1] - lineData[i - 1][1];
+      totalLen += Math.sqrt(dx * dx + dy * dy);
+    }
+
+    const sw = Math.min(8, 2 + (hitCount - 1) * 0.5);
+    const magArc = magArcGroup.append('path')
+      .attr('class', 'mag-arc')
+      .attr('d', fullD)
+      .attr('stroke', c1)
+      .attr('stroke-width', sw)
+      .attr('stroke-dasharray', totalLen)
+      .attr('stroke-dashoffset', totalLen)
+      .attr('opacity', 1);
+
+    magArc.transition()
+      .duration(800)
+      .ease(d3.easeQuadInOut)
+      .attr('stroke-dashoffset', 0);
+
+    // Source dot
+    const dotR = Math.min(8, 4 + Math.log2(hitCount));
+    magDotGroup.append('circle')
+      .attr('class', 'mag-dot')
+      .attr('cx', mx0).attr('cy', my0)
+      .attr('r', 0)
+      .attr('fill', c1)
+      .attr('opacity', 1)
+      .transition().duration(300).attr('r', dotR);
+
+    // Destination dot (self)
+    if (selfPos) {
+      magDotGroup.append('circle')
+        .attr('class', 'mag-self-dot')
+        .attr('cx', mx1).attr('cy', my1)
+        .attr('r', 5);
+    }
+
+    // Source label
+    const label = ev.src_city && ev.src_cc
+      ? `${ev.src_city}, ${ev.src_cc}`
+      : ev.src_city || ev.src_cc || ev.src_ip || '';
+    if (label) {
+      magDotGroup.append('text')
+        .attr('x', mx0 + 8).attr('y', my0 - 6)
+        .attr('fill', '#c8d8f0')
+        .attr('font-size', '11px')
+        .attr('font-family', 'inherit')
+        .text(label);
+    }
+
+    // Show the magnifier
+    magShow();
+  }
+
+  function magShow() {
+    if (!magVisible) {
+      magVisible = true;
+      magEl.classList.add('visible');
+    }
+    // Reset idle timer
+    if (magIdleTimer) clearTimeout(magIdleTimer);
+    magIdleTimer = setTimeout(magHide, MAG_IDLE_MS);
+  }
+
+  function magHide() {
+    magVisible = false;
+    magEl.classList.remove('visible');
+    magIdleTimer = null;
+  }
 
   // ── Self dot ─────────────────────────────────────────────────────────────
   let selfDotEl = null;
@@ -847,6 +1120,9 @@
         .attr('opacity', 0.35);
 
     trackDot(srcDot.node());
+
+    // Trigger magnifier inset
+    magShowArc(ev, srcPt, dstPt, c1, c2, hitCount);
   }
 
   // ── Dot lifecycle cap ───────────────────────────────────────────────────
