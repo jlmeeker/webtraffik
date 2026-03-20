@@ -473,9 +473,12 @@
       .attr('fill', c1)
       .attr('filter', 'url(#glow-orange)');
 
+    // Animate in, then shrink to a persistent faded dot (same as history dots)
     srcDot.transition().duration(300).attr('r', 4)
-      .transition().delay(3500).duration(600).attr('r', 0)
-      .on('end', () => srcDot.remove());
+      .transition().delay(3500).duration(600).attr('r', 3).attr('opacity', 0.35)
+      .on('end', () => {
+        srcDot.attr('filter', null).attr('fill', c1);
+      });
   }
 
   // ── Log panel ─────────────────────────────────────────────────────────────
