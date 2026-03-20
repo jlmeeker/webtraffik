@@ -181,11 +181,10 @@
 
     @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; } }
 
-    .log-time { color: #546e7a; min-width: 80px; }
-    .log-src  { color: #ffb74d; min-width: 130px; }
+    .log-time  { color: #546e7a; min-width: 80px; }
+    .log-src   { color: #ffb74d; flex: 1; }
     .log-arrow { color: #455a64; }
-    .log-dst  { color: #4fc3f7; min-width: 130px; }
-    .log-loc  { color: #78909c; }
+    .log-port  { color: #4fc3f7; }
 
     #ws-status {
       width: 8px; height: 8px;
@@ -486,7 +485,6 @@
     const t = new Date(ev.time);
     const ts = t.toLocaleTimeString('en-US', { hour12: false });
     const srcLabel = [ev.src_ip, ev.src_city, ev.src_cc].filter(Boolean).join(' / ');
-    const dstLabel = [ev.dst_ip, ev.dst_city, ev.dst_cc].filter(Boolean).join(' / ');
     const portLabel = ev.dst_port && ev.dst_port !== 'unknown' ? `:${ev.dst_port}` : '';
 
     const row = document.createElement('div');
@@ -494,8 +492,7 @@
     row.innerHTML =
       `<span class="log-time">${ts}</span>` +
       `<span class="log-src">${srcLabel}</span>` +
-      `<span class="log-arrow">→</span>` +
-      `<span class="log-dst">${dstLabel}${portLabel ? ' <span style="color:#ffb74d">' + portLabel + '</span>' : ''}</span>`;
+      `${portLabel ? '<span class="log-arrow">→</span><span class="log-port">' + portLabel + '</span>' : ''}`;
 
     logPanel.prepend(row);
 
@@ -508,6 +505,17 @@
   // ── WebSocket ─────────────────────────────────────────────────────────────
   const wsStatus = document.getElementById('ws-status');
   const connCountEl = document.getElementById('conn-count');
+
+  // Draw a faded static dot for historical events (no arc animation)
+  function drawHistoryDot(ev) {
+    if (!ev.src_lon && !ev.src_lat) return;
+    const [x, y] = projection([ev.src_lon, ev.src_lat]);
+    const portColor = portStats[ev.dst_port]?.color || '#546e7a';
+    dotGroup.append('circle')
+      .attr('cx', x).attr('cy', y).attr('r', 3)
+      .attr('fill', portColor)
+      .attr('opacity', 0.35);
+  }
 
   function connect() {
     const ws = new WebSocket(`ws://${location.host}/ws`);
@@ -524,8 +532,13 @@
       connCountEl.textContent = connCount;
 
       updateLegend(ev.dst_port || 'unknown');
-      drawArc(ev);
       addLog(ev);
+
+      if (ev.replay) {
+        drawHistoryDot(ev);
+      } else {
+        drawArc(ev);
+      }
     };
 
     ws.onclose = () => {

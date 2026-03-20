@@ -29,16 +29,23 @@ type ConnectionEvent struct {
 	DstCity string  `json:"dst_city"`
 	SrcCC   string  `json:"src_cc"`
 	DstCC   string  `json:"dst_cc"`
+	Replay  bool    `json:"replay,omitempty"` // true when replayed from history
 }
 
-// hub manages WebSocket subscribers
+const historySize = 1000
+
+// hub manages WebSocket subscribers and a rolling history buffer
 type hub struct {
 	mu          sync.Mutex
 	subscribers map[chan ConnectionEvent]struct{}
+	history     []ConnectionEvent // ring buffer, capped at historySize
 }
 
 func newHub() *hub {
-	return &hub{subscribers: make(map[chan ConnectionEvent]struct{})}
+	return &hub{
+		subscribers: make(map[chan ConnectionEvent]struct{}),
+		history:     make([]ConnectionEvent, 0, historySize),
+	}
 }
 
 func (h *hub) subscribe() chan ConnectionEvent {
@@ -55,9 +62,26 @@ func (h *hub) unsubscribe(ch chan ConnectionEvent) {
 	h.mu.Unlock()
 }
 
+// snapshot returns a copy of the current history slice, oldest-first.
+func (h *hub) snapshot() []ConnectionEvent {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]ConnectionEvent, len(h.history))
+	copy(out, h.history)
+	return out
+}
+
 func (h *hub) broadcast(ev ConnectionEvent) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+
+	// Append to history, evict oldest when full
+	if len(h.history) >= historySize {
+		h.history = append(h.history[1:], ev)
+	} else {
+		h.history = append(h.history, ev)
+	}
+
 	for ch := range h.subscribers {
 		select {
 		case ch <- ev:
@@ -229,10 +253,19 @@ func startDashboardServer() {
 		}
 		defer conn.Close(websocket.StatusNormalClosure, "")
 
+		ctx := conn.CloseRead(context.Background())
+
+		// Replay history to the new client before subscribing to live events
+		for _, ev := range appHub.snapshot() {
+			ev.Replay = true
+			if err := wsjson.Write(ctx, conn, ev); err != nil {
+				return
+			}
+		}
+
 		ch := appHub.subscribe()
 		defer appHub.unsubscribe(ch)
 
-		ctx := conn.CloseRead(context.Background())
 		for {
 			select {
 			case ev := <-ch:
