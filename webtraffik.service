@@ -1,0 +1,36 @@
+[Unit]
+Description=webTraffik — real-time HTTP traffic world map
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=webtraffik
+Group=webtraffik
+
+# Binary and working directory (GeoLite2 DB stored here)
+ExecStart=/usr/local/bin/webtraffik
+WorkingDirectory=/var/lib/webtraffik
+
+# Allow binding to ports <1024 without root
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# Restart on failure
+Restart=on-failure
+RestartSec=5s
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/webtraffik
+
+# Logging goes to journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=webtraffik
+
+[Install]
+WantedBy=multi-user.target

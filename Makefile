@@ -10,7 +10,7 @@ PLATFORMS := \
 	windows/amd64 \
 	windows/arm64
 
-.PHONY: build run cap cap-dist clean dist $(PLATFORMS) linux/armv6 linux/armv7
+.PHONY: build run cap cap-dist install uninstall clean dist $(PLATFORMS) linux/armv6 linux/armv7
 
 # Build for the current host OS/arch
 build:
@@ -69,3 +69,26 @@ clean:
 	rm -f $(BINARY)
 	rm -rf $(OUTDIR)
 	rm -f GeoLite2-City.mmdb
+
+# Install binary + systemd service (run on the target Linux machine)
+install: build
+	sudo install -d /var/lib/webtraffik
+	sudo useradd --system --no-create-home --home /var/lib/webtraffik \
+	             --shell /usr/sbin/nologin webtraffik 2>/dev/null || true
+	sudo chown webtraffik:webtraffik /var/lib/webtraffik
+	sudo install -m 755 $(BINARY) /usr/local/bin/$(BINARY)
+	sudo setcap 'cap_net_bind_service=+ep' /usr/local/bin/$(BINARY)
+	sudo install -m 644 $(BINARY).service /etc/systemd/system/$(BINARY).service
+	sudo systemctl daemon-reload
+	sudo systemctl enable --now $(BINARY).service
+	@echo "Service installed and started — check with: journalctl -u $(BINARY) -f"
+
+# Remove binary, service, and data directory
+uninstall:
+	sudo systemctl disable --now $(BINARY).service 2>/dev/null || true
+	sudo rm -f /etc/systemd/system/$(BINARY).service
+	sudo systemctl daemon-reload
+	sudo rm -f /usr/local/bin/$(BINARY)
+	sudo rm -rf /var/lib/webtraffik
+	sudo userdel webtraffik 2>/dev/null || true
+	@echo "$(BINARY) uninstalled"
