@@ -233,12 +233,65 @@ var tcpServices = []serviceEntry{
 			return append(hdr, bsonDoc...)
 		},
 	},
+	{
+		Port: 5900, // VNC
+		Banner: func() []byte {
+			// RFB (Remote Framebuffer) protocol version handshake.
+			// Server announces highest supported version; most VNC servers send 3.8.
+			return []byte("RFB 003.008\n")
+		},
+	},
+	{
+		Port: 8443, // HTTPS alt
+		Banner: func() []byte {
+			// Same TLS handshake_failure alert as port 443.
+			return []byte{0x15, 0x03, 0x01, 0x00, 0x02, 0x02, 0x28}
+		},
+	},
+	{
+		Port: 9200, // Elasticsearch
+		Banner: func() []byte {
+			// Elasticsearch returns a JSON body on GET /. Mimic a 7.17.x node
+			// with security enabled (the most common config scanners encounter).
+			return []byte(`HTTP/1.1 200 OK
+Content-Type: application/json; charset=UTF-8
+
+{
+  "name" : "node-1",
+  "cluster_name" : "elasticsearch",
+  "cluster_uuid" : "xQ2k9h_lRleh4TnOhK4LJw",
+  "version" : {
+    "number" : "7.17.16",
+    "build_flavor" : "default",
+    "build_type" : "deb",
+    "lucene_version" : "8.11.1",
+    "minimum_wire_compatibility_version" : "6.8.0",
+    "minimum_index_compatibility_version" : "6.0.0-beta1"
+  },
+  "tagline" : "You Know, for Search"
+}
+`)
+		},
+	},
+	{
+		Port: 11211, // Memcached
+		Banner: func() []byte {
+			// Memcached text protocol error response. Scanners typically send
+			// "stats\r\n" or "version\r\n"; reply with an error to fingerprint
+			// as a real memcached instance while giving nothing away.
+			return []byte("ERROR\r\n")
+		},
+	},
 }
 
 // udpServicePorts are the UDP ports webTraffik captures.
 // We bind, read one datagram to get the source address, fire the event, and discard the payload.
 var udpServicePorts = []int{
-	53, // DNS
+	53,   // DNS
+	123,  // NTP
+	161,  // SNMP
+	1900, // SSDP/UPnP
+	5060, // SIP
 }
 
 // minecraftPort is the default Minecraft Java Edition server port.
