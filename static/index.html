@@ -426,34 +426,40 @@
   // ── Port legend ───────────────────────────────────────────────────────────
   const legendEl = document.getElementById('port-legend');
 
+  // Dirty flags — set true when data changes; cleared after each render tick
+  let legendDirty = false, countryDirty = false, ipDirty = false, serviceDirty = false;
+
   function updateLegend(port) {
     if (!portStats[port]) {
       const color = PORT_COLORS[portColorIdx % PORT_COLORS.length];
       portColorIdx++;
-      portStats[port] = { count: 0, color, el: null };
+      portStats[port] = { count: 0, color };
     }
-
     portStats[port].count++;
+    legendDirty = true;
+  }
 
-    // Create row element on first sight
-    if (!portStats[port].el) {
-      const row = document.createElement('div');
-      row.className = 'port-row';
-      row.id = `port-row-${port}`;
-      row.innerHTML =
-        `<span class="port-swatch" style="background:${portStats[port].color};box-shadow:0 0 5px ${portStats[port].color}"></span>` +
-        `<span class="port-label"><span class="port-num">:${port}</span></span>` +
-        `<span class="port-count" id="port-count-${port}">1</span>`;
-      // Insert before the first sidebar-section
-      const firstSection = legendEl.querySelector('.sidebar-section');
-      legendEl.insertBefore(row, firstSection);
-      portStats[port].el = document.getElementById(`port-count-${port}`);
-    } else {
-      portStats[port].el.textContent = portStats[port].count;
-    }
+  function renderLegend() {
+    if (!legendDirty) return;
+    legendDirty = false;
 
-    // Sort rows by count descending
     const firstSection = legendEl.querySelector('.sidebar-section');
+    // Ensure a DOM row exists for every known port
+    for (const [port, stat] of Object.entries(portStats)) {
+      if (!document.getElementById(`port-row-${port}`)) {
+        const row = document.createElement('div');
+        row.className = 'port-row';
+        row.id = `port-row-${port}`;
+        row.innerHTML =
+          `<span class="port-swatch" style="background:${stat.color};box-shadow:0 0 5px ${stat.color}"></span>` +
+          `<span class="port-label"><span class="port-num">:${port}</span></span>` +
+          `<span class="port-count" id="port-count-${port}">0</span>`;
+        legendEl.insertBefore(row, firstSection);
+      }
+      const countEl = document.getElementById(`port-count-${port}`);
+      if (countEl) countEl.textContent = stat.count;
+    }
+    // Sort rows by count descending (single reorder per tick, not per event)
     const rows = [...legendEl.querySelectorAll('.port-row')];
     rows.sort((a, b) => {
       const pa = a.id.replace('port-row-', '');
@@ -470,19 +476,18 @@
   function updateCountry(cc) {
     if (!cc) return;
     countryStats[cc] = (countryStats[cc] || 0) + 1;
+    countryDirty = true;
+  }
 
-    // Rebuild top 10
-    const top = Object.entries(countryStats)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 10);
-
+  function renderCountry() {
+    if (!countryDirty) return;
+    countryDirty = false;
+    const top = Object.entries(countryStats).sort((a, b) => b[1] - a[1]).slice(0, 10);
     countryRowsEl.innerHTML = '';
     top.forEach(([code, count]) => {
       const row = document.createElement('div');
       row.className = 'stat-row';
-      row.innerHTML =
-        `<span class="stat-label">${code}</span>` +
-        `<span class="stat-count">${count}</span>`;
+      row.innerHTML = `<span class="stat-label">${code}</span><span class="stat-count">${count}</span>`;
       countryRowsEl.appendChild(row);
     });
   }
@@ -494,19 +499,18 @@
   function updateIP(ip) {
     if (!ip) return;
     ipStats[ip] = (ipStats[ip] || 0) + 1;
+    ipDirty = true;
+  }
 
-    // Rebuild top 10
-    const top = Object.entries(ipStats)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 10);
-
+  function renderIP() {
+    if (!ipDirty) return;
+    ipDirty = false;
+    const top = Object.entries(ipStats).sort((a, b) => b[1] - a[1]).slice(0, 10);
     ipRowsEl.innerHTML = '';
     top.forEach(([addr, count]) => {
       const row = document.createElement('div');
       row.className = 'stat-row';
-      row.innerHTML =
-        `<span class="stat-label">${addr}</span>` +
-        `<span class="stat-count">${count}</span>`;
+      row.innerHTML = `<span class="stat-label">${addr}</span><span class="stat-count">${count}</span>`;
       ipRowsEl.appendChild(row);
     });
   }
@@ -531,12 +535,13 @@
   function updateServiceStats(port) {
     if (!port) return;
     serviceStats[port] = (serviceStats[port] || 0) + 1;
+    serviceDirty = true;
+  }
 
-    // Rebuild top 10 by count
-    const top = Object.entries(serviceStats)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 10);
-
+  function renderServiceStats() {
+    if (!serviceDirty) return;
+    serviceDirty = false;
+    const top = Object.entries(serviceStats).sort((a, b) => b[1] - a[1]).slice(0, 10);
     serviceRowsEl.innerHTML = '';
     top.forEach(([p, count]) => {
       const svcName = PORT_SERVICE_NAMES[p] || `port ${p}`;
@@ -559,6 +564,14 @@
     });
   }
 
+  // ── 1-second render tick for all panels ──────────────────────────────────
+  setInterval(() => {
+    renderLegend();
+    renderCountry();
+    renderIP();
+    renderServiceStats();
+  }, 1000);
+
   // ── Arc drawing ──────────────────────────────────────────────────────────
   let arcSeq = 0;
 
@@ -571,7 +584,35 @@
     ['#66bb6a', '#f48fb1'],
   ];
 
-  function drawArc(ev) {
+  // ── Arc event buffer — flushed once per second ───────────────────────────
+  // Key: src_ip  Value: { ev, count } — deduplicates floods from same IP
+  const arcBuffer = new Map();
+
+  function bufferArc(ev) {
+    if (!ev.src_lon && !ev.src_lat) return;
+    const key = ev.src_ip || `${ev.src_lon},${ev.src_lat}`;
+    if (arcBuffer.has(key)) {
+      arcBuffer.get(key).count++;
+    } else {
+      arcBuffer.set(key, { ev, count: 1 });
+    }
+  }
+
+  // stroke-width scales with hit count: 1 hit → 1.5px, 10+ hits → 6px
+  function arcWidth(count) {
+    return Math.min(6, 1.5 + (count - 1) * 0.5);
+  }
+
+  function flushArcs() {
+    if (arcBuffer.size === 0) return;
+    const entries = [...arcBuffer.values()];
+    arcBuffer.clear();
+    entries.forEach(({ ev, count }) => drawArc(ev, count));
+  }
+
+  setInterval(flushArcs, 1000);
+
+  function drawArc(ev, hitCount = 1) {
     const srcPt = [ev.src_lon, ev.src_lat];
     const dstPt = [ev.dst_lon, ev.dst_lat];
 
@@ -598,11 +639,12 @@
     const lineGen = d3.line().x(d => d[0]).y(d => d[1]).curve(d3.curveCatmullRom);
     const fullD = lineGen(lineData);
 
+    const sw = arcWidth(hitCount);
     const arcPath = arcGroup.append('path')
       .attr('class', 'arc-path')
       .attr('d', fullD)
       .attr('stroke', `url(#${gradId})`)
-      .attr('stroke-width', 1.5)
+      .attr('stroke-width', sw)
       .attr('opacity', 0);
 
     // Animate the stroke dash
@@ -625,6 +667,7 @@
       });
 
     // Source dot — animates in bright, then settles as a persistent faded dot
+    const dotR = Math.min(6, 3 + Math.log2(hitCount));  // slightly larger for floods
     const srcDot = dotGroup.append('circle')
       .attr('class', 'src-dot')
       .attr('cx', x0)
@@ -636,53 +679,62 @@
       .style('cursor', 'crosshair')
       .datum(srcPt); // store [lon, lat] for reprojection on resize
 
-    attachTooltip(srcDot, tooltipLabel(ev));
+    attachTooltip(srcDot, tooltipLabel(ev, hitCount));
 
-    srcDot.transition().duration(300).attr('r', 4)
+    srcDot.transition().duration(300).attr('r', dotR + 1)
       .transition().delay(3500).duration(600)
-        .attr('r', 3)
+        .attr('r', dotR)
         .attr('opacity', 0.35)
         .attr('filter', null);
   }
 
   // ── Log panel ─────────────────────────────────────────────────────────────
   const logPanel = document.getElementById('log-panel');
+  const logBuffer = []; // pending entries, flushed once per second
 
   function addLog(ev) {
-    const t = new Date(ev.time);
-    const ts = t.toLocaleTimeString('en-US', { hour12: false });
-    const srcLabel = [ev.src_ip, ev.src_city, ev.src_cc].filter(Boolean).join(' / ');
-    const portLabel = ev.dst_port && ev.dst_port !== 'unknown' ? `:${ev.dst_port}` : '';
-    const protoLabel = ev.protocol ? ev.protocol.toUpperCase() : '';
+    logBuffer.push(ev);
+  }
 
-    const row = document.createElement('div');
-    row.className = 'log-entry';
-    row.innerHTML =
-      `<span class="log-time">${ts}</span>` +
-      `<span class="log-src">${srcLabel}</span>` +
-      `${portLabel ? '<span class="log-arrow">→</span><span class="log-port">' + portLabel + '</span>' : ''}` +
-      `${protoLabel ? '<span class="log-proto">' + protoLabel + '</span>' : ''}`;
-
-    logPanel.prepend(row);
-
-    // Keep last 200 entries
+  function flushLog() {
+    if (logBuffer.length === 0) return;
+    const entries = logBuffer.splice(0); // drain buffer atomically
+    // Build a fragment so we touch the DOM once per tick
+    const frag = document.createDocumentFragment();
+    entries.forEach(ev => {
+      const t = new Date(ev.time);
+      const ts = t.toLocaleTimeString('en-US', { hour12: false });
+      const srcLabel = [ev.src_ip, ev.src_city, ev.src_cc].filter(Boolean).join(' / ');
+      const portLabel = ev.dst_port && ev.dst_port !== 'unknown' ? `:${ev.dst_port}` : '';
+      const protoLabel = ev.protocol ? ev.protocol.toUpperCase() : '';
+      const row = document.createElement('div');
+      row.className = 'log-entry';
+      row.innerHTML =
+        `<span class="log-time">${ts}</span>` +
+        `<span class="log-src">${srcLabel}</span>` +
+        `${portLabel ? '<span class="log-arrow">→</span><span class="log-port">' + portLabel + '</span>' : ''}` +
+        `${protoLabel ? '<span class="log-proto">' + protoLabel + '</span>' : ''}`;
+      frag.prepend ? frag.prepend(row) : frag.insertBefore(row, frag.firstChild);
+    });
+    logPanel.prepend(frag);
+    // Trim to 200 entries in one pass
     while (logPanel.children.length > 200) {
       logPanel.removeChild(logPanel.lastChild);
     }
   }
+
+  setInterval(flushLog, 1000);
 
   // ── WebSocket ─────────────────────────────────────────────────────────────
   const wsStatus = document.getElementById('ws-status');
   const connCountEl = document.getElementById('conn-count');
   const dotTooltip = document.getElementById('dot-tooltip');
 
-  function tooltipLabel(ev) {
+  function tooltipLabel(ev, hitCount = 1) {
     const city = ev.src_city || '';
     const cc   = ev.src_cc   || '';
-    if (city && cc) return `${city}, ${cc}`;
-    if (city) return city;
-    if (cc)   return cc;
-    return ev.src_ip || '';
+    const loc  = (city && cc) ? `${city}, ${cc}` : city || cc || ev.src_ip || '';
+    return hitCount > 1 ? `${loc} ×${hitCount}` : loc;
   }
 
   function attachTooltip(sel, label) {
@@ -740,7 +792,7 @@
       if (ev.replay) {
         drawHistoryDot(ev);
       } else {
-        drawArc(ev);
+        bufferArc(ev);  // deferred — flushed as deduplicated arcs once per second
       }
     };
 
