@@ -412,7 +412,7 @@
           <table class="summary-table" id="result-table">
             <thead>
               <tr>
-                <th>Time (UTC)</th>
+                <th>Time</th>
                 <th>Source IP</th>
                 <th>City</th>
                 <th>CC</th>
@@ -762,7 +762,8 @@ function renderTable(events) {
   const frag = document.createDocumentFragment();
   for (const ev of slice) {
     const tr = document.createElement('tr');
-    const t = ev.time ? ev.time.replace('T', ' ').replace('Z', '') : '';
+    const d = ev.time ? new Date(ev.time) : null;
+    const t = d ? d.toLocaleString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).replace(',', '') : '';
     tr.innerHTML = `
       <td>${t}</td>
       <td class="highlight">${ev.src_ip}</td>
