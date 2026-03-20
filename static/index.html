@@ -53,46 +53,51 @@
       flex: 1;
       position: relative;
       overflow: hidden;
-      display: flex;
     }
 
     svg#map {
-      flex: 1;
+      width: 100%;
       height: 100%;
       display: block;
-      min-width: 0;
     }
 
-    /* ── Port legend ── */
-    #port-legend {
-      width: 200px;
-      flex-shrink: 0;
-      background: rgba(8, 15, 30, 0.88);
-      border-left: 1px solid #1e3a5f;
-      padding: 10px 0;
+    /* ── Corner overlay panels ── */
+    .corner-panel {
+      position: absolute;
+      width: 190px;
+      max-height: 45%;
       overflow-y: auto;
-      display: flex;
-      flex-direction: column;
+      background: rgba(8, 15, 30, 0.82);
+      border: 1px solid #1e3a5f;
+      border-radius: 6px;
+      padding: 8px 0;
+      z-index: 5;
+      pointer-events: auto;
     }
 
-    #port-legend::-webkit-scrollbar { width: 3px; }
-    #port-legend::-webkit-scrollbar-thumb { background: #1e3a5f; }
+    .corner-panel::-webkit-scrollbar { width: 3px; }
+    .corner-panel::-webkit-scrollbar-thumb { background: #1e3a5f; }
 
-    #port-legend h2 {
+    .top-left     { top: 10px; left: 10px; }
+    .top-right    { top: 10px; right: 10px; }
+    .bottom-left  { bottom: 10px; left: 10px; }
+    .bottom-right { bottom: 10px; right: 10px; }
+
+    .corner-panel h2 {
       font-size: 0.65rem;
       text-transform: uppercase;
       letter-spacing: 0.1em;
       color: #546e7a;
-      padding: 0 12px 8px;
+      padding: 0 10px 6px;
       border-bottom: 1px solid #1e3a5f;
-      margin-bottom: 6px;
+      margin-bottom: 4px;
     }
 
     .port-row {
       display: flex;
       align-items: center;
       gap: 8px;
-      padding: 4px 12px;
+      padding: 3px 10px;
       animation: fadeIn 0.3s ease;
     }
 
@@ -124,27 +129,11 @@
       text-align: right;
     }
 
-    /* ── Country / IP sections ── */
-    .sidebar-section {
-      border-top: 1px solid #1e3a5f;
-      padding: 8px 0 4px;
-      flex-shrink: 0;
-    }
-
-    .sidebar-section h2 {
-      font-size: 0.65rem;
-      text-transform: uppercase;
-      letter-spacing: 0.1em;
-      color: #546e7a;
-      padding: 0 12px 8px;
-      margin-bottom: 6px;
-    }
-
     .stat-row {
       display: flex;
       align-items: center;
       gap: 8px;
-      padding: 3px 12px;
+      padding: 3px 10px;
       animation: fadeIn 0.3s ease;
     }
 
@@ -254,21 +243,22 @@
 
 <div id="map-container">
   <svg id="map"></svg>
-  <div id="port-legend">
+  <!-- Corner overlay panels -->
+  <div id="panel-port" class="corner-panel top-left">
     <h2>Traffic by Port</h2>
-    <!-- port rows injected by JS -->
-    <div class="sidebar-section">
-      <h2>Traffic by Country</h2>
-      <div id="country-rows"></div>
-    </div>
-    <div class="sidebar-section">
-      <h2>Traffic by IP</h2>
-      <div id="ip-rows"></div>
-    </div>
-    <div class="sidebar-section">
-      <h2>Top Services</h2>
-      <div id="service-rows"></div>
-    </div>
+    <div id="port-rows"></div>
+  </div>
+  <div id="panel-service" class="corner-panel top-right">
+    <h2>Top Services</h2>
+    <div id="service-rows"></div>
+  </div>
+  <div id="panel-country" class="corner-panel bottom-left">
+    <h2>Traffic by Country</h2>
+    <div id="country-rows"></div>
+  </div>
+  <div id="panel-ip" class="corner-panel bottom-right">
+    <h2>Traffic by IP</h2>
+    <div id="ip-rows"></div>
   </div>
 </div>
 
@@ -444,7 +434,7 @@
     .catch(e => console.warn('Self info fetch failed:', e));
 
   // ── Port legend ───────────────────────────────────────────────────────────
-  const legendEl = document.getElementById('port-legend');
+  const portRowsEl = document.getElementById('port-rows');
 
   // Dirty flags — set true when data changes; cleared after each render
   let legendDirty = false, countryDirty = false, ipDirty = false, serviceDirty = false;
@@ -494,7 +484,6 @@
     if (!legendDirty) return;
     legendDirty = false;
 
-    const firstSection = legendEl.querySelector('.sidebar-section');
     const top10 = Object.entries(portStats)
       .sort((a, b) => b[1].count - a[1].count)
       .slice(0, 10)
@@ -502,7 +491,7 @@
     const top10Set = new Set(top10);
 
     // Remove rows that are no longer in the top 10
-    legendEl.querySelectorAll('.port-row').forEach(r => {
+    portRowsEl.querySelectorAll('.port-row').forEach(r => {
       const port = r.id.replace('port-row-', '');
       if (!top10Set.has(port)) r.remove();
     });
@@ -519,7 +508,7 @@
           `<span class="port-swatch" style="background:${stat.color};box-shadow:0 0 5px ${stat.color}"></span>` +
           `<span class="port-label"><span class="port-num">:${port}</span></span>` +
           `<span class="port-count" id="port-count-${port}">0</span>`;
-        legendEl.insertBefore(row, firstSection);
+        portRowsEl.appendChild(row);
       }
       const countEl = document.getElementById(`port-count-${port}`);
       const countStr = String(stat.count);
@@ -527,12 +516,12 @@
     });
 
     // Re-order rows only if current DOM order differs from sorted order
-    const currentOrder = [...legendEl.querySelectorAll('.port-row')].map(r => r.id.replace('port-row-', ''));
+    const currentOrder = [...portRowsEl.querySelectorAll('.port-row')].map(r => r.id.replace('port-row-', ''));
     const orderChanged = top10.length !== currentOrder.length || top10.some((p, i) => p !== currentOrder[i]);
     if (orderChanged) {
       top10.forEach(port => {
         const row = document.getElementById(`port-row-${port}`);
-        if (row) legendEl.insertBefore(row, firstSection);
+        if (row) portRowsEl.appendChild(row);
       });
     }
   }
