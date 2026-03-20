@@ -133,9 +133,9 @@ func startCaptureServer() {
 
 		go handleCapture(srcIP)
 	})
-	log.Println("Capture listener on :80")
-	if err := http.ListenAndServe(":80", mux); err != nil {
-		log.Fatalf("Port 80 listener failed: %v", err)
+	log.Println("Capture listener on :8080")
+	if err := http.ListenAndServe(":8080", mux); err != nil {
+		log.Fatalf("Port 8080 listener failed: %v", err)
 	}
 }
 

@@ -41,14 +41,9 @@ linux/armv7:
 	@GOOS=linux GOARCH=arm GOARM=7 go build $(GOFLAGS) -o $(OUTDIR)/$(BINARY)_linux_armv7 .
 
 run: build
-	sudo ./$(BINARY)
+	./$(BINARY)
 
 clean:
 	rm -f $(BINARY)
 	rm -rf $(OUTDIR)
 	rm -f GeoLite2-City.mmdb
-
-# Install setcap so the binary can bind port 80 without sudo (Linux only)
-cap:
-	sudo setcap 'cap_net_bind_service=+ep' ./$(BINARY)
-	./$(BINARY)
