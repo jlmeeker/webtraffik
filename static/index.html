@@ -124,16 +124,45 @@
       text-align: right;
     }
 
-    #legend-total {
-      margin-top: auto;
-      padding: 8px 12px 4px;
+    /* ── Country / IP sections ── */
+    .sidebar-section {
       border-top: 1px solid #1e3a5f;
-      font-size: 0.68rem;
-      color: #546e7a;
-      display: flex;
-      justify-content: space-between;
+      padding: 8px 0 4px;
+      flex-shrink: 0;
     }
-    #legend-total span { color: #4fc3f7; font-weight: 600; }
+
+    .sidebar-section h2 {
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #546e7a;
+      padding: 0 12px 8px;
+      margin-bottom: 6px;
+    }
+
+    .stat-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 3px 12px;
+      animation: fadeIn 0.3s ease;
+    }
+
+    .stat-label {
+      font-size: 0.7rem;
+      color: #90a4ae;
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .stat-count {
+      font-size: 0.7rem;
+      color: #ffb74d;
+      min-width: 28px;
+      text-align: right;
+    }
 
     .graticule { fill: none; stroke: #0d2035; stroke-width: 0.5px; }
     .sphere { fill: #060d1a; }
@@ -210,8 +239,15 @@
   <svg id="map"></svg>
   <div id="port-legend">
     <h2>Traffic by Port</h2>
-    <!-- rows injected by JS -->
-    <div id="legend-total"><span id="legend-total-label">Total</span><span id="legend-grand-total">0</span></div>
+    <!-- port rows injected by JS -->
+    <div class="sidebar-section">
+      <h2>Traffic by Country</h2>
+      <div id="country-rows"></div>
+    </div>
+    <div class="sidebar-section">
+      <h2>Traffic by IP</h2>
+      <div id="ip-rows"></div>
+    </div>
   </div>
 </div>
 
@@ -358,9 +394,7 @@
     .catch(e => console.warn('Self info fetch failed:', e));
 
   // ── Port legend ───────────────────────────────────────────────────────────
-  const legendEl     = document.getElementById('port-legend');
-  const grandTotalEl = document.getElementById('legend-grand-total');
-  const legendFooter = document.getElementById('legend-total');
+  const legendEl = document.getElementById('port-legend');
 
   function updateLegend(port) {
     if (!portStats[port]) {
@@ -380,23 +414,71 @@
         `<span class="port-swatch" style="background:${portStats[port].color};box-shadow:0 0 5px ${portStats[port].color}"></span>` +
         `<span class="port-label"><span class="port-num">:${port}</span></span>` +
         `<span class="port-count" id="port-count-${port}">1</span>`;
-      // Insert before the footer total row
-      legendEl.insertBefore(row, legendFooter);
+      // Insert before the first sidebar-section
+      const firstSection = legendEl.querySelector('.sidebar-section');
+      legendEl.insertBefore(row, firstSection);
       portStats[port].el = document.getElementById(`port-count-${port}`);
     } else {
       portStats[port].el.textContent = portStats[port].count;
     }
 
     // Sort rows by count descending
+    const firstSection = legendEl.querySelector('.sidebar-section');
     const rows = [...legendEl.querySelectorAll('.port-row')];
     rows.sort((a, b) => {
       const pa = a.id.replace('port-row-', '');
       const pb = b.id.replace('port-row-', '');
       return (portStats[pb]?.count ?? 0) - (portStats[pa]?.count ?? 0);
     });
-    rows.forEach(r => legendEl.insertBefore(r, legendFooter));
+    rows.forEach(r => legendEl.insertBefore(r, firstSection));
+  }
 
-    grandTotalEl.textContent = connCount;
+  // ── Country stats ─────────────────────────────────────────────────────────
+  const countryStats = {}; // { cc -> count }
+  const countryRowsEl = document.getElementById('country-rows');
+
+  function updateCountry(cc) {
+    if (!cc) return;
+    countryStats[cc] = (countryStats[cc] || 0) + 1;
+
+    // Rebuild top 10
+    const top = Object.entries(countryStats)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10);
+
+    countryRowsEl.innerHTML = '';
+    top.forEach(([code, count]) => {
+      const row = document.createElement('div');
+      row.className = 'stat-row';
+      row.innerHTML =
+        `<span class="stat-label">${code}</span>` +
+        `<span class="stat-count">${count}</span>`;
+      countryRowsEl.appendChild(row);
+    });
+  }
+
+  // ── IP stats ──────────────────────────────────────────────────────────────
+  const ipStats = {}; // { ip -> count }
+  const ipRowsEl = document.getElementById('ip-rows');
+
+  function updateIP(ip) {
+    if (!ip) return;
+    ipStats[ip] = (ipStats[ip] || 0) + 1;
+
+    // Rebuild top 10
+    const top = Object.entries(ipStats)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10);
+
+    ipRowsEl.innerHTML = '';
+    top.forEach(([addr, count]) => {
+      const row = document.createElement('div');
+      row.className = 'stat-row';
+      row.innerHTML =
+        `<span class="stat-label">${addr}</span>` +
+        `<span class="stat-count">${count}</span>`;
+      ipRowsEl.appendChild(row);
+    });
   }
 
   // ── Arc drawing ──────────────────────────────────────────────────────────
@@ -535,6 +617,8 @@
       connCountEl.textContent = connCount;
 
       updateLegend(ev.dst_port || 'unknown');
+      updateCountry(ev.src_cc);
+      updateIP(ev.src_ip);
       addLog(ev);
 
       if (ev.replay) {
