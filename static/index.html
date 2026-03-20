@@ -1056,13 +1056,36 @@
     // Reuse pooled gradient by color pair
     const gradEntry = acquireGradient(c1, c2, x0, y0, x1, y1);
 
-    // Great-circle path — 20 samples with natural curve (3x cheaper than 60 + CatmullRom)
-    const interp = d3.geoInterpolate(srcPt, dstPt);
-    const N = 20;
-    const lineData = [];
-    for (let i = 0; i <= N; i++) lineData.push(projection(interp(i / N)));
-    const lineGen = d3.line().x(d => d[0]).y(d => d[1]).curve(d3.curveNatural);
-    const fullD = lineGen(lineData);
+    // Detect antimeridian crossing — when source and dest longitudes are
+    // far apart and on opposite sides, the great-circle path crosses the
+    // date line.  In that case, use d3.geoPath which handles clipping
+    // correctly, instead of d3.line which draws straight pixel segments.
+    const lonDiff = Math.abs(srcPt[0] - dstPt[0]);
+    const crossesAntimeridian = lonDiff > 180;
+
+    let fullD, lineData;
+
+    if (crossesAntimeridian) {
+      // Build a GeoJSON LineString from great-circle samples — geoPath
+      // will clip and split it at the antimeridian automatically.
+      const interp = d3.geoInterpolate(srcPt, dstPt);
+      const N = 40; // more samples for accuracy across the split
+      const geoCoords = [];
+      for (let i = 0; i <= N; i++) geoCoords.push(interp(i / N));
+      const geoLine = { type: 'LineString', coordinates: geoCoords };
+      fullD = path(geoLine);
+      // For path length, project the clipped result's points
+      // Use a rough estimate from the projected endpoints on each side
+      lineData = geoCoords.map(c => projection(c));
+    } else {
+      // Normal path — 20 samples with natural curve
+      const interp = d3.geoInterpolate(srcPt, dstPt);
+      const N = 20;
+      lineData = [];
+      for (let i = 0; i <= N; i++) lineData.push(projection(interp(i / N)));
+      const lineGen = d3.line().x(d => d[0]).y(d => d[1]).curve(d3.curveNatural);
+      fullD = lineGen(lineData);
+    }
 
     const sw = arcWidth(hitCount);
     const arcPath = arcGroup.append('path')
@@ -1073,11 +1096,17 @@
       .attr('opacity', 0);
 
     // Approximate path length from segment distances (avoids synchronous getTotalLength)
+    // For antimeridian-crossing arcs, the projected points jump across the SVG
+    // so we must use the rendered path's getTotalLength instead.
     let totalLen = 0;
-    for (let i = 1; i < lineData.length; i++) {
-      const dx = lineData[i][0] - lineData[i - 1][0];
-      const dy = lineData[i][1] - lineData[i - 1][1];
-      totalLen += Math.sqrt(dx * dx + dy * dy);
+    if (crossesAntimeridian) {
+      totalLen = arcPath.node().getTotalLength();
+    } else {
+      for (let i = 1; i < lineData.length; i++) {
+        const dx = lineData[i][0] - lineData[i - 1][0];
+        const dy = lineData[i][1] - lineData[i - 1][1];
+        totalLen += Math.sqrt(dx * dx + dy * dy);
+      }
     }
 
     // Animate stroke-dash draw-on, then fade and remove (~2.6s total lifespan)
