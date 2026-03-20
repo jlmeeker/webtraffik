@@ -157,6 +157,8 @@
     .sphere { fill: #060d1a; }
     .land  { fill: #122035; stroke: #1e3a5f; stroke-width: 0.4px; }
     .border { fill: none; stroke: #0d2035; stroke-width: 0.3px; }
+    .lake  { fill: #0a1a2e; stroke: #1a3050; stroke-width: 0.3px; }
+    .river { fill: none; stroke: #0e2540; stroke-width: 0.4px; }
 
     .self-dot {
       fill: #4fc3f7;
@@ -252,6 +254,8 @@
     #magnifier .mag-land   { fill: #122035; stroke: #1e3a5f; stroke-width: 0.5px; }
     #magnifier .mag-border { fill: none; stroke: #0d2035; stroke-width: 0.3px; }
     #magnifier .mag-sphere { fill: #060d1a; }
+    #magnifier .mag-lake   { fill: #0a1a2e; stroke: #1a3050; stroke-width: 0.3px; }
+    #magnifier .mag-river  { fill: none; stroke: #0e2540; stroke-width: 0.5px; }
     #magnifier .mag-arc    { fill: none; stroke-linecap: round; }
     #magnifier .mag-dot    { }
     #magnifier .mag-self-dot {
@@ -416,14 +420,18 @@
     .attr('class', 'graticule')
     .attr('d', path);
 
-  // Load world TopoJSON
-  const WORLD_URL = 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json';
+  // Load world TopoJSON (sane-topojson includes lakes + rivers layers)
+  const WORLD_URL = 'https://cdn.jsdelivr.net/npm/sane-topojson@4/dist/world_110m.json';
   let worldLandGeo = null;   // cached for magnifier
   let worldBorderGeo = null; // cached for magnifier
+  let worldLakesGeo = null;  // cached for magnifier
+  let worldRiversGeo = null; // cached for magnifier
 
   d3.json(WORLD_URL).then(world => {
     worldLandGeo = topojson.feature(world, world.objects.land);
     worldBorderGeo = topojson.mesh(world, world.objects.countries, (a, b) => a !== b);
+    worldLakesGeo = topojson.feature(world, world.objects.lakes);
+    worldRiversGeo = topojson.feature(world, world.objects.rivers);
 
     landGroup.append('path')
       .datum(worldLandGeo)
@@ -433,6 +441,16 @@
     landGroup.append('path')
       .datum(worldBorderGeo)
       .attr('class', 'border')
+      .attr('d', path);
+
+    landGroup.append('path')
+      .datum(worldLakesGeo)
+      .attr('class', 'lake')
+      .attr('d', path);
+
+    landGroup.append('path')
+      .datum(worldRiversGeo)
+      .attr('class', 'river')
       .attr('d', path);
 
     // Initialize magnifier now that geo data is available
@@ -494,6 +512,18 @@
       magLandGroup.append('path')
         .datum(worldBorderGeo)
         .attr('class', 'mag-border')
+        .attr('d', magPath);
+    }
+    if (worldLakesGeo) {
+      magLandGroup.append('path')
+        .datum(worldLakesGeo)
+        .attr('class', 'mag-lake')
+        .attr('d', magPath);
+    }
+    if (worldRiversGeo) {
+      magLandGroup.append('path')
+        .datum(worldRiversGeo)
+        .attr('class', 'mag-river')
         .attr('d', magPath);
     }
   }
