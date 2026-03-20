@@ -1,2 +1,12 @@
+# Build output
+dist/
 webtraffik
+webtraffik.exe
+
+# GeoLite2 database (auto-downloaded at runtime)
 GeoLite2-City.mmdb
+
+# SQLite event database (runtime data, not source)
+events.db
+events.db-wal
+events.db-shm

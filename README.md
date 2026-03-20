@@ -12,7 +12,10 @@ A real-time HTTP traffic visualization tool that captures incoming connections, 
 - **Automatic Geolocation**: MaxMind GeoLite2 City database with `rgeo` fallback for enhanced city-level accuracy
 - **Dark-Themed D3.js Map**: Beautiful Natural Earth projection with glowing effects and graticule
 - **Historical Replay**: New dashboard connections receive the last 1000 events as faded static dots
+- **SQLite Persistence**: Events survive service restarts; stored in `/var/lib/webtraffik/events.db`
 - **Port-Based Color Coding**: Each monitored port gets a unique color in the legend and arc animations
+- **Map Dot Tooltips**: Hovering over any source dot shows "City, CC" for that connection
+- **Automated nftables Firewall**: Auto-configured on install — restricts management ports (SSH, dashboard) to your subnet while exposing capture ports to the internet
 - **Zero Configuration**: Auto-downloads GeoLite2 database from GitHub mirror on first run (no license key needed)
 - **Systemd Integration**: Runs as non-root user with `CAP_NET_BIND_SERVICE` capability for ports <1024
 - **Cross-Platform**: Supports linux/amd64, linux/arm64, linux/armv6, linux/armv7, darwin, and windows
@@ -24,14 +27,15 @@ webTraffik listens directly on common non-TLS HTTP ports (80, 8080, 8000, 8008, 
 Traffic reaches the app via **pure NAT redirect** — your firewall forwards packets without injecting proxy headers, so `RemoteAddr` contains the original source IP.
 
 The dashboard uses WebSocket for real-time event streaming. Each new connection receives:
-1. **Historical events** (last 1000) as faded static dots
-2. **Live events** as animated arcs that settle into persistent dots
+1. **Historical events** (last 1000) replayed from the SQLite database as faded static dots
+2. **Live events** as animated arcs that settle into persistent dots with city/CC tooltips
 
 ## Screenshot
 
 The dashboard shows:
 - A world map with your server location marked in cyan
 - Animated arcs from visitor IPs to your server
+- Persistent dots with mouseover tooltips showing "City, CC"
 - A live port legend sorted by traffic count
 - A scrolling log of all connections with timestamps and geolocation details
 
@@ -41,7 +45,7 @@ The dashboard shows:
 
 - **Go 1.21+** (for building from source)
 - **Linux** (for systemd service) — also works on macOS/Windows for development
-- **Firewall NAT rules** to redirect traffic to capture ports
+- **nftables** (for the automated firewall — Linux only)
 
 ### Build and Run Locally
 
@@ -99,8 +103,8 @@ make remote-install IP=1.2.3.4
 This automatically:
 - Detects the remote architecture
 - Cross-compiles the correct binary
-- Copies binary and install script via SSH
-- Runs the installer as root
+- Copies binary, install script, firewall script, and nftables template via SSH
+- Runs the installer as root (which includes full firewall setup)
 
 SSH connects as `$USER` — ensure your SSH key is configured on the remote host.
 
@@ -116,7 +120,7 @@ For hosts without Go:
 2. Copy to the remote host:
    ```bash
    scp dist/webtraffik_linux_amd64 user@host:webtraffik
-   scp install.sh user@host:install.sh
+   scp install.sh firewall.sh nftables.conf user@host:
    ```
 
 3. Install on remote:
@@ -135,31 +139,54 @@ For hosts without Go:
 | `make cap` | Build, set `cap_net_bind_service`, and run |
 | `make cap-dist` | Set capabilities on all Linux dist binaries |
 | `make install` | Install binary + systemd service |
-| `make remote-install IP=x.x.x.x` | Build, deploy, and install to remote host via SSH |
-| `make uninstall` | Remove service, binary, user, and data directory |
+| `make remote-install IP=x.x.x.x` | Build, deploy, install, and configure firewall on remote host via SSH |
+| `make firewall` | Re-apply nftables firewall ruleset on the local machine |
+| `make uninstall` | Remove service, binary, user, data directory, and firewall config |
 | `make clean` | Remove build artifacts and GeoLite2 DB |
 
 ## Firewall Configuration
 
-webTraffik expects your firewall to **redirect** traffic to the capture ports. The app responds with HTTP 200 to all requests.
+webTraffik ships with `firewall.sh` and `nftables.conf`, which together configure an nftables DMZ policy automatically during installation.
 
-### nftables Example
+### What the firewall does
 
-```nft
-table ip nat {
-  chain prerouting {
-    type nat hook prerouting priority -100; policy accept;
-    tcp dport { 80, 8080, 8000, 8008, 8081, 8088, 8090, 8888, 3000, 3001, 3128, 4000, 4200, 5000, 5001, 9000, 9090 } redirect
-  }
-}
-```
+- **Capture ports** (80, 8080, 8000, etc.) are **open to the internet** — these are the honeypot/sensor ports
+- **Everything else** (SSH :22, dashboard :8999, any other service) is **restricted to your local subnet** — the subnet is auto-detected from the default route interface at install time
+- The NAT prerouting rule redirects capture-port traffic to the app process
 
-### iptables Example
+### How it is applied
+
+`firewall.sh` runs automatically as part of `make remote-install` and `sudo bash install.sh`. It:
+1. Auto-detects the primary network interface and its subnet via `ip route`
+2. Substitutes `__SUBNET__` and `__CAPTURE_PORTS__` tokens in `nftables.conf`
+3. Writes the generated ruleset to `/etc/nftables.d/webtraffik.conf`
+4. Validates the ruleset with `nft -c` before applying
+5. Enables and restarts the `nftables.service`
+
+To re-apply without a full reinstall:
 
 ```bash
-iptables -t nat -A PREROUTING -p tcp -m multiport \
-  --dports 80,8080,8000,8008,8081,8088,8090,8888,3000,3001,3128,4000,4200,5000,5001,9000,9090 \
-  -j REDIRECT
+make firewall
+# or
+sudo bash firewall.sh
+```
+
+### Port sync requirement
+
+**Important**: If you add or remove ports in `capturePorts` in `main.go`, you must also update the `CAPTURE_PORTS` variable in `firewall.sh` (around line 70) to match, then re-apply:
+
+```bash
+make remote-install IP=x.x.x.x
+# or, on the server directly:
+sudo bash firewall.sh
+```
+
+The dashboard port **8999** is intentionally excluded from the capture-port list and is protected by the subnet-only management rule.
+
+### Inspect the active ruleset
+
+```bash
+nft list ruleset
 ```
 
 ## File Structure
@@ -167,15 +194,18 @@ iptables -t nat -A PREROUTING -p tcp -m multiport \
 ```
 webTraffik/
 ├── main.go              # Entry point, hub, WebSocket server, capture listeners
+├── db.go                # SQLite event persistence (openEventDB, insert, loadHistory)
 ├── geo.go               # GeoLite2 + rgeo reverse geocoding
 ├── geodb.go             # Auto-download GeoLite2-City.mmdb from GitHub mirror
 ├── iputil.go            # Public IP discovery via external APIs
 ├── static_embed.go      # Go embed directive for static files
 ├── static/
-│   └── index.html       # D3.js frontend: map, arcs, legend, log, WebSocket client
+│   └── index.html       # D3.js frontend: map, arcs, legend, tooltips, log, WebSocket client
+├── firewall.sh          # nftables DMZ ruleset installer (auto-detects interface/subnet)
+├── nftables.conf        # Ruleset template with __SUBNET__ and __CAPTURE_PORTS__ tokens
 ├── webtraffik.service   # systemd service unit file
 ├── install.sh           # Standalone installer for remote hosts
-├── Makefile             # Build, cross-compile, install, deploy targets
+├── Makefile             # Build, cross-compile, install, deploy, firewall targets
 ├── go.mod
 └── go.sum
 ```
@@ -192,26 +222,36 @@ webTraffik/
 
 ```
 Incoming HTTP request
-  ↓
+  |
+  v
 Extract source IP from RemoteAddr
-  ↓
+  |
+  v
 Geolocate source IP (city, lat/lon, country)
-  ↓
+  |
+  v
 Create ConnectionEvent with src + dst coordinates
-  ↓
-Broadcast to WebSocket hub + ring buffer (1000 events)
-  ↓
+  |
+  v
+hub.broadcast() — appends to in-memory ring buffer + fans out to WebSocket subscribers
+  |
+  v
+appDB.insert() — persists to SQLite (fire-and-forget, never blocks capture)
+  |
+  v
 Dashboard receives event:
-  - If replay=true: render faded static dot
-  - If live: render animated arc + glowing dot
+  - If replay=true: render faded static dot with tooltip
+  - If live: render animated arc + glowing dot with tooltip
 ```
 
 ### Dashboard Components
 
 - **Map**: D3.js Natural Earth projection with TopoJSON world-atlas
 - **Arcs**: Great-circle paths using `d3.geoInterpolate` with 60-point sampling
-- **Dots**: Animated circles with glow filters (SVG `feGaussianBlur`)
+- **Dots**: Animated circles with glow filters (SVG `feGaussianBlur`); persistent after arc completes
+- **Tooltips**: Mouseover on any source dot shows "City, CC" (or just CC if city is unavailable)
 - **Legend**: Live port statistics sorted by count, each with unique color swatch
+- **Country/IP sidebar**: Traffic counts grouped by country code and source IP
 - **Log**: Scrolling panel showing timestamp, source IP, city, country, and port
 
 ## Dependencies
@@ -221,6 +261,7 @@ Dashboard receives event:
 - `github.com/oschwald/geoip2-golang` — MaxMind DB reader
 - `github.com/sams96/rgeo` — Embedded reverse geocoder
 - `nhooyr.io/websocket` — WebSocket server
+- `modernc.org/sqlite` — Pure-Go SQLite driver (no cgo required)
 
 ### Frontend (CDN)
 
@@ -234,11 +275,12 @@ webTraffik uses **zero-config defaults**:
 
 - **Dashboard port**: 8999 (hardcoded in `main.go`)
 - **Capture ports**: See `capturePorts` array in `main.go`
-- **History size**: 1000 events (ring buffer)
+- **History size**: 1000 events (ring buffer and DB replay)
 - **Working directory**: `/var/lib/webtraffik` (systemd), or current directory (manual run)
+- **SQLite database**: `events.db` in the working directory
 - **GeoLite2 DB**: Auto-downloaded to working directory on first run
 
-To customize ports or buffer size, edit `main.go` and rebuild.
+To customize ports or buffer size, edit `main.go` and rebuild. If you change capture ports, also update `firewall.sh` and re-apply the firewall.
 
 ## Cross-Compilation
 
@@ -270,7 +312,7 @@ The service runs as a dedicated `webtraffik` system user with minimal privileges
 - **User/Group**: `webtraffik:webtraffik`
 - **Capabilities**: `CAP_NET_BIND_SERVICE` (bind ports <1024)
 - **Sandboxing**: `ProtectSystem=strict`, `ProtectHome=true`, `PrivateTmp=true`, `NoNewPrivileges=true`
-- **Working Directory**: `/var/lib/webtraffik` (writable for GeoLite2 DB download)
+- **Working Directory**: `/var/lib/webtraffik` (writable for GeoLite2 DB download and SQLite database)
 - **Auto-Restart**: `Restart=on-failure` with 5s delay
 
 View service status:
@@ -293,16 +335,17 @@ sudo systemctl stop webtraffik
 
 ## Security Considerations
 
-- **No Authentication**: The dashboard (port 8999) has no authentication. Use a firewall to restrict access to trusted IPs, or place behind a reverse proxy with auth.
+- **No Authentication**: The dashboard (port 8999) has no authentication. The nftables firewall restricts it to your subnet by default. For remote access from outside your subnet, place behind a reverse proxy with auth.
 - **Public Ports**: Capture ports are meant to be exposed to the internet. The app returns HTTP 200 with no body — it's a blackhole for HTTP traffic.
+- **Firewall Required**: Without `firewall.sh` applied, port 8999 and SSH are exposed. Always run the firewall installer on internet-facing hosts.
 - **Geolocation Privacy**: Source IPs and geolocation data are logged to stdout (journald) and displayed on the dashboard. Ensure logs comply with your privacy policy.
-- **Resource Limits**: The ring buffer caps history at 1000 events. The frontend caps the log panel at 200 entries. Old events are evicted automatically.
+- **Resource Limits**: The ring buffer caps history at 1000 events in memory. The SQLite database grows unbounded — manage it manually if disk space is a concern. The frontend caps the log panel at 200 entries.
 
 ## Troubleshooting
 
 ### Dashboard shows no connections
 
-- **Check firewall rules**: Ensure NAT redirect is active (`nft list ruleset` or `iptables -t nat -L`)
+- **Check firewall rules**: Ensure NAT redirect is active (`nft list ruleset`)
 - **Check capture ports**: Verify the app is listening on expected ports (`ss -tlnp | grep webtraffik`)
 - **Check public IP**: Ensure `selfIP` discovery succeeded (check logs)
 
@@ -320,8 +363,14 @@ sudo systemctl stop webtraffik
 ### WebSocket reconnects constantly
 
 - **Check browser console**: Look for connection errors
-- **Check port 8999**: Ensure it's not blocked by firewall: `curl http://localhost:8999`
+- **Check port 8999**: Ensure it's reachable from your IP: `curl http://localhost:8999`
+- **Check subnet restriction**: If accessing from outside the management subnet, the firewall will block port 8999
 - **Check reverse proxy**: If behind nginx/apache, ensure WebSocket upgrade headers are forwarded
+
+### Firewall blocks dashboard access
+
+- **Check your source IP**: `curl ifconfig.me` — it must be within the subnet shown by `nft list ruleset`
+- **Re-apply with correct subnet**: If the auto-detected subnet is wrong, edit `firewall.sh` and re-run `sudo bash firewall.sh`
 
 ## Development
 
@@ -362,8 +411,9 @@ make uninstall
 This removes:
 - systemd service
 - binary (`/usr/local/bin/webtraffik`)
-- data directory (`/var/lib/webtraffik`)
+- data directory (`/var/lib/webtraffik`) including the SQLite database
 - system user (`webtraffik`)
+- nftables config (`/etc/nftables.d/webtraffik.conf`)
 
 ## License
 
