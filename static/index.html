@@ -426,8 +426,27 @@
   // ── Port legend ───────────────────────────────────────────────────────────
   const legendEl = document.getElementById('port-legend');
 
-  // Dirty flags — set true when data changes; cleared after each render tick
+  // Dirty flags — set true when data changes; cleared after each render
   let legendDirty = false, countryDirty = false, ipDirty = false, serviceDirty = false;
+  let logDirty = false;
+  let renderScheduled = false;
+
+  // Schedule a single rAF when any dirty flag is set.
+  // Multiple calls between frames coalesce into one render pass.
+  function scheduleRender() {
+    if (renderScheduled) return;
+    renderScheduled = true;
+    requestAnimationFrame(renderAll);
+  }
+
+  function renderAll() {
+    renderScheduled = false;
+    renderLegend();
+    renderCountry();
+    renderIP();
+    renderServiceStats();
+    flushLog();
+  }
 
   function updateLegend(port) {
     if (!portStats[port]) {
@@ -437,6 +456,7 @@
     }
     portStats[port].count++;
     legendDirty = true;
+    scheduleRender();
   }
 
   function renderLegend() {
@@ -488,6 +508,7 @@
     if (!cc) return;
     countryStats[cc] = (countryStats[cc] || 0) + 1;
     countryDirty = true;
+    scheduleRender();
   }
 
   function renderCountry() {
@@ -511,6 +532,7 @@
     if (!ip) return;
     ipStats[ip] = (ipStats[ip] || 0) + 1;
     ipDirty = true;
+    scheduleRender();
   }
 
   function renderIP() {
@@ -547,6 +569,7 @@
     if (!port) return;
     serviceStats[port] = (serviceStats[port] || 0) + 1;
     serviceDirty = true;
+    scheduleRender();
   }
 
   function renderServiceStats() {
@@ -575,14 +598,6 @@
     });
   }
 
-  // ── 1-second render tick for all panels ──────────────────────────────────
-  setInterval(() => {
-    renderLegend();
-    renderCountry();
-    renderIP();
-    renderServiceStats();
-  }, 1000);
-
   // ── Arc drawing ──────────────────────────────────────────────────────────
   let arcSeq = 0;
 
@@ -595,17 +610,44 @@
     ['#66bb6a', '#f48fb1'],
   ];
 
-  // ── Arc event buffer — flushed once per second ───────────────────────────
+  // ── Adaptive arc rate control ────────────────────────────────────────────
+  // Track event timestamps in a 1-second sliding window to measure rate.
+  const FLOOD_THRESHOLD = 10;  // events/sec — above this we batch
+  const arcTimestamps = [];    // recent event arrival times (ms)
+
+  function currentRate() {
+    const now = performance.now();
+    // Evict timestamps older than 1 second
+    while (arcTimestamps.length > 0 && now - arcTimestamps[0] > 1000) {
+      arcTimestamps.shift();
+    }
+    return arcTimestamps.length;
+  }
+
+  // Flood buffer — only used when rate >= FLOOD_THRESHOLD
   // Key: src_ip  Value: { ev, count } — deduplicates floods from same IP
   const arcBuffer = new Map();
+  let floodFlushTimer = null;
 
-  function bufferArc(ev) {
+  function handleArc(ev) {
     if (!ev.src_lon && !ev.src_lat) return;
-    const key = ev.src_ip || `${ev.src_lon},${ev.src_lat}`;
-    if (arcBuffer.has(key)) {
-      arcBuffer.get(key).count++;
+    arcTimestamps.push(performance.now());
+
+    if (currentRate() < FLOOD_THRESHOLD) {
+      // Normal traffic — draw immediately, no latency
+      drawArc(ev, 1);
     } else {
-      arcBuffer.set(key, { ev, count: 1 });
+      // Flood — buffer and deduplicate by source IP
+      const key = ev.src_ip || `${ev.src_lon},${ev.src_lat}`;
+      if (arcBuffer.has(key)) {
+        arcBuffer.get(key).count++;
+      } else {
+        arcBuffer.set(key, { ev, count: 1 });
+      }
+      // Ensure a flush is scheduled (only one timer at a time)
+      if (!floodFlushTimer) {
+        floodFlushTimer = setTimeout(flushArcs, 1000);
+      }
     }
   }
 
@@ -615,13 +657,12 @@
   }
 
   function flushArcs() {
+    floodFlushTimer = null;
     if (arcBuffer.size === 0) return;
     const entries = [...arcBuffer.values()];
     arcBuffer.clear();
     entries.forEach(({ ev, count }) => drawArc(ev, count));
   }
-
-  setInterval(flushArcs, 1000);
 
   function drawArc(ev, hitCount = 1) {
     const srcPt = [ev.src_lon, ev.src_lat];
@@ -701,16 +742,20 @@
 
   // ── Log panel ─────────────────────────────────────────────────────────────
   const logPanel = document.getElementById('log-panel');
-  const logBuffer = []; // pending entries, flushed once per second
+  const logBuffer = []; // pending entries, flushed on next rAF
 
   function addLog(ev) {
     logBuffer.push(ev);
+    logDirty = true;
+    scheduleRender();
   }
 
   function flushLog() {
+    if (!logDirty) return;
+    logDirty = false;
     if (logBuffer.length === 0) return;
     const entries = logBuffer.splice(0); // drain buffer atomically
-    // Build a fragment so we touch the DOM once per tick
+    // Build a fragment so we touch the DOM once per frame
     const frag = document.createDocumentFragment();
     entries.forEach(ev => {
       const t = new Date(ev.time);
@@ -733,8 +778,6 @@
       logPanel.removeChild(logPanel.lastChild);
     }
   }
-
-  setInterval(flushLog, 1000);
 
   // ── WebSocket ─────────────────────────────────────────────────────────────
   const wsStatus = document.getElementById('ws-status');
@@ -803,7 +846,7 @@
       if (ev.replay) {
         drawHistoryDot(ev);
       } else {
-        bufferArc(ev);  // deferred — flushed as deduplicated arcs once per second
+        handleArc(ev);  // instant at low rate, batched during floods
       }
     };
 
