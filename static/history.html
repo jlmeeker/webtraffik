@@ -724,6 +724,10 @@ function renderCharts(events) {
         }))
       },
       options: { ...timelineDefaults(timeUnit, globalMin, globalMax), plugins: { ...CHART_DEFAULTS.plugins } },
+    });
+  } else {
+    portTimelineRow.style.display = 'none';
+  }
 
   // ── 7. Per-country timeline (only if >1 distinct country) ──
   const distinctCC = Object.keys(ccMap);
@@ -751,6 +755,10 @@ function renderCharts(events) {
         }))
       },
       options: { ...timelineDefaults(timeUnit, globalMin, globalMax), plugins: { ...CHART_DEFAULTS.plugins } },
+    });
+  } else {
+    ccTimelineRow.style.display = 'none';
+  }
 }
 
 /* ─────────────────────────────────────────── Result table ── */
