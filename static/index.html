@@ -444,10 +444,24 @@
     legendDirty = false;
 
     const firstSection = legendEl.querySelector('.sidebar-section');
-    // Ensure a DOM row exists for every known port
-    for (const [port, stat] of Object.entries(portStats)) {
-      if (!document.getElementById(`port-row-${port}`)) {
-        const row = document.createElement('div');
+    const top10 = Object.entries(portStats)
+      .sort((a, b) => b[1].count - a[1].count)
+      .slice(0, 10)
+      .map(([port]) => port);
+    const top10Set = new Set(top10);
+
+    // Remove rows that are no longer in the top 10
+    legendEl.querySelectorAll('.port-row').forEach(r => {
+      const port = r.id.replace('port-row-', '');
+      if (!top10Set.has(port)) r.remove();
+    });
+
+    // Create or update rows for the top 10
+    top10.forEach(port => {
+      const stat = portStats[port];
+      let row = document.getElementById(`port-row-${port}`);
+      if (!row) {
+        row = document.createElement('div');
         row.className = 'port-row';
         row.id = `port-row-${port}`;
         row.innerHTML =
@@ -456,17 +470,14 @@
           `<span class="port-count" id="port-count-${port}">0</span>`;
         legendEl.insertBefore(row, firstSection);
       }
-      const countEl = document.getElementById(`port-count-${port}`);
-      if (countEl) countEl.textContent = stat.count;
-    }
-    // Sort rows by count descending (single reorder per tick, not per event)
-    const rows = [...legendEl.querySelectorAll('.port-row')];
-    rows.sort((a, b) => {
-      const pa = a.id.replace('port-row-', '');
-      const pb = b.id.replace('port-row-', '');
-      return (portStats[pb]?.count ?? 0) - (portStats[pa]?.count ?? 0);
+      document.getElementById(`port-count-${port}`).textContent = stat.count;
     });
-    rows.forEach(r => legendEl.insertBefore(r, firstSection));
+
+    // Re-order rows to match sorted top 10
+    top10.forEach(port => {
+      const row = document.getElementById(`port-row-${port}`);
+      if (row) legendEl.insertBefore(row, firstSection);
+    });
   }
 
   // ── Country stats ─────────────────────────────────────────────────────────
