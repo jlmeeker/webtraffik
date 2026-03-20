@@ -51,7 +51,7 @@ func newHub() *hub {
 }
 
 func (h *hub) subscribe() chan ConnectionEvent {
-	ch := make(chan ConnectionEvent, 32)
+	ch := make(chan ConnectionEvent, 256)
 	h.mu.Lock()
 	h.subscribers[ch] = struct{}{}
 	h.mu.Unlock()
@@ -75,16 +75,21 @@ func (h *hub) snapshot() []ConnectionEvent {
 
 func (h *hub) broadcast(ev ConnectionEvent) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	// Append to history, evict oldest when full
 	if len(h.history) >= historySize {
 		h.history = append(h.history[1:], ev)
 	} else {
 		h.history = append(h.history, ev)
 	}
-
+	// Snapshot subscriber channels under lock, then release before sending
+	subs := make([]chan ConnectionEvent, 0, len(h.subscribers))
 	for ch := range h.subscribers {
+		subs = append(subs, ch)
+	}
+	h.mu.Unlock()
+
+	// Fan-out without holding the lock — subscribe/unsubscribe are not blocked
+	for _, ch := range subs {
 		select {
 		case ch <- ev:
 		default:
@@ -305,9 +310,12 @@ func startDashboardServer() {
 
 		ctx := conn.CloseRead(context.Background())
 
-		// Replay history to the new client before subscribing to live events.
-		// Load directly from the DB so clients always get the full persisted
-		// history even if the in-memory ring buffer was just seeded.
+		// Subscribe FIRST so live events buffer in the channel during replay.
+		// The 256-deep channel absorbs bursts while we send history.
+		ch := appHub.subscribe()
+		defer appHub.unsubscribe(ch)
+
+		// Replay history from DB so new clients see the full persisted history.
 		history, err := appDB.loadHistory(historySize)
 		if err != nil {
 			log.Printf("WebSocket history load error: %v", err)
@@ -319,9 +327,8 @@ func startDashboardServer() {
 			}
 		}
 
-		ch := appHub.subscribe()
-		defer appHub.unsubscribe(ch)
-
+		// Drain any live events that arrived while replaying history,
+		// then continue streaming live events.
 		for {
 			select {
 			case ev := <-ch:

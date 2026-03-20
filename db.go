@@ -12,7 +12,9 @@ const eventsDBFilename = "events.db"
 
 // eventDB wraps the SQLite connection used for event persistence.
 type eventDB struct {
-	db *sql.DB
+	db      *sql.DB
+	insertQ chan ConnectionEvent // async insert queue
+	done    chan struct{}        // closed when writer goroutine exits
 }
 
 // openEventDB opens (or creates) the SQLite database at dir/events.db,
@@ -44,7 +46,13 @@ func openEventDB(dir string) (*eventDB, error) {
 	}
 
 	log.Printf("Event DB opened: %s", path)
-	return &eventDB{db: db}, nil
+	edb := &eventDB{
+		db:      db,
+		insertQ: make(chan ConnectionEvent, 4096),
+		done:    make(chan struct{}),
+	}
+	go edb.writeLoop()
+	return edb, nil
 }
 
 func createSchema(db *sql.DB) error {
@@ -75,21 +83,94 @@ func createSchema(db *sql.DB) error {
 	return nil
 }
 
-// insert persists a single ConnectionEvent. Errors are logged but not fatal —
-// the app keeps running even if the DB write fails.
+// insert queues a ConnectionEvent for async persistence. If the queue is full
+// the event is dropped (logged) — capture is never blocked on DB writes.
 func (e *eventDB) insert(ev ConnectionEvent) {
-	_, err := e.db.Exec(`
+	select {
+	case e.insertQ <- ev:
+	default:
+		log.Printf("DB insert queue full, dropping event from %s", ev.SrcIP)
+	}
+}
+
+// writeLoop is the dedicated goroutine that drains the insert queue and
+// batches writes into SQLite. It groups pending events into a single
+// transaction for throughput, flushing whenever the queue drains or a
+// batch reaches 64 events.
+func (e *eventDB) writeLoop() {
+	defer close(e.done)
+
+	const batchMax = 64
+	batch := make([]ConnectionEvent, 0, batchMax)
+
+	for {
+		// Block until at least one event is available (or channel closed).
+		ev, ok := <-e.insertQ
+		if !ok {
+			// Channel closed — flush remaining and exit.
+			e.flushBatch(batch)
+			return
+		}
+		batch = append(batch, ev)
+
+		// Drain any additional queued events up to batchMax.
+	drain:
+		for len(batch) < batchMax {
+			select {
+			case ev, ok := <-e.insertQ:
+				if !ok {
+					e.flushBatch(batch)
+					return
+				}
+				batch = append(batch, ev)
+			default:
+				break drain
+			}
+		}
+
+		e.flushBatch(batch)
+		batch = batch[:0]
+	}
+}
+
+// flushBatch writes a slice of events to SQLite in a single transaction.
+func (e *eventDB) flushBatch(batch []ConnectionEvent) {
+	if len(batch) == 0 {
+		return
+	}
+
+	tx, err := e.db.Begin()
+	if err != nil {
+		log.Printf("DB begin tx error: %v", err)
+		return
+	}
+
+	stmt, err := tx.Prepare(`
 		INSERT INTO events
 			(time, src_ip, dst_ip, dst_port, protocol,
 			 src_lat, src_lon, dst_lat, dst_lon,
 			 src_city, dst_city, src_cc, dst_cc)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		ev.Time, ev.SrcIP, ev.DstIP, ev.DstPort, ev.Protocol,
-		ev.SrcLat, ev.SrcLon, ev.DstLat, ev.DstLon,
-		ev.SrcCity, ev.DstCity, ev.SrcCC, ev.DstCC,
-	)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
-		log.Printf("DB insert error: %v", err)
+		log.Printf("DB prepare error: %v", err)
+		tx.Rollback()
+		return
+	}
+	defer stmt.Close()
+
+	for _, ev := range batch {
+		_, err := stmt.Exec(
+			ev.Time, ev.SrcIP, ev.DstIP, ev.DstPort, ev.Protocol,
+			ev.SrcLat, ev.SrcLon, ev.DstLat, ev.DstLon,
+			ev.SrcCity, ev.DstCity, ev.SrcCC, ev.DstCC,
+		)
+		if err != nil {
+			log.Printf("DB insert error: %v", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		log.Printf("DB commit error: %v", err)
 	}
 }
 
@@ -125,8 +206,10 @@ func (e *eventDB) loadHistory(limit int) ([]ConnectionEvent, error) {
 	return events, rows.Err()
 }
 
-// close releases the database connection.
+// close drains the insert queue and releases the database connection.
 func (e *eventDB) close() {
+	close(e.insertQ) // signal writeLoop to flush and exit
+	<-e.done         // wait for writeLoop to finish
 	if err := e.db.Close(); err != nil {
 		log.Printf("DB close error: %v", err)
 	}

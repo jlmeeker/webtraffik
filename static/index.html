@@ -502,6 +502,7 @@
   // ── Country stats ─────────────────────────────────────────────────────────
   const countryStats = {}; // { cc -> count }
   const countryRowsEl = document.getElementById('country-rows');
+  const countryRowMap = new Map(); // cc -> DOM row
 
   function updateCountry(cc) {
     if (!cc) return;
@@ -514,18 +515,35 @@
     if (!countryDirty) return;
     countryDirty = false;
     const top = Object.entries(countryStats).sort((a, b) => b[1] - a[1]).slice(0, 10);
-    countryRowsEl.innerHTML = '';
-    top.forEach(([code, count]) => {
-      const row = document.createElement('div');
-      row.className = 'stat-row';
-      row.innerHTML = `<span class="stat-label">${code}</span><span class="stat-count">${count}</span>`;
-      countryRowsEl.appendChild(row);
+    const topSet = new Set(top.map(([cc]) => cc));
+
+    // Remove rows no longer in top 10
+    for (const [cc, row] of countryRowMap) {
+      if (!topSet.has(cc)) { row.remove(); countryRowMap.delete(cc); }
+    }
+
+    // Create or update rows
+    top.forEach(([cc, count]) => {
+      let row = countryRowMap.get(cc);
+      if (!row) {
+        row = document.createElement('div');
+        row.className = 'stat-row';
+        row.innerHTML = `<span class="stat-label"></span><span class="stat-count"></span>`;
+        countryRowsEl.appendChild(row);
+        countryRowMap.set(cc, row);
+      }
+      row.children[0].textContent = cc;
+      row.children[1].textContent = count;
     });
+
+    // Reorder to match sorted top 10
+    top.forEach(([cc]) => countryRowsEl.appendChild(countryRowMap.get(cc)));
   }
 
   // ── IP stats ──────────────────────────────────────────────────────────────
   const ipStats = {}; // { ip -> count }
   const ipRowsEl = document.getElementById('ip-rows');
+  const ipRowMap = new Map(); // ip -> DOM row
 
   function updateIP(ip) {
     if (!ip) return;
@@ -538,13 +556,29 @@
     if (!ipDirty) return;
     ipDirty = false;
     const top = Object.entries(ipStats).sort((a, b) => b[1] - a[1]).slice(0, 10);
-    ipRowsEl.innerHTML = '';
+    const topSet = new Set(top.map(([ip]) => ip));
+
+    // Remove rows no longer in top 10
+    for (const [ip, row] of ipRowMap) {
+      if (!topSet.has(ip)) { row.remove(); ipRowMap.delete(ip); }
+    }
+
+    // Create or update rows
     top.forEach(([addr, count]) => {
-      const row = document.createElement('div');
-      row.className = 'stat-row';
-      row.innerHTML = `<span class="stat-label">${addr}</span><span class="stat-count">${count}</span>`;
-      ipRowsEl.appendChild(row);
+      let row = ipRowMap.get(addr);
+      if (!row) {
+        row = document.createElement('div');
+        row.className = 'stat-row';
+        row.innerHTML = `<span class="stat-label"></span><span class="stat-count"></span>`;
+        ipRowsEl.appendChild(row);
+        ipRowMap.set(addr, row);
+      }
+      row.children[0].textContent = addr;
+      row.children[1].textContent = count;
     });
+
+    // Reorder to match sorted top 10
+    top.forEach(([addr]) => ipRowsEl.appendChild(ipRowMap.get(addr)));
   }
 
   // ── Service stats ─────────────────────────────────────────────────────────
@@ -563,6 +597,7 @@
 
   const serviceStats = {}; // { port -> count }
   const serviceRowsEl = document.getElementById('service-rows');
+  const serviceRowMap = new Map(); // port -> { row, countEl, barEl }
 
   function updateServiceStats(port) {
     if (!port) return;
@@ -575,26 +610,46 @@
     if (!serviceDirty) return;
     serviceDirty = false;
     const top = Object.entries(serviceStats).sort((a, b) => b[1] - a[1]).slice(0, 10);
-    serviceRowsEl.innerHTML = '';
+    const topSet = new Set(top.map(([p]) => p));
+    const maxCount = top.length > 0 ? top[0][1] : 1;
+
+    // Remove rows no longer in top 10
+    for (const [p, entry] of serviceRowMap) {
+      if (!topSet.has(p)) { entry.row.remove(); serviceRowMap.delete(p); }
+    }
+
+    // Create or update rows
     top.forEach(([p, count]) => {
       const svcName = PORT_SERVICE_NAMES[p] || `port ${p}`;
       const portColor = portStats[p]?.color || '#546e7a';
-      const pct = Math.max(4, Math.round((count / (serviceStats[top[0][0]] || 1)) * 100));
-      const row = document.createElement('div');
-      row.className = 'stat-row';
-      row.style.flexDirection = 'column';
-      row.style.alignItems = 'stretch';
-      row.style.gap = '2px';
-      row.innerHTML =
-        `<div style="display:flex;align-items:center;gap:6px;">` +
-          `<span class="stat-label" style="color:${portColor}">:${p} <span style="color:#78909c;font-weight:400">${svcName}</span></span>` +
-          `<span class="stat-count">${count}</span>` +
-        `</div>` +
-        `<div style="height:3px;border-radius:2px;background:rgba(255,255,255,0.07);overflow:hidden;">` +
-          `<div style="height:100%;width:${pct}%;background:${portColor};opacity:0.7;border-radius:2px;"></div>` +
-        `</div>`;
-      serviceRowsEl.appendChild(row);
+      const pct = Math.max(4, Math.round((count / maxCount) * 100));
+      let entry = serviceRowMap.get(p);
+      if (!entry) {
+        const row = document.createElement('div');
+        row.className = 'stat-row';
+        row.style.flexDirection = 'column';
+        row.style.alignItems = 'stretch';
+        row.style.gap = '2px';
+        row.innerHTML =
+          `<div style="display:flex;align-items:center;gap:6px;">` +
+            `<span class="stat-label" style="color:${portColor}">:${p} <span style="color:#78909c;font-weight:400">${svcName}</span></span>` +
+            `<span class="stat-count"></span>` +
+          `</div>` +
+          `<div style="height:3px;border-radius:2px;background:rgba(255,255,255,0.07);overflow:hidden;">` +
+            `<div style="height:100%;width:0%;background:${portColor};opacity:0.7;border-radius:2px;"></div>` +
+          `</div>`;
+        const countEl = row.querySelector('.stat-count');
+        const barEl = row.querySelector('div > div:last-child > div');
+        entry = { row, countEl, barEl };
+        serviceRowsEl.appendChild(row);
+        serviceRowMap.set(p, entry);
+      }
+      entry.countEl.textContent = count;
+      entry.barEl.style.width = pct + '%';
     });
+
+    // Reorder to match sorted top 10
+    top.forEach(([p]) => serviceRowsEl.appendChild(serviceRowMap.get(p).row));
   }
 
   // ── Arc drawing ──────────────────────────────────────────────────────────
@@ -737,6 +792,20 @@
         .attr('r', dotR)
         .attr('opacity', 0.35)
         .attr('filter', null);
+
+    trackDot(srcDot.node());
+  }
+
+  // ── Dot lifecycle cap ───────────────────────────────────────────────────
+  const MAX_DOTS = 1000;
+  const dotRing = []; // circular buffer of DOM nodes
+
+  function trackDot(node) {
+    dotRing.push(node);
+    while (dotRing.length > MAX_DOTS) {
+      const old = dotRing.shift();
+      if (old.parentNode) old.parentNode.removeChild(old);
+    }
   }
 
   // ── Log panel ─────────────────────────────────────────────────────────────
@@ -820,6 +889,7 @@
       .style('cursor', 'crosshair')
       .datum(srcPt); // store [lon, lat] for reprojection on resize
     attachTooltip(dot, tooltipLabel(ev));
+    trackDot(dot.node());
   }
 
   function connect() {
