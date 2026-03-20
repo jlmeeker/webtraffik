@@ -70,10 +70,11 @@ echo "  management subnet : $SUBNET"
 # Matches the capturePorts slice in main.go AND tcpServices in services.go.
 CAPTURE_PORTS_TCP="21, 22, 23, 25, 80, 110, 143, 443, 445, \
 1433, 3000, 3001, 3128, 3306, 3389, 4000, 4200, 5000, 5001, 5432, \
-6379, 8000, 8008, 8080, 8081, 8088, 8090, 8888, 9000, 9090, 25565, 27017"
+5900, 6379, 8000, 8008, 8080, 8081, 8088, 8090, 8443, 8888, \
+9000, 9090, 9200, 11211, 25565, 27017"
 
 # UDP ports: DNS and any other UDP services in services.go.
-CAPTURE_PORTS_UDP="53"
+CAPTURE_PORTS_UDP="53, 123, 161, 1900, 5060"
 
 # ── Substitute tokens and write the live config ───────────────────────────────
 mkdir -p "$CONF_DIR"
