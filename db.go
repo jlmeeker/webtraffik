@@ -55,6 +55,7 @@ func createSchema(db *sql.DB) error {
 			src_ip   TEXT    NOT NULL,
 			dst_ip   TEXT    NOT NULL,
 			dst_port TEXT    NOT NULL,
+			protocol TEXT    NOT NULL DEFAULT 'tcp',
 			src_lat  REAL    NOT NULL DEFAULT 0,
 			src_lon  REAL    NOT NULL DEFAULT 0,
 			dst_lat  REAL    NOT NULL DEFAULT 0,
@@ -66,7 +67,12 @@ func createSchema(db *sql.DB) error {
 		);
 		CREATE INDEX IF NOT EXISTS events_id_desc ON events(id DESC);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+	// Migrate existing databases that predate the protocol column.
+	_, _ = db.Exec(`ALTER TABLE events ADD COLUMN protocol TEXT NOT NULL DEFAULT 'tcp'`)
+	return nil
 }
 
 // insert persists a single ConnectionEvent. Errors are logged but not fatal —
@@ -74,11 +80,11 @@ func createSchema(db *sql.DB) error {
 func (e *eventDB) insert(ev ConnectionEvent) {
 	_, err := e.db.Exec(`
 		INSERT INTO events
-			(time, src_ip, dst_ip, dst_port,
+			(time, src_ip, dst_ip, dst_port, protocol,
 			 src_lat, src_lon, dst_lat, dst_lon,
 			 src_city, dst_city, src_cc, dst_cc)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-		ev.Time, ev.SrcIP, ev.DstIP, ev.DstPort,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		ev.Time, ev.SrcIP, ev.DstIP, ev.DstPort, ev.Protocol,
 		ev.SrcLat, ev.SrcLon, ev.DstLat, ev.DstLon,
 		ev.SrcCity, ev.DstCity, ev.SrcCC, ev.DstCC,
 	)
@@ -91,7 +97,7 @@ func (e *eventDB) insert(ev ConnectionEvent) {
 // replay to a new WebSocket client.
 func (e *eventDB) loadHistory(limit int) ([]ConnectionEvent, error) {
 	rows, err := e.db.Query(`
-		SELECT time, src_ip, dst_ip, dst_port,
+		SELECT time, src_ip, dst_ip, dst_port, protocol,
 		       src_lat, src_lon, dst_lat, dst_lon,
 		       src_city, dst_city, src_cc, dst_cc
 		FROM (
@@ -108,7 +114,7 @@ func (e *eventDB) loadHistory(limit int) ([]ConnectionEvent, error) {
 	for rows.Next() {
 		var ev ConnectionEvent
 		if err := rows.Scan(
-			&ev.Time, &ev.SrcIP, &ev.DstIP, &ev.DstPort,
+			&ev.Time, &ev.SrcIP, &ev.DstIP, &ev.DstPort, &ev.Protocol,
 			&ev.SrcLat, &ev.SrcLon, &ev.DstLat, &ev.DstLon,
 			&ev.SrcCity, &ev.DstCity, &ev.SrcCC, &ev.DstCC,
 		); err != nil {

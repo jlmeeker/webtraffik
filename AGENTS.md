@@ -6,7 +6,7 @@ This file is the authoritative reference for AI agent sessions working on the we
 
 ## Project Overview
 
-webTraffik is a real-time HTTP traffic sensor and visualization tool. It binds directly to a configurable list of common HTTP ports, logs every incoming connection, geolocates the source IP, and streams the events to a browser dashboard over WebSocket.
+webTraffik is a real-time network traffic sensor and visualization tool. It binds directly to a configurable list of common HTTP ports, TCP service ports (with protocol emulation), and UDP ports, logs every incoming connection, geolocates the source IP, and streams the events to a browser dashboard over WebSocket.
 
 **Tech stack:**
 - **Backend**: Go (single binary, no CGo required)
@@ -72,7 +72,8 @@ handleCapture(srcIP, dstPort)
 
 | File | Owns |
 |------|------|
-| `main.go` | `ConnectionEvent` struct, `hub` (ring buffer + fan-out), capture listeners, dashboard server, `/ws` handler, `/api/self` endpoint, `capturePorts` var |
+| `main.go` | `ConnectionEvent` struct, `hub` (ring buffer + fan-out), HTTP capture listeners, dashboard server, `/ws` handler, `/api/self` endpoint, `capturePorts` var (HTTP-only ports) |
+| `services.go` | TCP service port emulation (`tcpServices` with banners for FTP, SSH, Telnet, SMTP, etc.) and UDP port capture (`udpServicePorts`) |
 | `db.go` | SQLite open/close, schema creation, `insert()`, `loadHistory()` |
 | `geo.go` | `GeoLocator` (GeoLite2 reader + rgeo fallback), `Lookup()`, `Location` struct |
 | `geodb.go` | `ensureGeoDB()` — auto-download of `GeoLite2-City.mmdb` from GitHub mirror |
@@ -80,7 +81,7 @@ handleCapture(srcIP, dstPort)
 | `static_embed.go` | `//go:embed static` directive; exposes `staticFiles fs.FS` |
 | `static/index.html` | Entire browser UI: D3.js map, WebSocket client, arc animation, tooltips, legend, log |
 | `firewall.sh` | nftables ruleset installer; auto-detects interface/subnet; substitutes tokens into `nftables.conf` |
-| `nftables.conf` | Ruleset template; contains `__SUBNET__` and `__CAPTURE_PORTS__` tokens |
+| `nftables.conf` | Ruleset template; contains `__SUBNET__`, `__CAPTURE_PORTS_TCP__`, and `__CAPTURE_PORTS_UDP__` tokens |
 | `install.sh` | Standalone deployer: creates user, data dir, copies binary, writes systemd unit, calls `firewall.sh` |
 | `webtraffik.service` | systemd unit template (also written inline by `install.sh`) |
 | `Makefile` | All build, cross-compile, deploy, firewall, and uninstall targets |
@@ -89,7 +90,7 @@ handleCapture(srcIP, dstPort)
 
 ## Port List — CRITICAL SYNC REQUIREMENT
 
-This is the most operationally important section. Mismatches between the two locations below will cause either missed traffic (ports open in the app but blocked by the firewall) or firewall holes (ports open in the firewall but not listened on by the app).
+This is the most operationally important section. Mismatches between the port definitions in the app and the firewall will cause either missed traffic (ports open in the app but blocked by the firewall) or firewall holes (ports open in the firewall but not listened on by the app).
 
 ### Definition locations
 
@@ -102,20 +103,56 @@ var capturePorts = []int{
 }
 ```
 
-This is the authoritative list. The app binds a listener on every port in this slice.
+This is the authoritative list of **HTTP-only ports**. The app binds an `http.ListenAndServe` listener on every port in this slice.
 
-**2. `firewall.sh` — `CAPTURE_PORTS` variable (around line 70)**
+**2. `services.go` — `tcpServices` slice (around line 30)**
 
-```bash
-CAPTURE_PORTS="80, 8080, 8000, 8008, 8081, 8088, 8090, 8888, \
-3000, 3001, 3128, 4000, 4200, 5000, 5001, 9000, 9090"
+```go
+var tcpServices = []serviceEntry{
+    {Port: 21, Name: "FTP", Banner: ftpBanner},
+    {Port: 22, Name: "SSH", Banner: sshBanner},
+    // ... etc.
+}
 ```
 
-This must be an exact match (as a comma-separated nftables set literal).
+This is the authoritative list of **TCP service ports** (non-HTTP). Each entry specifies a port, service name, and a `Banner()` function that returns the bytes sent immediately after accepting a connection. These use raw `net.Listener`, not `net/http`.
+
+**3. `services.go` — `udpServicePorts` slice (around line 50)**
+
+```go
+var udpServicePorts = []int{53}
+```
+
+This is the authoritative list of **UDP ports**. These use `net.ListenPacket`.
+
+**4. `firewall.sh` — `CAPTURE_PORTS_TCP` variable (around line 70)**
+
+```bash
+CAPTURE_PORTS_TCP="80, 8080, 8000, 8008, 8081, 8088, 8090, 8888, \
+3000, 3001, 3128, 4000, 4200, 5000, 5001, 9000, 9090, \
+21, 22, 23, 25, 110, 143, 443, 445, 1433, 3306, 3389, 5432, 6379, 27017"
+```
+
+This must include **all TCP ports** — both HTTP ports from `main.go` and service ports from `services.go` — as a comma-separated nftables set literal.
+
+**5. `firewall.sh` — `CAPTURE_PORTS_UDP` variable (around line 75)**
+
+```bash
+CAPTURE_PORTS_UDP="53"
+```
+
+This must include **all UDP ports** from `services.go` as a comma-separated nftables set literal.
 
 ### Current port list
 
+**TCP ports (main.go `capturePorts` — HTTP listeners):**
 80, 8080, 8000, 8008, 8081, 8088, 8090, 8888, 3000, 3001, 3128, 4000, 4200, 5000, 5001, 9000, 9090
+
+**TCP service ports (services.go `tcpServices` — raw TCP listeners with banners):**
+21 (FTP), 22 (SSH), 23 (Telnet), 25 (SMTP), 110 (POP3), 143 (IMAP), 443 (HTTPS), 445 (SMB), 1433 (MSSQL), 3306 (MySQL), 3389 (RDP), 5432 (PostgreSQL), 6379 (Redis), 27017 (MongoDB)
+
+**UDP ports (services.go `udpServicePorts` — UDP listeners):**
+53 (DNS)
 
 ### Dashboard port
 
@@ -124,7 +161,7 @@ Port **8999** is the dashboard. It is **not** in `capturePorts` and is **not** i
 ### After changing ports
 
 Any time ports are added or removed in `main.go`:
-1. Update `CAPTURE_PORTS` in `firewall.sh` to match
+1. Update `CAPTURE_PORTS_TCP` in `firewall.sh` to match
 2. Re-apply the firewall: `make remote-install IP=x.x.x.x` (full deploy) or `sudo bash firewall.sh` (firewall only)
 3. Rebuild and restart the app so it binds the new port list
 
@@ -180,9 +217,10 @@ nftables only (Linux). No iptables support. The `nft` binary must be present on 
 
 ### Template (`nftables.conf`)
 
-Two tokens are substituted by `firewall.sh`:
+Three tokens are substituted by `firewall.sh`:
 - `__SUBNET__` — the CIDR of the primary interface (e.g. `192.168.1.0/24`), auto-detected via `ip route`
-- `__CAPTURE_PORTS__` — the comma-separated port list from `CAPTURE_PORTS` in `firewall.sh`
+- `__CAPTURE_PORTS_TCP__` — the comma-separated TCP port list from `CAPTURE_PORTS_TCP` in `firewall.sh`
+- `__CAPTURE_PORTS_UDP__` — the comma-separated UDP port list from `CAPTURE_PORTS_UDP` in `firewall.sh`
 
 The generated file is written to `/etc/nftables.d/webtraffik.conf`.
 
@@ -193,12 +231,14 @@ inet filter input (policy drop):
   - loopback: accept
   - established/related: accept
   - icmp/icmpv6: accept
-  - tcp dport { CAPTURE_PORTS }: accept  (internet-facing)
-  - ip saddr SUBNET: accept              (management — covers SSH, :8999, everything else)
+  - tcp dport { CAPTURE_PORTS_TCP }: accept  (internet-facing TCP)
+  - udp dport { CAPTURE_PORTS_UDP }: accept  (internet-facing UDP)
+  - ip saddr SUBNET: accept                  (management — covers SSH, :8999, everything else)
   - everything else: drop (implicit)
 
 ip webtraffik_nat prerouting:
-  - tcp dport { CAPTURE_PORTS }: redirect  (NAT to app process)
+  - tcp dport { CAPTURE_PORTS_TCP }: redirect  (NAT to app process)
+  - udp dport { CAPTURE_PORTS_UDP }: redirect  (NAT to app process)
 ```
 
 The `inet filter` table is flushed and fully redefined by the template. This eliminates any race condition with distro-default accept-all chains.
@@ -218,7 +258,7 @@ make firewall
 
 ### Port sync
 
-`firewall.sh` `CAPTURE_PORTS` (line ~70) must match `main.go` `capturePorts` (line ~107). See the Port List section above.
+`firewall.sh` `CAPTURE_PORTS_TCP` (line ~70) must match `main.go` `capturePorts` (line ~107). See the Port List section above.
 
 ---
 
@@ -260,7 +300,7 @@ make uninstall
 
 ## Common Tasks for Agents
 
-### 1. Adding a new capture port
+### 1. Adding a new HTTP capture port
 
 Edit **two files** and redeploy:
 
@@ -272,9 +312,9 @@ var capturePorts = []int{
 }
 ```
 
-**`firewall.sh`** — update `CAPTURE_PORTS` (line ~70) to include the same port:
+**`firewall.sh`** — update `CAPTURE_PORTS_TCP` (line ~70) to include the same port:
 ```bash
-CAPTURE_PORTS="..., NNNN"
+CAPTURE_PORTS_TCP="..., NNNN"
 ```
 
 Then rebuild and redeploy:
@@ -320,6 +360,56 @@ Also populate it in `handleCapture()` where the struct is built (line ~230).
 
 Reference the new field as `ev.new_field` (matching the JSON tag) wherever the event is consumed: arc rendering, log entries, tooltip content, etc.
 
+### 4. Adding a new TCP service port (non-HTTP)
+
+Edit **two files** and redeploy:
+
+**`services.go`** — add to `tcpServices` slice (around line 30):
+```go
+var tcpServices = []serviceEntry{
+    // ... existing services ...
+    {Port: NNNN, Name: "ServiceName", Banner: yourBannerFunc},
+}
+```
+
+You must also define a `Banner()` function that returns the protocol-specific bytes to send immediately after accepting a connection. See existing banner functions (e.g., `ftpBanner()`, `sshBanner()`) for examples.
+
+**`firewall.sh`** — update `CAPTURE_PORTS_TCP` (line ~70) to include the new port:
+```bash
+CAPTURE_PORTS_TCP="..., NNNN"
+```
+
+Then rebuild and redeploy:
+```bash
+make remote-install IP=x.x.x.x
+```
+
+Do not change one file without the other.
+
+### 5. Adding a new UDP service port
+
+Edit **two files** and redeploy:
+
+**`services.go`** — add to `udpServicePorts` slice (around line 50):
+```go
+var udpServicePorts = []int{
+    // ... existing ports ...
+    NNNN, // description
+}
+```
+
+**`firewall.sh`** — update `CAPTURE_PORTS_UDP` (line ~75) to include the new port:
+```bash
+CAPTURE_PORTS_UDP="..., NNNN"
+```
+
+Then rebuild and redeploy:
+```bash
+make remote-install IP=x.x.x.x
+```
+
+Do not change one file without the other.
+
 ---
 
 ## Notes for Agents
@@ -329,3 +419,4 @@ Reference the new field as `ev.new_field` (matching the JSON tag) wherever the e
 - The `hub.broadcast()` method holds the hub mutex while writing to subscriber channels. Subscriber channel sends are non-blocking (`select/default`). Do not add blocking operations inside `broadcast()`.
 - `insert()` is called from `handleCapture()`, which runs in a goroutine per request. The `database/sql` pool handles concurrent access safely.
 - Static files are embedded at compile time via `static_embed.go`. Changes to `static/index.html` require a rebuild to take effect.
+- The `tcpServices` slice in `services.go` owns all non-HTTP TCP emulation. Each entry has a `Banner()` func that returns the bytes sent immediately after accepting the connection. The `udpServicePorts` slice owns all UDP capture ports. Neither uses `net/http` — they use raw `net.Listener` / `net.ListenPacket`.
