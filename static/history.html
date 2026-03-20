@@ -1,0 +1,890 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>webTraffik — History</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0a0e1a;
+      color: #c8d8f0;
+      font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 18px;
+      background: rgba(12, 20, 40, 0.95);
+      border-bottom: 1px solid #1e3a5f;
+      flex-shrink: 0;
+      z-index: 10;
+    }
+
+    header h1 {
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: #4fc3f7;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    nav a {
+      color: #78909c;
+      text-decoration: none;
+      font-size: 0.75rem;
+      margin-left: 16px;
+      letter-spacing: 0.05em;
+      transition: color 0.2s;
+    }
+    nav a:hover, nav a.active { color: #4fc3f7; }
+
+    /* ── Filter panel ── */
+    #filter-panel {
+      background: rgba(8, 15, 30, 0.9);
+      border-bottom: 1px solid #1e3a5f;
+      padding: 14px 20px;
+    }
+
+    #filter-panel h2 {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #546e7a;
+      margin-bottom: 12px;
+    }
+
+    .filter-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: flex-end;
+    }
+
+    .filter-group {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .filter-group label {
+      font-size: 0.65rem;
+      color: #546e7a;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .filter-group input,
+    .filter-group select {
+      background: #0d1a2e;
+      border: 1px solid #1e3a5f;
+      border-radius: 4px;
+      color: #c8d8f0;
+      font-family: inherit;
+      font-size: 0.78rem;
+      padding: 5px 9px;
+      outline: none;
+      transition: border-color 0.2s;
+      min-width: 120px;
+    }
+
+    .filter-group input:focus,
+    .filter-group select:focus {
+      border-color: #4fc3f7;
+    }
+
+    .filter-group input::placeholder { color: #37526a; }
+
+    .filter-group select option {
+      background: #0d1a2e;
+    }
+
+    #btn-query {
+      background: #1565c0;
+      border: none;
+      border-radius: 4px;
+      color: #e3f2fd;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 0.78rem;
+      font-weight: 600;
+      padding: 6px 18px;
+      transition: background 0.2s;
+      letter-spacing: 0.06em;
+      align-self: flex-end;
+    }
+    #btn-query:hover { background: #1976d2; }
+    #btn-query:disabled { background: #1e3a5f; color: #546e7a; cursor: default; }
+
+    #btn-clear {
+      background: transparent;
+      border: 1px solid #1e3a5f;
+      border-radius: 4px;
+      color: #546e7a;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 0.78rem;
+      padding: 6px 14px;
+      transition: all 0.2s;
+      align-self: flex-end;
+    }
+    #btn-clear:hover { border-color: #37526a; color: #78909c; }
+
+    /* ── Status bar ── */
+    #status-bar {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 8px 20px;
+      background: rgba(6, 12, 24, 0.7);
+      border-bottom: 1px solid #12243a;
+      font-size: 0.7rem;
+      color: #546e7a;
+      min-height: 34px;
+    }
+
+    #status-bar .stat { color: #ffb74d; }
+    #status-bar .loading {
+      display: none;
+      align-items: center;
+      gap: 6px;
+    }
+    #status-bar .loading.visible { display: flex; }
+
+    .spinner {
+      width: 12px; height: 12px;
+      border: 2px solid #1e3a5f;
+      border-top-color: #4fc3f7;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Main content ── */
+    #content {
+      flex: 1;
+      padding: 20px;
+      overflow-y: auto;
+    }
+
+    /* ── Placeholder / empty state ── */
+    #empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 300px;
+      color: #2a4060;
+      font-size: 0.85rem;
+      letter-spacing: 0.04em;
+    }
+    #empty-state .icon { font-size: 2.5rem; margin-bottom: 12px; opacity: 0.4; }
+
+    /* ── Charts grid ── */
+    #charts-grid {
+      display: none;
+      flex-direction: column;
+      gap: 20px;
+    }
+    #charts-grid.visible { display: flex; }
+
+    .chart-row {
+      display: grid;
+      gap: 16px;
+    }
+
+    .chart-row.full  { grid-template-columns: 1fr; }
+    .chart-row.halves { grid-template-columns: 1fr 1fr; }
+    .chart-row.thirds { grid-template-columns: 1fr 1fr 1fr; }
+
+    @media (max-width: 900px) {
+      .chart-row.halves,
+      .chart-row.thirds { grid-template-columns: 1fr; }
+    }
+
+    .chart-card {
+      background: rgba(8, 15, 30, 0.85);
+      border: 1px solid #1e3a5f;
+      border-radius: 6px;
+      padding: 14px 16px;
+    }
+
+    .chart-card h3 {
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #546e7a;
+      margin-bottom: 12px;
+      border-bottom: 1px solid #122030;
+      padding-bottom: 8px;
+    }
+
+    .chart-wrap {
+      position: relative;
+    }
+
+    /* ── Summary table ── */
+    #summary-section {
+      display: none;
+    }
+    #summary-section.visible { display: block; }
+
+    #summary-section h3 {
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #546e7a;
+      margin-bottom: 10px;
+    }
+
+    .summary-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.72rem;
+    }
+
+    .summary-table th {
+      text-align: left;
+      padding: 5px 10px;
+      border-bottom: 1px solid #1e3a5f;
+      color: #546e7a;
+      font-weight: normal;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      font-size: 0.62rem;
+    }
+
+    .summary-table td {
+      padding: 4px 10px;
+      border-bottom: 1px solid #0d1a2e;
+      color: #90a4ae;
+    }
+
+    .summary-table td.highlight { color: #e0e0e0; }
+    .summary-table td.num { color: #ffb74d; text-align: right; }
+    .summary-table tr:hover td { background: rgba(30, 58, 95, 0.2); }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>webTraffik</h1>
+  <nav>
+    <a href="/">Live Map</a>
+    <a href="/history.html" class="active">History</a>
+  </nav>
+</header>
+
+<div id="filter-panel">
+  <h2>Query Filters</h2>
+  <div class="filter-row">
+    <div class="filter-group">
+      <label>Country (CC)</label>
+      <input type="text" id="f-country" placeholder="e.g. US, CN, RU" maxlength="8" />
+    </div>
+    <div class="filter-group">
+      <label>Source IP</label>
+      <input type="text" id="f-ip" placeholder="e.g. 1.2.3 or 192.168" />
+    </div>
+    <div class="filter-group">
+      <label>Port</label>
+      <input type="text" id="f-port" placeholder="e.g. 22" maxlength="10" />
+    </div>
+    <div class="filter-group">
+      <label>Service</label>
+      <select id="f-service">
+        <option value="">— Any —</option>
+      </select>
+    </div>
+    <div class="filter-group">
+      <label>From</label>
+      <input type="date" id="f-date-from" />
+    </div>
+    <div class="filter-group">
+      <label>To</label>
+      <input type="date" id="f-date-to" />
+    </div>
+    <div class="filter-group">
+      <label>Max rows</label>
+      <select id="f-limit">
+        <option value="1000">1,000</option>
+        <option value="5000">5,000</option>
+        <option value="10000" selected>10,000</option>
+        <option value="50000">50,000</option>
+      </select>
+    </div>
+    <button id="btn-query">Query</button>
+    <button id="btn-clear">Clear</button>
+  </div>
+</div>
+
+<div id="status-bar">
+  <div class="loading" id="loading-indicator">
+    <div class="spinner"></div>
+    <span>Querying...</span>
+  </div>
+  <span id="result-summary"></span>
+</div>
+
+<div id="content">
+  <div id="empty-state">
+    <div class="icon">&#9783;</div>
+    <div>Set filters above and click Query to explore connection history</div>
+  </div>
+
+  <!-- Charts -->
+  <div id="charts-grid">
+    <!-- Row 1: Timeline (full width) -->
+    <div class="chart-row full">
+      <div class="chart-card">
+        <h3>Connections Over Time</h3>
+        <div class="chart-wrap" style="height:200px">
+          <canvas id="chart-timeline"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- Row 2: By Port + By Country -->
+    <div class="chart-row halves">
+      <div class="chart-card">
+        <h3>Top Ports</h3>
+        <div class="chart-wrap" style="height:220px">
+          <canvas id="chart-ports"></canvas>
+        </div>
+      </div>
+      <div class="chart-card">
+        <h3>Top Countries</h3>
+        <div class="chart-wrap" style="height:220px">
+          <canvas id="chart-countries"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- Row 3: By Service + By Source IP -->
+    <div class="chart-row halves">
+      <div class="chart-card">
+        <h3>Top Services</h3>
+        <div class="chart-wrap" style="height:220px">
+          <canvas id="chart-services"></canvas>
+        </div>
+      </div>
+      <div class="chart-card">
+        <h3>Top Source IPs</h3>
+        <div class="chart-wrap" style="height:220px">
+          <canvas id="chart-ips"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- Row 4: Port timelines (stacked, shown only when multiple ports present) -->
+    <div class="chart-row full" id="port-timeline-row" style="display:none">
+      <div class="chart-card">
+        <h3>Connections Over Time by Port</h3>
+        <div class="chart-wrap" style="height:220px">
+          <canvas id="chart-port-timeline"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- Row 5: Country timelines (shown only when multiple countries present) -->
+    <div class="chart-row full" id="country-timeline-row" style="display:none">
+      <div class="chart-card">
+        <h3>Connections Over Time by Country</h3>
+        <div class="chart-wrap" style="height:220px">
+          <canvas id="chart-country-timeline"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- Row 6: Summary table -->
+    <div class="chart-row full">
+      <div class="chart-card" id="summary-section">
+        <h3>Result Sample (first 200 rows)</h3>
+        <div style="overflow-x:auto;max-height:320px;overflow-y:auto">
+          <table class="summary-table" id="result-table">
+            <thead>
+              <tr>
+                <th>Time (UTC)</th>
+                <th>Source IP</th>
+                <th>City</th>
+                <th>CC</th>
+                <th>Port</th>
+                <th>Service</th>
+                <th>Protocol</th>
+              </tr>
+            </thead>
+            <tbody id="result-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ───────────────────────────────────────────────────────── helpers ── */
+const PALETTE = [
+  '#4fc3f7','#81c784','#ffb74d','#f06292','#ce93d8',
+  '#80cbc4','#fff176','#ff8a65','#a5d6a7','#90caf9',
+  '#ef9a9a','#b39ddb','#80deea','#e6ee9c','#ffcc02',
+  '#f48fb1','#bcaaa4','#ffe082','#b0bec5','#69f0ae',
+];
+
+function color(i) { return PALETTE[i % PALETTE.length]; }
+
+function topN(map, n) {
+  return Object.entries(map)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, n);
+}
+
+// Bucket events by time interval. Returns {label: ISO-string, count: n}[]
+function bucketByTime(events, bucketMs) {
+  const counts = {};
+  for (const ev of events) {
+    const t = Math.floor(new Date(ev.time).getTime() / bucketMs) * bucketMs;
+    counts[t] = (counts[t] || 0) + 1;
+  }
+  return Object.entries(counts)
+    .sort((a, b) => a[0] - b[0])
+    .map(([t, c]) => ({ x: new Date(+t), y: c }));
+}
+
+// Bucket events by time, grouped by a key extractor. Returns { key: [{x,y}] }
+function bucketByTimeGrouped(events, bucketMs, keyFn) {
+  const groups = {};
+  for (const ev of events) {
+    const k = keyFn(ev);
+    const t = Math.floor(new Date(ev.time).getTime() / bucketMs) * bucketMs;
+    if (!groups[k]) groups[k] = {};
+    groups[k][t] = (groups[k][t] || 0) + 1;
+  }
+  const result = {};
+  for (const [k, times] of Object.entries(groups)) {
+    result[k] = Object.entries(times)
+      .sort((a, b) => a[0] - b[0])
+      .map(([t, c]) => ({ x: new Date(+t), y: c }));
+  }
+  return result;
+}
+
+// Choose a sensible bucket size based on the time range
+function chooseBucket(events) {
+  if (events.length < 2) return 60 * 60 * 1000; // 1h
+  const times = events.map(e => new Date(e.time).getTime()).filter(t => !isNaN(t));
+  if (times.length < 2) return 60 * 60 * 1000;
+  const range = Math.max(...times) - Math.min(...times);
+  if (range <= 2 * 3600e3)       return 5 * 60e3;      // ≤2h → 5-min buckets
+  if (range <= 24 * 3600e3)      return 30 * 60e3;     // ≤1d → 30-min buckets
+  if (range <= 7 * 24 * 3600e3)  return 3 * 3600e3;    // ≤7d → 3-hour buckets
+  if (range <= 30 * 24 * 3600e3) return 24 * 3600e3;   // ≤30d → daily buckets
+  return 7 * 24 * 3600e3;                               // >30d → weekly buckets
+}
+
+function portServiceName(port) {
+  const map = {
+    '21':'FTP','22':'SSH','23':'Telnet','25':'SMTP',
+    '53':'DNS','80':'HTTP','110':'POP3','143':'IMAP',
+    '443':'HTTPS','445':'SMB','1433':'MSSQL','3306':'MySQL',
+    '3389':'RDP','5432':'PostgreSQL','6379':'Redis','27017':'MongoDB',
+    '25565':'Minecraft',
+  };
+  const httpAlt = ['8080','8000','8008','8081','8088','8090','8888',
+                   '3000','3001','3128','4000','4200','5000','5001','9000','9090'];
+  if (map[port]) return map[port];
+  if (httpAlt.includes(port)) return `HTTP (${port})`;
+  return port;
+}
+
+/* ───────────────────────────────────────────── Chart instances ── */
+const charts = {};
+
+function destroyAll() {
+  for (const k of Object.keys(charts)) {
+    if (charts[k]) { charts[k].destroy(); delete charts[k]; }
+  }
+}
+
+const CHART_DEFAULTS = {
+  responsive: true,
+  maintainAspectRatio: false,
+  animation: { duration: 400 },
+  plugins: {
+    legend: {
+      labels: {
+        color: '#78909c',
+        font: { family: "'JetBrains Mono', monospace", size: 11 },
+        boxWidth: 12,
+      }
+    },
+    tooltip: {
+      backgroundColor: 'rgba(8,15,30,0.95)',
+      titleColor: '#4fc3f7',
+      bodyColor: '#c8d8f0',
+      borderColor: '#1e3a5f',
+      borderWidth: 1,
+      titleFont: { family: "'JetBrains Mono', monospace", size: 11 },
+      bodyFont: { family: "'JetBrains Mono', monospace", size: 11 },
+    }
+  },
+  scales: {
+    x: {
+      ticks: { color: '#546e7a', font: { family: "'JetBrains Mono', monospace", size: 10 } },
+      grid: { color: 'rgba(30,58,95,0.3)' }
+    },
+    y: {
+      ticks: { color: '#546e7a', font: { family: "'JetBrains Mono', monospace", size: 10 } },
+      grid: { color: 'rgba(30,58,95,0.3)' }
+    }
+  }
+};
+
+function timelineDefaults(unit) {
+  return {
+    ...CHART_DEFAULTS,
+    scales: {
+      x: {
+        type: 'time',
+        time: { unit },
+        ticks: { color: '#546e7a', font: { family: "'JetBrains Mono', monospace", size: 10 }, maxRotation: 0 },
+        grid: { color: 'rgba(30,58,95,0.3)' }
+      },
+      y: {
+        beginAtZero: true,
+        ticks: { color: '#546e7a', font: { family: "'JetBrains Mono', monospace", size: 10 } },
+        grid: { color: 'rgba(30,58,95,0.3)' }
+      }
+    }
+  };
+}
+
+function barDefaults(horizontal) {
+  const base = JSON.parse(JSON.stringify(CHART_DEFAULTS));
+  if (horizontal) {
+    base.indexAxis = 'y';
+  }
+  return base;
+}
+
+/* ─────────────────────────────────────── Render all charts ── */
+function renderCharts(events) {
+  destroyAll();
+  if (!events || events.length === 0) return;
+
+  const bucketMs = chooseBucket(events);
+  const timeUnit = bucketMs <= 5 * 60e3 ? 'minute'
+    : bucketMs <= 30 * 60e3 ? 'hour'
+    : bucketMs <= 3 * 3600e3 ? 'hour'
+    : bucketMs <= 24 * 3600e3 ? 'day'
+    : 'week';
+
+  // ── 1. Timeline ──
+  const timelineData = bucketByTime(events, bucketMs);
+  charts.timeline = new Chart(document.getElementById('chart-timeline'), {
+    type: 'bar',
+    data: {
+      datasets: [{
+        label: 'Connections',
+        data: timelineData,
+        backgroundColor: 'rgba(79,195,247,0.5)',
+        borderColor: '#4fc3f7',
+        borderWidth: 1,
+        borderRadius: 2,
+      }]
+    },
+    options: timelineDefaults(timeUnit),
+  });
+
+  // ── 2. Top Ports (bar) ──
+  const portMap = {};
+  for (const ev of events) portMap[ev.dst_port] = (portMap[ev.dst_port] || 0) + 1;
+  const topPorts = topN(portMap, 15);
+  charts.ports = new Chart(document.getElementById('chart-ports'), {
+    type: 'bar',
+    data: {
+      labels: topPorts.map(([p]) => `${p} (${portServiceName(p)})`),
+      datasets: [{
+        label: 'Hits',
+        data: topPorts.map(([, c]) => c),
+        backgroundColor: topPorts.map((_, i) => color(i) + 'aa'),
+        borderColor: topPorts.map((_, i) => color(i)),
+        borderWidth: 1,
+        borderRadius: 2,
+      }]
+    },
+    options: barDefaults(true),
+  });
+
+  // ── 3. Top Countries (bar) ──
+  const ccMap = {};
+  for (const ev of events) {
+    const k = ev.src_cc || 'Unknown';
+    ccMap[k] = (ccMap[k] || 0) + 1;
+  }
+  const topCC = topN(ccMap, 15);
+  charts.countries = new Chart(document.getElementById('chart-countries'), {
+    type: 'bar',
+    data: {
+      labels: topCC.map(([cc]) => cc),
+      datasets: [{
+        label: 'Connections',
+        data: topCC.map(([, c]) => c),
+        backgroundColor: topCC.map((_, i) => color(i + 3) + 'aa'),
+        borderColor: topCC.map((_, i) => color(i + 3)),
+        borderWidth: 1,
+        borderRadius: 2,
+      }]
+    },
+    options: barDefaults(true),
+  });
+
+  // ── 4. Top Services (doughnut) ──
+  const svcMap = {};
+  for (const ev of events) {
+    const k = portServiceName(ev.dst_port);
+    svcMap[k] = (svcMap[k] || 0) + 1;
+  }
+  const topSvc = topN(svcMap, 12);
+  charts.services = new Chart(document.getElementById('chart-services'), {
+    type: 'doughnut',
+    data: {
+      labels: topSvc.map(([s]) => s),
+      datasets: [{
+        data: topSvc.map(([, c]) => c),
+        backgroundColor: topSvc.map((_, i) => color(i + 6) + 'cc'),
+        borderColor: 'rgba(10,14,26,0.5)',
+        borderWidth: 2,
+      }]
+    },
+    options: {
+      ...CHART_DEFAULTS,
+      scales: {},
+      cutout: '60%',
+    },
+  });
+
+  // ── 5. Top Source IPs (bar) ──
+  const ipMap = {};
+  for (const ev of events) ipMap[ev.src_ip] = (ipMap[ev.src_ip] || 0) + 1;
+  const topIPs = topN(ipMap, 15);
+  charts.ips = new Chart(document.getElementById('chart-ips'), {
+    type: 'bar',
+    data: {
+      labels: topIPs.map(([ip]) => ip),
+      datasets: [{
+        label: 'Hits',
+        data: topIPs.map(([, c]) => c),
+        backgroundColor: topIPs.map((_, i) => color(i + 9) + 'aa'),
+        borderColor: topIPs.map((_, i) => color(i + 9)),
+        borderWidth: 1,
+        borderRadius: 2,
+      }]
+    },
+    options: barDefaults(true),
+  });
+
+  // ── 6. Per-port timeline (only if >1 distinct port in results) ──
+  const distinctPorts = Object.keys(portMap);
+  const portTimelineRow = document.getElementById('port-timeline-row');
+  if (distinctPorts.length > 1) {
+    portTimelineRow.style.display = '';
+    const topPortsForTimeline = topN(portMap, 8).map(([p]) => p);
+    const grouped = bucketByTimeGrouped(
+      events.filter(e => topPortsForTimeline.includes(e.dst_port)),
+      bucketMs,
+      e => `${e.dst_port} (${portServiceName(e.dst_port)})`
+    );
+    charts.portTimeline = new Chart(document.getElementById('chart-port-timeline'), {
+      type: 'line',
+      data: {
+        datasets: Object.entries(grouped).map(([label, data], i) => ({
+          label,
+          data,
+          borderColor: color(i),
+          backgroundColor: color(i) + '22',
+          borderWidth: 1.5,
+          pointRadius: 0,
+          tension: 0.3,
+          fill: false,
+        }))
+      },
+      options: { ...timelineDefaults(timeUnit), plugins: { ...CHART_DEFAULTS.plugins } },
+    });
+  } else {
+    portTimelineRow.style.display = 'none';
+  }
+
+  // ── 7. Per-country timeline (only if >1 distinct country) ──
+  const distinctCC = Object.keys(ccMap);
+  const ccTimelineRow = document.getElementById('country-timeline-row');
+  if (distinctCC.length > 1) {
+    ccTimelineRow.style.display = '';
+    const topCCForTimeline = topN(ccMap, 8).map(([cc]) => cc);
+    const groupedCC = bucketByTimeGrouped(
+      events.filter(e => topCCForTimeline.includes(e.src_cc || 'Unknown')),
+      bucketMs,
+      e => e.src_cc || 'Unknown'
+    );
+    charts.countryTimeline = new Chart(document.getElementById('chart-country-timeline'), {
+      type: 'line',
+      data: {
+        datasets: Object.entries(groupedCC).map(([label, data], i) => ({
+          label,
+          data,
+          borderColor: color(i + 5),
+          backgroundColor: color(i + 5) + '22',
+          borderWidth: 1.5,
+          pointRadius: 0,
+          tension: 0.3,
+          fill: false,
+        }))
+      },
+      options: { ...timelineDefaults(timeUnit), plugins: { ...CHART_DEFAULTS.plugins } },
+    });
+  } else {
+    ccTimelineRow.style.display = 'none';
+  }
+}
+
+/* ─────────────────────────────────────────── Result table ── */
+function renderTable(events) {
+  const tbody = document.getElementById('result-tbody');
+  tbody.innerHTML = '';
+  const slice = events.slice(0, 200);
+  const frag = document.createDocumentFragment();
+  for (const ev of slice) {
+    const tr = document.createElement('tr');
+    const t = ev.time ? ev.time.replace('T', ' ').replace('Z', '') : '';
+    tr.innerHTML = `
+      <td>${t}</td>
+      <td class="highlight">${ev.src_ip}</td>
+      <td>${ev.src_city || ''}</td>
+      <td>${ev.src_cc || ''}</td>
+      <td class="highlight">${ev.dst_port}</td>
+      <td>${portServiceName(ev.dst_port)}</td>
+      <td>${ev.protocol || 'tcp'}</td>`;
+    frag.appendChild(tr);
+  }
+  tbody.appendChild(frag);
+}
+
+/* ─────────────────────────────────────── Populate service dropdown ── */
+async function loadServices() {
+  try {
+    const resp = await fetch('/api/services');
+    const svcs = await resp.json();
+    const sel = document.getElementById('f-service');
+    svcs.forEach(s => {
+      const opt = document.createElement('option');
+      opt.value = s.name;
+      opt.textContent = s.name + ' (' + s.ports.sort((a,b)=>a-b).join(', ') + ')';
+      sel.appendChild(opt);
+    });
+  } catch(e) { /* ignore */ }
+}
+
+/* ─────────────────────────────────────────────── Main query ── */
+async function runQuery() {
+  const btn = document.getElementById('btn-query');
+  btn.disabled = true;
+  document.getElementById('loading-indicator').classList.add('visible');
+  document.getElementById('result-summary').textContent = '';
+
+  const params = new URLSearchParams();
+  const country = document.getElementById('f-country').value.trim();
+  const ip      = document.getElementById('f-ip').value.trim();
+  const port    = document.getElementById('f-port').value.trim();
+  const service = document.getElementById('f-service').value;
+  const from    = document.getElementById('f-date-from').value;
+  const to      = document.getElementById('f-date-to').value;
+  const limit   = document.getElementById('f-limit').value;
+
+  if (country) params.set('country', country);
+  if (ip)      params.set('ip', ip);
+  if (port)    params.set('port', port);
+  if (service) params.set('service', service);
+  if (from)    params.set('date_from', from);
+  if (to)      params.set('date_to', to);
+  params.set('limit', limit);
+
+  try {
+    const resp = await fetch('/api/history?' + params.toString());
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const events = await resp.json();
+
+    // Update status
+    const summary = document.getElementById('result-summary');
+    summary.innerHTML = `Returned <span class="stat">${events.length.toLocaleString()}</span> events`;
+    if (events.length === +limit) {
+      summary.innerHTML += ' <span style="color:#ef9a9a">(limit reached — try narrowing filters)</span>';
+    }
+
+    if (events.length === 0) {
+      document.getElementById('charts-grid').classList.remove('visible');
+      document.getElementById('summary-section').classList.remove('visible');
+      document.getElementById('empty-state').style.display = 'flex';
+      document.getElementById('empty-state').querySelector('div:last-child').textContent =
+        'No events matched the selected filters.';
+      destroyAll();
+    } else {
+      document.getElementById('empty-state').style.display = 'none';
+      document.getElementById('charts-grid').classList.add('visible');
+      document.getElementById('summary-section').classList.add('visible');
+      renderCharts(events);
+      renderTable(events);
+    }
+  } catch(err) {
+    document.getElementById('result-summary').textContent = 'Error: ' + err.message;
+  } finally {
+    btn.disabled = false;
+    document.getElementById('loading-indicator').classList.remove('visible');
+  }
+}
+
+function clearFilters() {
+  document.getElementById('f-country').value = '';
+  document.getElementById('f-ip').value = '';
+  document.getElementById('f-port').value = '';
+  document.getElementById('f-service').value = '';
+  document.getElementById('f-date-from').value = '';
+  document.getElementById('f-date-to').value = '';
+  document.getElementById('f-limit').value = '10000';
+  destroyAll();
+  document.getElementById('charts-grid').classList.remove('visible');
+  document.getElementById('summary-section').classList.remove('visible');
+  document.getElementById('empty-state').style.display = 'flex';
+  document.getElementById('empty-state').querySelector('div:last-child').textContent =
+    'Set filters above and click Query to explore connection history';
+  document.getElementById('result-summary').textContent = '';
+}
+
+/* ─────────────────────────────────────────────── Boot ── */
+document.getElementById('btn-query').addEventListener('click', runQuery);
+document.getElementById('btn-clear').addEventListener('click', clearFilters);
+
+// Also run on Enter in any filter input
+document.querySelectorAll('#filter-panel input').forEach(el => {
+  el.addEventListener('keydown', e => { if (e.key === 'Enter') runQuery(); });
+});
+
+// Default date range: last 30 days
+(function setDefaultDates() {
+  const today = new Date();
+  const from = new Date(today);
+  from.setDate(from.getDate() - 30);
+  document.getElementById('f-date-to').value = today.toISOString().slice(0, 10);
+  document.getElementById('f-date-from').value = from.toISOString().slice(0, 10);
+})();
+
+loadServices();
+</script>
+</body>
+</html>

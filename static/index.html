@@ -287,7 +287,10 @@
 <header>
   <h1><span id="ws-status"></span>webTraffik</h1>
   <div id="self-info">My IP: <span id="my-ip">—</span> &nbsp;|&nbsp; <span id="my-loc">—</span></div>
-  <div id="stats">Connections: <span id="conn-count">0</span></div>
+  <div style="display:flex;align-items:center;gap:18px">
+    <div id="stats">Connections: <span id="conn-count">0</span></div>
+    <a href="/history.html" style="color:#78909c;text-decoration:none;font-size:0.72rem;letter-spacing:0.05em;transition:color 0.2s" onmouseover="this.style.color='#4fc3f7'" onmouseout="this.style.color='#78909c'">History</a>
+  </div>
 </header>
 
 <div id="dot-tooltip"></div>

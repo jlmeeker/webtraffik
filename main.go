@@ -334,6 +334,74 @@ func startDashboardServer() {
 		})
 	})
 
+	// History query endpoint — GET /api/history?country=US&ip=1.2&port=22&service=SSH&date_from=2024-01-01&date_to=2024-12-31&limit=5000
+	mux.HandleFunc("/api/history", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		limitStr := q.Get("limit")
+		limit := 10000
+		if limitStr != "" {
+			if n, err := strconv.Atoi(limitStr); err == nil && n > 0 {
+				limit = n
+			}
+		}
+		f := HistoryFilter{
+			Country:  q.Get("country"),
+			IP:       q.Get("ip"),
+			Port:     q.Get("port"),
+			Service:  q.Get("service"),
+			DateFrom: q.Get("date_from"),
+			DateTo:   q.Get("date_to"),
+			Limit:    limit,
+		}
+		events, err := appDB.queryHistory(f)
+		if err != nil {
+			http.Error(w, "query error: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if events == nil {
+			events = []ConnectionEvent{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(events)
+	})
+
+	// Services list endpoint — returns all known service names for the filter dropdown
+	mux.HandleFunc("/api/services", func(w http.ResponseWriter, r *http.Request) {
+		type svcEntry struct {
+			Name  string `json:"name"`
+			Ports []int  `json:"ports"`
+		}
+		seen := map[string][]int{}
+		for port, name := range tcpServiceNames {
+			seen[name] = append(seen[name], port)
+		}
+		// HTTP ports
+		httpPorts := []int{}
+		for _, p := range capturePorts {
+			if _, ok := tcpServiceNames[p]; !ok {
+				httpPorts = append(httpPorts, p)
+			}
+		}
+		seen["HTTP"] = append(seen["HTTP"], httpPorts...)
+		for _, p := range udpServicePorts {
+			seen["DNS"] = append(seen["DNS"], p)
+		}
+		seen["Minecraft"] = []int{minecraftPort}
+
+		var result []svcEntry
+		for name, ports := range seen {
+			result = append(result, svcEntry{Name: name, Ports: ports})
+		}
+		// Sort by name for stable output
+		for i := 1; i < len(result); i++ {
+			for j := i; j > 0 && result[j].Name < result[j-1].Name; j-- {
+				result[j], result[j-1] = result[j-1], result[j]
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(result)
+	})
+
 	// WebSocket endpoint
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
