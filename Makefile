@@ -5,20 +5,19 @@ OUTDIR  := dist
 PLATFORMS := \
 	linux/amd64 \
 	linux/arm64 \
-	linux/arm \
 	darwin/amd64 \
 	darwin/arm64 \
 	windows/amd64 \
 	windows/arm64
 
-.PHONY: build run clean dist $(PLATFORMS)
+.PHONY: build run clean dist $(PLATFORMS) linux/armv6 linux/armv7
 
 # Build for the current host OS/arch
 build:
 	go build $(GOFLAGS) -o $(BINARY) .
 
 # Cross-compile for all platforms into dist/
-dist: $(PLATFORMS)
+dist: $(PLATFORMS) linux/armv6 linux/armv7
 
 $(PLATFORMS):
 	$(eval OS   := $(word 1,$(subst /, ,$@)))
@@ -28,6 +27,18 @@ $(PLATFORMS):
 	@mkdir -p $(OUTDIR)
 	@echo "  building $(OUT)"
 	@GOOS=$(OS) GOARCH=$(ARCH) go build $(GOFLAGS) -o $(OUT) .
+
+# Pi Zero / Pi 1 (ARMv6, hard-float)
+linux/armv6:
+	@mkdir -p $(OUTDIR)
+	@echo "  building $(OUTDIR)/$(BINARY)_linux_armv6  (Pi Zero / Pi 1)"
+	@GOOS=linux GOARCH=arm GOARM=6 go build $(GOFLAGS) -o $(OUTDIR)/$(BINARY)_linux_armv6 .
+
+# Pi 2 / Pi 3 / Pi Zero 2 W 32-bit (ARMv7)
+linux/armv7:
+	@mkdir -p $(OUTDIR)
+	@echo "  building $(OUTDIR)/$(BINARY)_linux_armv7  (Pi 2 / Pi 3 / Pi Zero 2 W 32-bit)"
+	@GOOS=linux GOARCH=arm GOARM=7 go build $(GOFLAGS) -o $(OUTDIR)/$(BINARY)_linux_armv7 .
 
 run: build
 	sudo ./$(BINARY)
