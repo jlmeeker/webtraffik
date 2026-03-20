@@ -225,6 +225,21 @@
     }
     #ws-status.connected    { background: #66bb6a; box-shadow: 0 0 6px #66bb6a; }
     #ws-status.disconnected { background: #ef5350; }
+
+    /* ── Dot tooltip ── */
+    #dot-tooltip {
+      position: fixed;
+      pointer-events: none;
+      background: rgba(8, 15, 30, 0.92);
+      border: 1px solid #1e3a5f;
+      color: #c8d8f0;
+      font-size: 0.72rem;
+      padding: 4px 9px;
+      border-radius: 4px;
+      white-space: nowrap;
+      display: none;
+      z-index: 100;
+    }
   </style>
 </head>
 <body>
@@ -234,6 +249,8 @@
   <div id="self-info">My IP: <span id="my-ip">—</span> &nbsp;|&nbsp; <span id="my-loc">—</span></div>
   <div id="stats">Connections: <span id="conn-count">0</span></div>
 </header>
+
+<div id="dot-tooltip"></div>
 
 <div id="map-container">
   <svg id="map"></svg>
@@ -554,7 +571,10 @@
       .attr('r', 0)
       .attr('fill', c1)
       .attr('opacity', 1)
-      .attr('filter', 'url(#glow-orange)');
+      .attr('filter', 'url(#glow-orange)')
+      .style('cursor', 'crosshair');
+
+    attachTooltip(srcDot, tooltipLabel(ev));
 
     srcDot.transition().duration(300).attr('r', 4)
       .transition().delay(3500).duration(600)
@@ -590,16 +610,44 @@
   // ── WebSocket ─────────────────────────────────────────────────────────────
   const wsStatus = document.getElementById('ws-status');
   const connCountEl = document.getElementById('conn-count');
+  const dotTooltip = document.getElementById('dot-tooltip');
+
+  function tooltipLabel(ev) {
+    const city = ev.src_city || '';
+    const cc   = ev.src_cc   || '';
+    if (city && cc) return `${city}, ${cc}`;
+    if (city) return city;
+    if (cc)   return cc;
+    return ev.src_ip || '';
+  }
+
+  function attachTooltip(sel, label) {
+    sel
+      .on('mouseover', function(event) {
+        if (!label) return;
+        dotTooltip.textContent = label;
+        dotTooltip.style.display = 'block';
+      })
+      .on('mousemove', function(event) {
+        dotTooltip.style.left = (event.clientX + 12) + 'px';
+        dotTooltip.style.top  = (event.clientY - 28) + 'px';
+      })
+      .on('mouseout', function() {
+        dotTooltip.style.display = 'none';
+      });
+  }
 
   // Draw a faded static dot for historical events (no arc animation)
   function drawHistoryDot(ev) {
     if (!ev.src_lon && !ev.src_lat) return;
     const [x, y] = projection([ev.src_lon, ev.src_lat]);
     const portColor = portStats[ev.dst_port]?.color || '#546e7a';
-    dotGroup.append('circle')
+    const dot = dotGroup.append('circle')
       .attr('cx', x).attr('cy', y).attr('r', 3)
       .attr('fill', portColor)
-      .attr('opacity', 0.35);
+      .attr('opacity', 0.35)
+      .style('cursor', 'crosshair');
+    attachTooltip(dot, tooltipLabel(ev));
   }
 
   function connect() {
