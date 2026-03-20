@@ -44,27 +44,34 @@ handleCapture(srcIP, dstPort)
 ### The hub (`main.go`)
 
 - `hub` struct: mutex-protected map of subscriber channels + a `[]ConnectionEvent` ring buffer
-- `broadcast()`: appends to ring buffer (evicting oldest when full) then sends to all subscriber channels with a non-blocking `select` (slow clients are dropped, not stalled)
+- `broadcast()`: appends to ring buffer (evicting oldest when full) under lock, then snapshots subscribers and releases the lock before fan-out. Sends to all subscriber channels with a non-blocking `select` (slow clients are dropped, not stalled). This lock-snapshot-release pattern avoids blocking subscribe/unsubscribe operations during fan-out.
 - `snapshot()`: returns a copy of the ring buffer (used internally; WS handler reads from DB directly)
 - On startup, `loadHistory(1000)` seeds the ring buffer from the DB so in-memory state survives restarts
 
 ### WebSocket `/ws` endpoint (`main.go`)
 
 1. Accepts the WebSocket upgrade
-2. Calls `appDB.loadHistory(historySize)` — reads up to 1000 events from SQLite, oldest-first
-3. Sends each historical event with `Replay = true` before subscribing to live events
-4. Subscribes to the hub channel and streams live events as they arrive
-5. Exits cleanly when the client disconnects (`ctx.Done()`)
+2. Subscribes to the hub channel FIRST (256-deep channel absorbs bursts during replay)
+3. Calls `appDB.loadHistory(historySize)` — reads up to 1000 events from SQLite, oldest-first
+4. Sends each historical event with `Replay = true` while live events buffer in the channel
+5. Drains buffered live events and continues streaming as they arrive
+6. Exits cleanly when the client disconnects (`ctx.Done()`)
 
 ### Frontend (`static/index.html`)
 
 - D3.js Natural Earth projection (svg `#map`)
-- Animated arcs: great-circle paths via `d3.geoInterpolate`, 60-point sampling, animated with `stroke-dashoffset`
-- Persistent dots: remain after arc animation completes; carry `data-city` and `data-cc` attributes
-- Tooltips: `#dot-tooltip` div, shown on `mouseover` of `.src-dot` elements, displays "City, CC"
-- Port legend (`#port-legend`): rows sorted by hit count, each row has a color swatch, port number, and count
-- Country/IP sidebar: `#country-rows` and `#ip-rows` — top sources by traffic count
-- Log panel (`#log-panel`): scrolling list, capped at 200 entries, shows time/IP/city/CC/port
+- Animated arcs: great-circle paths via `d3.geoInterpolate`, 20-point sampling with `curveNatural` (optimized from 60-point CatmullRom), animated with `stroke-dashoffset`
+- Persistent dots: remain after arc animation completes; store `[lon, lat]` as D3 datum for reprojection on resize (no DOM attributes)
+- Tooltips: `#dot-tooltip` div, shown on `mouseover` of `.src-dot` elements via D3 event handlers, displays "City, CC" or just IP if geo unavailable
+- Four corner overlay panels positioned absolutely on the map (no separate sidebars):
+  - `#panel-port` (top-left): Traffic by Port — top 10 ports sorted by hit count, color swatch + port number + count
+  - `#panel-service` (top-right): Top Services — top 10 services with bar charts showing relative traffic
+  - `#panel-country` (bottom-left): Traffic by Country — top 10 countries by connection count
+  - `#panel-ip` (bottom-right): Traffic by IP — top 10 source IPs by connection count
+- Sidebar rendering decoupled from event processing: uses `requestIdleCallback` on a 2-second timer with dirty flags; only re-renders when data changes
+- Log panel (`#log-panel`): scrolling list, capped at 200 entries, shows time/IP/city/CC/port; uses rAF-based rendering via `scheduleLogRender()` for low latency
+- Arc lifecycle: gradient pooling (reuses SVG gradients by color pair instead of per-arc gradients), no glow filters on dots (only on self-dot), arc count capped at 150, dot count capped at 1000
+- Arc animation lifespan: ~2.6 seconds (800ms draw + 1200ms hold + 600ms fade)
 
 ---
 
@@ -79,7 +86,7 @@ handleCapture(srcIP, dstPort)
 | `geodb.go` | `ensureGeoDB()` — auto-download of `GeoLite2-City.mmdb` from GitHub mirror |
 | `iputil.go` | `discoverPublicIP()` — queries external APIs to find the server's public IP |
 | `static_embed.go` | `//go:embed static` directive; exposes `staticFiles fs.FS` |
-| `static/index.html` | Entire browser UI: D3.js map, WebSocket client, arc animation, tooltips, legend, log |
+| `static/index.html` | Entire browser UI: D3.js map, WebSocket client, arc animation, tooltips, corner panels, log |
 | `firewall.sh` | nftables ruleset installer; auto-detects interface/subnet; substitutes tokens into `nftables.conf` |
 | `nftables.conf` | Ruleset template; contains `__SUBNET__`, `__CAPTURE_PORTS_TCP__`, and `__CAPTURE_PORTS_UDP__` tokens |
 | `install.sh` | Standalone deployer: creates user, data dir, copies binary, writes systemd unit, calls `firewall.sh` |
@@ -94,7 +101,7 @@ This is the most operationally important section. Mismatches between the port de
 
 ### Definition locations
 
-**1. `main.go` — `capturePorts` variable (around line 107)**
+**1. `main.go` — `capturePorts` variable (around line 113)**
 
 ```go
 var capturePorts = []int{
@@ -105,7 +112,7 @@ var capturePorts = []int{
 
 This is the authoritative list of **HTTP-only ports**. The app binds an `http.ListenAndServe` listener on every port in this slice.
 
-**2. `services.go` — `tcpServices` slice (around line 30)**
+**2. `services.go` — `tcpServices` slice (around line 21)**
 
 ```go
 var tcpServices = []serviceEntry{
@@ -117,7 +124,7 @@ var tcpServices = []serviceEntry{
 
 This is the authoritative list of **TCP service ports** (non-HTTP). Each entry specifies a port, service name, and a `Banner()` function that returns the bytes sent immediately after accepting a connection. These use raw `net.Listener`, not `net/http`.
 
-**3. `services.go` — `udpServicePorts` slice (around line 50)**
+**3. `services.go` — `udpServicePorts` slice (around line 240)**
 
 ```go
 var udpServicePorts = []int{53}
@@ -203,9 +210,11 @@ CREATE INDEX IF NOT EXISTS events_id_desc ON events(id DESC);
 
 ### Key behaviors
 
-- `insert()` (`db.go:74`): fire-and-forget. Errors are logged with `log.Printf` but never returned. The capture path never blocks on DB writes.
-- `loadHistory(limit int)` (`db.go:92`): subquery selects the `limit` most-recent rows by `id DESC`, then re-orders them `ASC` for oldest-first replay. Called twice: once at startup (to seed the ring buffer) and once per new WebSocket connection.
-- `close()` (`db.go:123`): called via `defer` in `main()`.
+- `insert()` (`db.go:88`): queues a `ConnectionEvent` into a 4096-deep buffered channel. If the queue is full, the event is dropped (logged) — the capture path never blocks on DB writes.
+- `writeLoop()` (`db.go:100`): dedicated goroutine that drains the insert queue and batches writes into SQLite. Groups pending events into a single transaction, flushing whenever the queue drains or a batch reaches 64 events. This provides high throughput under burst traffic.
+- `flushBatch()` (`db.go:137`): writes a slice of events to SQLite in a single transaction. All errors are logged; failures do not crash the app.
+- `loadHistory(limit int)` (`db.go:179`): subquery selects the `limit` most-recent rows by `id DESC`, then re-orders them `ASC` for oldest-first replay. Called twice: once at startup (to seed the ring buffer) and once per new WebSocket connection.
+- `close()` (`db.go:210`): closes the insert queue channel (signaling `writeLoop` to flush and exit), waits for the writer goroutine to finish, then releases the database connection.
 
 ---
 
@@ -258,7 +267,7 @@ make firewall
 
 ### Port sync
 
-`firewall.sh` `CAPTURE_PORTS_TCP` (line ~70) must match `main.go` `capturePorts` (line ~107). See the Port List section above.
+`firewall.sh` `CAPTURE_PORTS_TCP` (line ~71) must match `main.go` `capturePorts` (line ~113). See the Port List section above.
 
 ---
 
@@ -304,7 +313,7 @@ make uninstall
 
 Edit **two files** and redeploy:
 
-**`main.go`** — add to `capturePorts` (line ~107):
+**`main.go`** — add to `capturePorts` (line ~113):
 ```go
 var capturePorts = []int{
     // ... existing ports ...
@@ -328,8 +337,8 @@ Do not change one file without the other.
 
 The dashboard port is hardcoded as `:8999` in two places:
 
-- `main.go:317` — `http.ListenAndServe(":8999", mux)`
-- `main.go:193` — the log message `"Dashboard available at http://localhost:8999"`
+- `main.go:345` — `http.ListenAndServe(":8999", mux)`
+- `main.go:212` — the log message `"Dashboard available at http://localhost:8999"`
 - `install.sh:133` — the post-install hint line (cosmetic only)
 
 The nftables firewall does **not** enumerate the dashboard port explicitly — it is covered by the subnet-only catch-all rule, so no firewall change is required when changing the dashboard port. After changing the port, rebuild and redeploy with `make remote-install IP=x.x.x.x`.
@@ -348,13 +357,13 @@ type ConnectionEvent struct {
 }
 ```
 
-Also populate it in `handleCapture()` where the struct is built (line ~230).
+Also populate it in `handleCapture()` where the struct is built (line ~241).
 
 **`db.go` — schema, insert, and scan**
 
-1. `createSchema()` (line ~50): add the column to the `CREATE TABLE` statement. If modifying an existing deployed database, also write a migration or drop and recreate the DB.
-2. `insert()` (line ~74): add the new field to both the column list and the `VALUES` placeholder list, and append `ev.NewField` to the `Exec` arguments.
-3. `loadHistory()` (line ~92): add the column to the `SELECT` list and add `&ev.NewField` to the `rows.Scan()` call. The order of columns in `SELECT` and `Scan` must match exactly.
+1. `createSchema()` (line ~58): add the column to the `CREATE TABLE` statement. If modifying an existing deployed database, also write a migration or drop and recreate the DB.
+2. `insert()` (line ~88): add the new field to both the column list and the `VALUES` placeholder list, and append `ev.NewField` to the `Exec` arguments.
+3. `loadHistory()` (line ~179): add the column to the `SELECT` list and add `&ev.NewField` to the `rows.Scan()` call. The order of columns in `SELECT` and `Scan` must match exactly.
 
 **`static/index.html` — frontend**
 
@@ -364,7 +373,7 @@ Reference the new field as `ev.new_field` (matching the JSON tag) wherever the e
 
 Edit **two files** and redeploy:
 
-**`services.go`** — add to `tcpServices` slice (around line 30):
+**`services.go`** — add to `tcpServices` slice (around line 21):
 ```go
 var tcpServices = []serviceEntry{
     // ... existing services ...
@@ -390,7 +399,7 @@ Do not change one file without the other.
 
 Edit **two files** and redeploy:
 
-**`services.go`** — add to `udpServicePorts` slice (around line 50):
+**`services.go`** — add to `udpServicePorts` slice (around line 240):
 ```go
 var udpServicePorts = []int{
     // ... existing ports ...
@@ -416,7 +425,7 @@ Do not change one file without the other.
 
 - The `modernc.org/sqlite` driver requires no CGo. Do not substitute it with a CGo-based driver — it will break cross-compilation.
 - `geo.go` uses an `atomic.Pointer[rgeo.Rgeo]` for the fallback geocoder. This is intentionally lock-free; do not add a mutex around `rgeo` access.
-- The `hub.broadcast()` method holds the hub mutex while writing to subscriber channels. Subscriber channel sends are non-blocking (`select/default`). Do not add blocking operations inside `broadcast()`.
-- `insert()` is called from `handleCapture()`, which runs in a goroutine per request. The `database/sql` pool handles concurrent access safely.
+- The `hub.broadcast()` method snapshots subscribers under lock, then releases the lock before fan-out. Subscriber channel sends are non-blocking (`select/default`). This pattern keeps subscribe/unsubscribe operations fast even during high-traffic fan-out. Do not add blocking operations to the snapshot-and-send logic.
+- `insert()` queues events into a buffered channel and never blocks. A dedicated `writeLoop()` goroutine drains the channel and batches writes into SQLite for high throughput. The `database/sql` pool handles concurrent reads safely.
 - Static files are embedded at compile time via `static_embed.go`. Changes to `static/index.html` require a rebuild to take effect.
 - The `tcpServices` slice in `services.go` owns all non-HTTP TCP emulation. Each entry has a `Banner()` func that returns the bytes sent immediately after accepting the connection. The `udpServicePorts` slice owns all UDP capture ports. Neither uses `net/http` — they use raw `net.Listener` / `net.ListenPacket`.

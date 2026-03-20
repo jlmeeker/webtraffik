@@ -1,6 +1,6 @@
 # webTraffik
 
-A real-time HTTP traffic visualization tool that captures incoming connections, geolocates them using MaxMind GeoLite2, and renders them on an interactive D3.js world map with animated great-circle arcs.
+A real-time network traffic sensor and visualization tool that captures incoming connections on common HTTP ports, TCP services (FTP, SSH, Telnet, SMTP, databases, etc.), and UDP ports, geolocates them using MaxMind GeoLite2, and renders them on an interactive D3.js world map with animated great-circle arcs.
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Go Version](https://img.shields.io/badge/go-1.26+-00ADD8.svg)
@@ -9,12 +9,15 @@ A real-time HTTP traffic visualization tool that captures incoming connections, 
 ## Features
 
 - **Live Traffic Visualization**: Animated great-circle arcs showing connections from source to destination in real-time
+- **Multi-Protocol Support**: Captures HTTP traffic (17 common ports), TCP service emulation (14 services including SSH, FTP, databases), and UDP traffic (DNS)
 - **Automatic Geolocation**: MaxMind GeoLite2 City database with `rgeo` fallback for enhanced city-level accuracy
-- **Dark-Themed D3.js Map**: Beautiful Natural Earth projection with glowing effects and graticule
+- **Dark-Themed D3.js Map**: Beautiful Natural Earth projection with optimized arc animations
+- **Corner Overlay Panels**: Four transparent panels showing Traffic by Port, Top Services, Traffic by Country, and Traffic by IP — overlaid on the map for an unobstructed view
 - **Historical Replay**: New dashboard connections receive the last 1000 events as faded static dots
 - **SQLite Persistence**: Events survive service restarts; stored in `/var/lib/webtraffik/events.db`
 - **Port-Based Color Coding**: Each monitored port gets a unique color in the legend and arc animations
 - **Map Dot Tooltips**: Hovering over any source dot shows "City, CC" for that connection
+- **Performance Optimized**: Gradient pooling, reduced path sampling, arc lifecycle capping, decoupled sidebar rendering with requestIdleCallback
 - **Automated nftables Firewall**: Auto-configured on install — restricts management ports (SSH, dashboard) to your subnet while exposing capture ports to the internet
 - **Zero Configuration**: Auto-downloads GeoLite2 database from GitHub mirror on first run (no license key needed)
 - **Systemd Integration**: Runs as non-root user with `CAP_NET_BIND_SERVICE` capability for ports <1024
@@ -22,7 +25,13 @@ A real-time HTTP traffic visualization tool that captures incoming connections, 
 
 ## Architecture
 
-webTraffik listens directly on common non-TLS HTTP ports (80, 8080, 8000, 8008, 8081, 8088, 8090, 8888, 3000, 3001, 3128, 4000, 4200, 5000, 5001, 9000, 9090) and serves a dashboard on port **8999**.
+webTraffik listens on:
+- **17 HTTP ports** (80, 8080, 8000, 8008, 8081, 8088, 8090, 8888, 3000, 3001, 3128, 4000, 4200, 5000, 5001, 9000, 9090)
+- **14 TCP service ports** with protocol emulation (21/FTP, 22/SSH, 23/Telnet, 25/SMTP, 110/POP3, 143/IMAP, 443/HTTPS, 445/SMB, 1433/MSSQL, 3306/MySQL, 3389/RDP, 5432/PostgreSQL, 6379/Redis, 27017/MongoDB)
+- **1 UDP port** (53/DNS)
+- **1 TCP service port** for Minecraft Java Edition (25565)
+
+The dashboard is served on port **8999** (management-only, restricted to your subnet by the firewall).
 
 Traffic reaches the app via **pure NAT redirect** — your firewall forwards packets without injecting proxy headers, so `RemoteAddr` contains the original source IP.
 
@@ -33,11 +42,15 @@ The dashboard uses WebSocket for real-time event streaming. Each new connection 
 ## Screenshot
 
 The dashboard shows:
-- A world map with your server location marked in cyan
-- Animated arcs from visitor IPs to your server
+- A full-width world map with your server location marked in cyan
+- Animated arcs from visitor IPs to your server (optimized with gradient pooling and 20-point path sampling)
 - Persistent dots with mouseover tooltips showing "City, CC"
-- A live port legend sorted by traffic count
-- A scrolling log of all connections with timestamps and geolocation details
+- Four corner overlay panels on the map:
+  - **Top-left**: Traffic by Port (live port statistics sorted by count)
+  - **Top-right**: Top Services (service names with bar charts showing relative traffic)
+  - **Bottom-left**: Traffic by Country (top 10 countries by connection count)
+  - **Bottom-right**: Traffic by IP (top 10 source IPs by connection count)
+- A scrolling log panel at the bottom showing all connections with timestamps and geolocation details
 
 ## Quick Start
 
@@ -173,7 +186,11 @@ sudo bash firewall.sh
 
 ### Port sync requirement
 
-**Important**: If you add or remove ports in `capturePorts` in `main.go`, you must also update the `CAPTURE_PORTS` variable in `firewall.sh` (around line 70) to match, then re-apply:
+**Important**: If you add or remove ports in `main.go` (HTTP ports in `capturePorts`) or `services.go` (TCP service ports in `tcpServices` or UDP ports in `udpServicePorts`), you must also update the corresponding variables in `firewall.sh` to match:
+- `CAPTURE_PORTS_TCP` (around line 70) — must include all HTTP ports from `main.go` plus all TCP service ports from `services.go`
+- `CAPTURE_PORTS_UDP` (around line 75) — must include all UDP ports from `services.go`
+
+Then re-apply:
 
 ```bash
 make remote-install IP=x.x.x.x
@@ -193,16 +210,17 @@ nft list ruleset
 
 ```
 webTraffik/
-├── main.go              # Entry point, hub, WebSocket server, capture listeners
+├── main.go              # Entry point, hub, WebSocket server, HTTP capture listeners
+├── services.go          # TCP service emulation (14 services), UDP capture, Minecraft support
 ├── db.go                # SQLite event persistence (openEventDB, insert, loadHistory)
 ├── geo.go               # GeoLite2 + rgeo reverse geocoding
 ├── geodb.go             # Auto-download GeoLite2-City.mmdb from GitHub mirror
 ├── iputil.go            # Public IP discovery via external APIs
 ├── static_embed.go      # Go embed directive for static files
 ├── static/
-│   └── index.html       # D3.js frontend: map, arcs, legend, tooltips, log, WebSocket client
+│   └── index.html       # D3.js frontend: map, arcs, corner panels, tooltips, log, WebSocket client
 ├── firewall.sh          # nftables DMZ ruleset installer (auto-detects interface/subnet)
-├── nftables.conf        # Ruleset template with __SUBNET__ and __CAPTURE_PORTS__ tokens
+├── nftables.conf        # Ruleset template with __SUBNET__, __CAPTURE_PORTS_TCP__, __CAPTURE_PORTS_UDP__ tokens
 ├── webtraffik.service   # systemd service unit file
 ├── install.sh           # Standalone installer for remote hosts
 ├── Makefile             # Build, cross-compile, install, deploy, firewall targets
@@ -246,13 +264,13 @@ Dashboard receives event:
 
 ### Dashboard Components
 
-- **Map**: D3.js Natural Earth projection with TopoJSON world-atlas
-- **Arcs**: Great-circle paths using `d3.geoInterpolate` with 60-point sampling
-- **Dots**: Animated circles with glow filters (SVG `feGaussianBlur`); persistent after arc completes
+- **Map**: D3.js Natural Earth projection with TopoJSON world-atlas, fills full container width
+- **Arcs**: Great-circle paths using `d3.geoInterpolate` with 20-point sampling (optimized from 60), animated with `stroke-dashoffset`
+- **Dots**: Animated circles; persistent after arc completes; no glow filters on dots (only on self-dot)
 - **Tooltips**: Mouseover on any source dot shows "City, CC" (or just CC if city is unavailable)
-- **Legend**: Live port statistics sorted by count, each with unique color swatch
-- **Country/IP sidebar**: Traffic counts grouped by country code and source IP
-- **Log**: Scrolling panel showing timestamp, source IP, city, country, and port
+- **Corner Panels**: Four transparent overlay panels with top-10 statistics, rendered via `requestIdleCallback` on a 2-second interval (decoupled from event processing)
+- **Log Panel**: Scrolling panel showing timestamp, source IP, city, country, port, and protocol; capped at 200 entries
+- **Performance**: Gradient pooling (reuses SVG gradients by color pair), arc count capped at 150, dot count capped at 1000, adaptive flood control (batches events above 10/sec)
 
 ## Dependencies
 
