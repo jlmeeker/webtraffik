@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -176,8 +177,12 @@ func handleCapture(srcIP string) {
 func startDashboardServer() {
 	mux := http.NewServeMux()
 
-	// Serve static frontend
-	mux.Handle("/", http.FileServer(http.FS(staticFiles)))
+	// Serve static frontend — strip the "static/" prefix so / serves index.html
+	stripped, err := fs.Sub(staticFiles, "static")
+	if err != nil {
+		log.Fatalf("Failed to sub static fs: %v", err)
+	}
+	mux.Handle("/", http.FileServer(http.FS(stripped)))
 
 	// Self-info endpoint
 	mux.HandleFunc("/api/self", func(w http.ResponseWriter, r *http.Request) {
