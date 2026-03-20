@@ -10,7 +10,7 @@ PLATFORMS := \
 	windows/amd64 \
 	windows/arm64
 
-.PHONY: build run cap clean dist $(PLATFORMS) linux/armv6 linux/armv7
+.PHONY: build run cap cap-dist clean dist $(PLATFORMS) linux/armv6 linux/armv7
 
 # Build for the current host OS/arch
 build:
@@ -49,6 +49,21 @@ cap: build
 	sudo setcap 'cap_net_bind_service=+ep' ./$(BINARY)
 	@echo "Capability set — running $(BINARY)"
 	./$(BINARY)
+
+# Set cap_net_bind_service on all Linux dist binaries after 'make dist'.
+# Must be re-run after every 'make dist' since setcap clears on file replace.
+# On the target machine: sudo setcap 'cap_net_bind_service=+ep' ./webtraffik_linux_*
+cap-dist: dist
+	@sudo -v
+	@for b in \
+		$(OUTDIR)/$(BINARY)_linux_amd64 \
+		$(OUTDIR)/$(BINARY)_linux_arm64 \
+		$(OUTDIR)/$(BINARY)_linux_armv6 \
+		$(OUTDIR)/$(BINARY)_linux_armv7; do \
+		echo "  setting cap on $$b"; \
+		sudo setcap 'cap_net_bind_service=+ep' $$b; \
+	done
+	@echo "Done — capabilities set on all Linux dist binaries"
 
 clean:
 	rm -f $(BINARY)
