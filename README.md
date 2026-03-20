@@ -14,6 +14,7 @@ A real-time network traffic sensor and visualization tool that captures incoming
 - **Dark-Themed D3.js Map**: Beautiful Natural Earth projection with optimized arc animations
 - **Corner Overlay Panels**: Four transparent panels showing Traffic by Port, Top Services, Traffic by Country, and Traffic by IP — overlaid on the map for an unobstructed view
 - **Historical Replay**: New dashboard connections receive the last 1000 events as faded static dots
+- **History Page**: Query and chart all stored connection events by any combination of country, IP, port, service, and date range — with 7 interactive Chart.js charts (timeline, per-port/country timelines, top ports, top countries, top services doughnut, top source IPs)
 - **SQLite Persistence**: Events survive service restarts; stored in `/var/lib/webtraffik/events.db`
 - **Port-Based Color Coding**: Each monitored port gets a unique color in the legend and arc animations
 - **Map Dot Tooltips**: Hovering over any source dot shows "City, CC" for that connection
@@ -54,6 +55,19 @@ The dashboard shows:
   - **Bottom-left**: Traffic by Country (top 10 countries by connection count)
   - **Bottom-right**: Traffic by IP (top 10 source IPs by connection count)
 - A scrolling log panel at the bottom showing all connections with timestamps, geolocation details, and service names (e.g., `:22 SSH`, `:3306 MySQL`); click any entry to replay its arc on the map
+
+## History Page
+
+![webTraffik History](history.png)
+
+The history page allows you to filter and visualize stored events:
+- **Filter bar**: country code, source IP prefix, port, service (dropdown), date range, and row limit
+- **Connections Over Time**: bar chart auto-bucketed to 5-min/30-min/3-hour/daily/weekly depending on the queried range
+- **Top Ports / Top Countries**: horizontal bar charts showing the top 15 by hit count
+- **Top Services**: doughnut chart breaking down traffic by service name
+- **Top Source IPs**: horizontal bar chart of the top 15 attacking IPs
+- **Per-Port Timeline** and **Per-Country Timeline**: multi-line charts shown when more than one port or country is present in the results
+- **Result sample table**: first 200 matching rows with timestamp, IP, city, country code, port, service, and protocol
 
 ## Quick Start
 
@@ -227,7 +241,8 @@ webTraffik/
 ├── iputil.go            # Public IP discovery via external APIs
 ├── static_embed.go      # Go embed directive for static files
 ├── static/
-│   └── index.html       # D3.js frontend: map, arcs, corner panels, tooltips, log, WebSocket client
+│   ├── index.html       # D3.js frontend: map, arcs, corner panels, tooltips, log, WebSocket client
+│   └── history.html     # History page: filter form, Chart.js time-series and breakdown charts
 ├── firewall.sh          # nftables DMZ ruleset installer (auto-detects interface/subnet)
 ├── nftables.conf        # Ruleset template with __SUBNET__, __CAPTURE_PORTS_TCP__, __CAPTURE_PORTS_UDP__ tokens
 ├── webtraffik.service   # systemd service unit file
@@ -295,6 +310,8 @@ Dashboard receives event:
 - D3.js v7
 - TopoJSON v3
 - world-atlas v2 (countries-110m.json)
+- Chart.js v4 (history page charts)
+- chartjs-adapter-date-fns v3 (time-series axis)
 
 ## Configuration
 
@@ -524,7 +541,7 @@ Contributions welcome! Please open an issue or pull request.
 
 - [ ] Add HTTPS support for dashboard (TLS cert config)
 - [ ] Add optional HTTP basic auth for dashboard
-- [ ] Add JSON API endpoint for raw events
+- [x] Add JSON API endpoint for raw events (fulfilled by /api/history)
 - [ ] Add Prometheus metrics exporter
 - [ ] Add configurable port lists via environment variables or config file
 - [ ] Add IPv6 support
