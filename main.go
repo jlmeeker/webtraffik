@@ -19,6 +19,7 @@ type ConnectionEvent struct {
 	Time    string  `json:"time"`
 	SrcIP   string  `json:"src_ip"`
 	DstIP   string  `json:"dst_ip"`
+	DstPort string  `json:"dst_port"`
 	SrcLat  float64 `json:"src_lat"`
 	SrcLon  float64 `json:"src_lon"`
 	DstLat  float64 `json:"dst_lat"`
@@ -118,15 +119,15 @@ func main() {
 	select {}
 }
 
-// startCaptureServer listens on port 80, returns empty 200 for all requests
+// startCaptureServer listens on port 8080, returns empty 200 for all requests
 // and fires a ConnectionEvent for each one.
 func startCaptureServer() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		srcIP := extractIP(r.RemoteAddr)
+		dstPort := originalPort(r)
 		w.WriteHeader(http.StatusOK)
-
-		go handleCapture(srcIP)
+		go handleCapture(srcIP, dstPort)
 	})
 	log.Println("Capture listener on :8080")
 	if err := http.ListenAndServe(":8080", mux); err != nil {
@@ -134,7 +135,7 @@ func startCaptureServer() {
 	}
 }
 
-func handleCapture(srcIP string) {
+func handleCapture(srcIP, dstPort string) {
 	var srcLat, srcLon float64
 	var srcCity, srcCC string
 
@@ -152,6 +153,7 @@ func handleCapture(srcIP string) {
 		Time:    time.Now().UTC().Format(time.RFC3339),
 		SrcIP:   srcIP,
 		DstIP:   selfIP,
+		DstPort: dstPort,
 		SrcLat:  srcLat,
 		SrcLon:  srcLon,
 		DstLat:  selfLat,
@@ -165,6 +167,15 @@ func handleCapture(srcIP string) {
 
 	evJSON, _ := json.Marshal(ev)
 	log.Printf("Connection: %s", string(evJSON))
+}
+
+// originalPort reads the X-Original-Port header set by the NAT rule,
+// falling back to "unknown" if absent.
+func originalPort(r *http.Request) string {
+	if p := r.Header.Get("X-Original-Port"); p != "" {
+		return p
+	}
+	return "unknown"
 }
 
 // startDashboardServer serves the web UI and WebSocket endpoint on :8999

@@ -53,13 +53,87 @@
       flex: 1;
       position: relative;
       overflow: hidden;
+      display: flex;
     }
 
     svg#map {
-      width: 100%;
+      flex: 1;
       height: 100%;
       display: block;
+      min-width: 0;
     }
+
+    /* ── Port legend ── */
+    #port-legend {
+      width: 200px;
+      flex-shrink: 0;
+      background: rgba(8, 15, 30, 0.88);
+      border-left: 1px solid #1e3a5f;
+      padding: 10px 0;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #port-legend::-webkit-scrollbar { width: 3px; }
+    #port-legend::-webkit-scrollbar-thumb { background: #1e3a5f; }
+
+    #port-legend h2 {
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #546e7a;
+      padding: 0 12px 8px;
+      border-bottom: 1px solid #1e3a5f;
+      margin-bottom: 6px;
+    }
+
+    .port-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 12px;
+      animation: fadeIn 0.3s ease;
+    }
+
+    .port-swatch {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .port-label {
+      font-size: 0.7rem;
+      color: #90a4ae;
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .port-label .port-num {
+      color: #e0e0e0;
+      font-weight: 600;
+    }
+
+    .port-count {
+      font-size: 0.7rem;
+      color: #ffb74d;
+      min-width: 28px;
+      text-align: right;
+    }
+
+    #legend-total {
+      margin-top: auto;
+      padding: 8px 12px 4px;
+      border-top: 1px solid #1e3a5f;
+      font-size: 0.68rem;
+      color: #546e7a;
+      display: flex;
+      justify-content: space-between;
+    }
+    #legend-total span { color: #4fc3f7; font-weight: 600; }
 
     .graticule { fill: none; stroke: #0d2035; stroke-width: 0.5px; }
     .sphere { fill: #060d1a; }
@@ -135,6 +209,11 @@
 
 <div id="map-container">
   <svg id="map"></svg>
+  <div id="port-legend">
+    <h2>Traffic by Port</h2>
+    <!-- rows injected by JS -->
+    <div id="legend-total"><span id="legend-total-label">Total</span><span id="legend-grand-total">0</span></div>
+  </div>
 </div>
 
 <div id="log-panel" id="log"></div>
@@ -149,6 +228,17 @@
   // ── State ────────────────────────────────────────────────────────────────
   let selfPos = null;    // { lat, lon, ip, city, cc }
   let connCount = 0;
+
+  // Port stats: { portStr -> { count, color } }
+  const portStats = {};
+  let portColorIdx = 0;
+
+  // Palette for port swatches (distinct from arc palette)
+  const PORT_COLORS = [
+    '#4fc3f7', '#ffb74d', '#81c784', '#f06292',
+    '#ce93d8', '#80cbc4', '#fff176', '#ff8a65',
+    '#90caf9', '#a5d6a7', '#ef9a9a', '#b39ddb',
+  ];
 
   // ── Map setup ────────────────────────────────────────────────────────────
   const svg = d3.select('#map');
@@ -268,6 +358,48 @@
     })
     .catch(e => console.warn('Self info fetch failed:', e));
 
+  // ── Port legend ───────────────────────────────────────────────────────────
+  const legendEl     = document.getElementById('port-legend');
+  const grandTotalEl = document.getElementById('legend-grand-total');
+  const legendFooter = document.getElementById('legend-total');
+
+  function updateLegend(port) {
+    if (!portStats[port]) {
+      const color = PORT_COLORS[portColorIdx % PORT_COLORS.length];
+      portColorIdx++;
+      portStats[port] = { count: 0, color, el: null };
+    }
+
+    portStats[port].count++;
+
+    // Create row element on first sight
+    if (!portStats[port].el) {
+      const row = document.createElement('div');
+      row.className = 'port-row';
+      row.id = `port-row-${port}`;
+      row.innerHTML =
+        `<span class="port-swatch" style="background:${portStats[port].color};box-shadow:0 0 5px ${portStats[port].color}"></span>` +
+        `<span class="port-label"><span class="port-num">:${port}</span></span>` +
+        `<span class="port-count" id="port-count-${port}">1</span>`;
+      // Insert before the footer total row
+      legendEl.insertBefore(row, legendFooter);
+      portStats[port].el = document.getElementById(`port-count-${port}`);
+    } else {
+      portStats[port].el.textContent = portStats[port].count;
+    }
+
+    // Sort rows by count descending
+    const rows = [...legendEl.querySelectorAll('.port-row')];
+    rows.sort((a, b) => {
+      const pa = a.id.replace('port-row-', '');
+      const pb = b.id.replace('port-row-', '');
+      return (portStats[pb]?.count ?? 0) - (portStats[pa]?.count ?? 0);
+    });
+    rows.forEach(r => legendEl.insertBefore(r, legendFooter));
+
+    grandTotalEl.textContent = connCount;
+  }
+
   // ── Arc drawing ──────────────────────────────────────────────────────────
   let arcSeq = 0;
 
@@ -286,7 +418,11 @@
 
     if (!srcPt[0] && !srcPt[1]) return; // no geo data
 
-    const [c1, c2] = PALETTE[arcSeq % PALETTE.length];
+    // Use the port's assigned color as c1 if available, else cycle palette
+    const portColor = portStats[ev.dst_port]?.color;
+    const [c1, c2] = portColor
+      ? [portColor, '#ffffff']
+      : PALETTE[arcSeq % PALETTE.length];
     arcSeq++;
 
     const gradId = `arc-grad-${arcSeq}`;
@@ -351,6 +487,7 @@
     const ts = t.toLocaleTimeString('en-US', { hour12: false });
     const srcLabel = [ev.src_ip, ev.src_city, ev.src_cc].filter(Boolean).join(' / ');
     const dstLabel = [ev.dst_ip, ev.dst_city, ev.dst_cc].filter(Boolean).join(' / ');
+    const portLabel = ev.dst_port && ev.dst_port !== 'unknown' ? `:${ev.dst_port}` : '';
 
     const row = document.createElement('div');
     row.className = 'log-entry';
@@ -358,7 +495,7 @@
       `<span class="log-time">${ts}</span>` +
       `<span class="log-src">${srcLabel}</span>` +
       `<span class="log-arrow">→</span>` +
-      `<span class="log-dst">${dstLabel}</span>`;
+      `<span class="log-dst">${dstLabel}${portLabel ? ' <span style="color:#ffb74d">' + portLabel + '</span>' : ''}</span>`;
 
     logPanel.prepend(row);
 
@@ -386,6 +523,7 @@
       connCount++;
       connCountEl.textContent = connCount;
 
+      updateLegend(ev.dst_port || 'unknown');
       drawArc(ev);
       addLog(ev);
     };
