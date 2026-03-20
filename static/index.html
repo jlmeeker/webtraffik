@@ -299,10 +299,9 @@
 
   // ── Map setup ────────────────────────────────────────────────────────────
   const svg = d3.select('#map');
-  const container = document.getElementById('map-container');
-
+  const mapEl = document.getElementById('map');
   function dims() {
-    return { w: container.clientWidth, h: container.clientHeight };
+    return { w: mapEl.clientWidth, h: mapEl.clientHeight };
   }
 
   let { w, h } = dims();
