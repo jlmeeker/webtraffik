@@ -388,18 +388,26 @@
   }
 
   // ── Resize ───────────────────────────────────────────────────────────────
-  function resize() {
-    const d = dims();
-    w = d.w; h = d.h;
-    projection
-      .scale(w / 6.3)
-      .translate([w / 2, h / 2]);
+   function resize() {
+     const d = dims();
+     w = d.w; h = d.h;
+     projection
+       .scale(w / 6.3)
+       .translate([w / 2, h / 2]);
 
-    sphereGroup.select('path').attr('d', path);
-    graticuleGroup.select('path').attr('d', path);
-    landGroup.selectAll('path').attr('d', path);
-    drawSelfDot();
-  }
+     sphereGroup.select('path').attr('d', path);
+     graticuleGroup.select('path').attr('d', path);
+     landGroup.selectAll('path').attr('d', path);
+
+     // Reproject all source dots using their stored [lon, lat] datum
+     dotGroup.selectAll('.src-dot').each(function(d) {
+       if (!d) return;
+       const [x, y] = projection(d);
+       d3.select(this).attr('cx', x).attr('cy', y);
+     });
+
+     drawSelfDot();
+   }
 
   window.addEventListener('resize', () => resize());
 
@@ -625,7 +633,8 @@
       .attr('fill', c1)
       .attr('opacity', 1)
       .attr('filter', 'url(#glow-orange)')
-      .style('cursor', 'crosshair');
+      .style('cursor', 'crosshair')
+      .datum(srcPt); // store [lon, lat] for reprojection on resize
 
     attachTooltip(srcDot, tooltipLabel(ev));
 
@@ -695,13 +704,16 @@
   // Draw a faded static dot for historical events (no arc animation)
   function drawHistoryDot(ev) {
     if (!ev.src_lon && !ev.src_lat) return;
-    const [x, y] = projection([ev.src_lon, ev.src_lat]);
+    const srcPt = [ev.src_lon, ev.src_lat];
+    const [x, y] = projection(srcPt);
     const portColor = portStats[ev.dst_port]?.color || '#546e7a';
     const dot = dotGroup.append('circle')
+      .attr('class', 'src-dot')
       .attr('cx', x).attr('cy', y).attr('r', 3)
       .attr('fill', portColor)
       .attr('opacity', 0.35)
-      .style('cursor', 'crosshair');
+      .style('cursor', 'crosshair')
+      .datum(srcPt); // store [lon, lat] for reprojection on resize
     attachTooltip(dot, tooltipLabel(ev));
   }
 
