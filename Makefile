@@ -10,7 +10,7 @@ PLATFORMS := \
 	windows/amd64 \
 	windows/arm64
 
-.PHONY: build run clean dist $(PLATFORMS) linux/armv6 linux/armv7
+.PHONY: build run cap clean dist $(PLATFORMS) linux/armv6 linux/armv7
 
 # Build for the current host OS/arch
 build:
@@ -41,6 +41,13 @@ linux/armv7:
 	@GOOS=linux GOARCH=arm GOARM=7 go build $(GOFLAGS) -o $(OUTDIR)/$(BINARY)_linux_armv7 .
 
 run: build
+	./$(BINARY)
+
+# Grant cap_net_bind_service so the binary can bind ports <1024 without sudo.
+# Run once after each build, then use 'make run' normally.
+cap: build
+	sudo setcap 'cap_net_bind_service=+ep' ./$(BINARY)
+	@echo "Capability set — running $(BINARY)"
 	./$(BINARY)
 
 clean:
