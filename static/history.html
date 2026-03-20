@@ -608,6 +608,9 @@ function renderCharts(events) {
       }]
     },
     options: timelineDefaults(timeUnit, globalMin, globalMax),
+  });
+
+  // ── 2. Top Ports (bar) ──
   const portMap = {};
   for (const ev of events) portMap[ev.dst_port] = (portMap[ev.dst_port] || 0) + 1;
   const topPorts = topN(portMap, 15);
