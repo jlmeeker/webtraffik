@@ -285,8 +285,7 @@
   // ── State ────────────────────────────────────────────────────────────────
   let selfPos = null;    // { lat, lon, ip, city, cc }
   let connCount = 0;
-  let inReplay = true; // true until first non-replay event arrives
-  let replayFlushTimer = null;
+  let replayDone = false; // becomes true after first non-replay event
 
   // Port stats: { portStr -> { count, color } }
   const portStats = {};
@@ -430,23 +429,24 @@
   // Dirty flags — set true when data changes; cleared after each render
   let legendDirty = false, countryDirty = false, ipDirty = false, serviceDirty = false;
   let logDirty = false;
-  let renderScheduled = false;
+  let logRafScheduled = false;
 
-  // Schedule a single rAF when any dirty flag is set.
-  // Multiple calls between frames coalesce into one render pass.
-  function scheduleRender() {
-    if (renderScheduled) return;
-    renderScheduled = true;
-    requestAnimationFrame(renderAll);
-  }
+  // ── Sidebar renders on a 2-second interval (decoupled from events) ──
+  // Only touches DOM when dirty flags are set; otherwise no-ops cheaply.
+  setInterval(renderSidebar, 2000);
 
-  function renderAll() {
-    renderScheduled = false;
+  function renderSidebar() {
     renderLegend();
     renderCountry();
     renderIP();
     renderServiceStats();
-    flushLog();
+  }
+
+  // ── Log/arc rendering stays on rAF for low-latency display ──
+  function scheduleLogRender() {
+    if (logRafScheduled) return;
+    logRafScheduled = true;
+    requestAnimationFrame(() => { logRafScheduled = false; flushLog(); });
   }
 
   function updateLegend(port) {
@@ -457,7 +457,6 @@
     }
     portStats[port].count++;
     legendDirty = true;
-    scheduleRender();
   }
 
   function renderLegend() {
@@ -491,14 +490,20 @@
           `<span class="port-count" id="port-count-${port}">0</span>`;
         legendEl.insertBefore(row, firstSection);
       }
-      document.getElementById(`port-count-${port}`).textContent = stat.count;
+      const countEl = document.getElementById(`port-count-${port}`);
+      const countStr = String(stat.count);
+      if (countEl.textContent !== countStr) countEl.textContent = countStr;
     });
 
-    // Re-order rows to match sorted top 10
-    top10.forEach(port => {
-      const row = document.getElementById(`port-row-${port}`);
-      if (row) legendEl.insertBefore(row, firstSection);
-    });
+    // Re-order rows only if current DOM order differs from sorted order
+    const currentOrder = [...legendEl.querySelectorAll('.port-row')].map(r => r.id.replace('port-row-', ''));
+    const orderChanged = top10.length !== currentOrder.length || top10.some((p, i) => p !== currentOrder[i]);
+    if (orderChanged) {
+      top10.forEach(port => {
+        const row = document.getElementById(`port-row-${port}`);
+        if (row) legendEl.insertBefore(row, firstSection);
+      });
+    }
   }
 
   // ── Country stats ─────────────────────────────────────────────────────────
@@ -510,7 +515,6 @@
     if (!cc) return;
     countryStats[cc] = (countryStats[cc] || 0) + 1;
     countryDirty = true;
-    scheduleRender();
   }
 
   function renderCountry() {
@@ -534,12 +538,18 @@
         countryRowsEl.appendChild(row);
         countryRowMap.set(cc, row);
       }
-      row.children[0].textContent = cc;
-      row.children[1].textContent = count;
+      if (row.children[0].textContent !== cc) row.children[0].textContent = cc;
+      const countStr = String(count);
+      if (row.children[1].textContent !== countStr) row.children[1].textContent = countStr;
     });
 
-    // Reorder to match sorted top 10
-    top.forEach(([cc]) => countryRowsEl.appendChild(countryRowMap.get(cc)));
+    // Reorder only if current DOM order differs from sorted order
+    const currentKeys = [...countryRowsEl.children].map(r => r.children[0].textContent);
+    const sortedKeys = top.map(([cc]) => cc);
+    const orderChanged = sortedKeys.length !== currentKeys.length || sortedKeys.some((k, i) => k !== currentKeys[i]);
+    if (orderChanged) {
+      top.forEach(([cc]) => countryRowsEl.appendChild(countryRowMap.get(cc)));
+    }
   }
 
   // ── IP stats ──────────────────────────────────────────────────────────────
@@ -551,7 +561,6 @@
     if (!ip) return;
     ipStats[ip] = (ipStats[ip] || 0) + 1;
     ipDirty = true;
-    scheduleRender();
   }
 
   function renderIP() {
@@ -575,12 +584,18 @@
         ipRowsEl.appendChild(row);
         ipRowMap.set(addr, row);
       }
-      row.children[0].textContent = addr;
-      row.children[1].textContent = count;
+      if (row.children[0].textContent !== addr) row.children[0].textContent = addr;
+      const countStr = String(count);
+      if (row.children[1].textContent !== countStr) row.children[1].textContent = countStr;
     });
 
-    // Reorder to match sorted top 10
-    top.forEach(([addr]) => ipRowsEl.appendChild(ipRowMap.get(addr)));
+    // Reorder only if current DOM order differs from sorted order
+    const currentKeys = [...ipRowsEl.children].map(r => r.children[0].textContent);
+    const sortedKeys = top.map(([addr]) => addr);
+    const orderChanged = sortedKeys.length !== currentKeys.length || sortedKeys.some((k, i) => k !== currentKeys[i]);
+    if (orderChanged) {
+      top.forEach(([addr]) => ipRowsEl.appendChild(ipRowMap.get(addr)));
+    }
   }
 
   // ── Service stats ─────────────────────────────────────────────────────────
@@ -605,7 +620,6 @@
     if (!port) return;
     serviceStats[port] = (serviceStats[port] || 0) + 1;
     serviceDirty = true;
-    scheduleRender();
   }
 
   function renderServiceStats() {
@@ -646,12 +660,22 @@
         serviceRowsEl.appendChild(row);
         serviceRowMap.set(p, entry);
       }
-      entry.countEl.textContent = count;
-      entry.barEl.style.width = pct + '%';
+      const countStr = String(count);
+      if (entry.countEl.textContent !== countStr) entry.countEl.textContent = countStr;
+      const pctStr = pct + '%';
+      if (entry.barEl.style.width !== pctStr) entry.barEl.style.width = pctStr;
     });
 
-    // Reorder to match sorted top 10
-    top.forEach(([p]) => serviceRowsEl.appendChild(serviceRowMap.get(p).row));
+    // Reorder only if current DOM order differs from sorted order
+    const currentKeys = [...serviceRowsEl.children].map(r => {
+      const label = r.querySelector('.stat-label');
+      return label ? label.textContent.split(' ')[0].replace(':', '') : '';
+    });
+    const sortedKeys = top.map(([p]) => p);
+    const orderChanged = sortedKeys.length !== currentKeys.length || sortedKeys.some((k, i) => k !== currentKeys[i]);
+    if (orderChanged) {
+      top.forEach(([p]) => serviceRowsEl.appendChild(serviceRowMap.get(p).row));
+    }
   }
 
   // ── Arc drawing ──────────────────────────────────────────────────────────
@@ -817,7 +841,7 @@
   function addLog(ev) {
     logBuffer.push(ev);
     logDirty = true;
-    scheduleRender();
+    scheduleLogRender();
   }
 
   function flushLog() {
@@ -916,20 +940,16 @@
 
       if (ev.replay) {
         drawHistoryDot(ev);
-        // Force synchronous render every 200 replay events so panels
-        // populate progressively instead of staying empty until rAF fires.
-        if (connCount % 200 === 0) renderAll();
-        // Schedule a post-replay flush — only the last one runs (after
-        // the message burst ends and the event loop yields).
-        clearTimeout(replayFlushTimer);
-        replayFlushTimer = setTimeout(() => {
-          if (inReplay) { inReplay = false; renderAll(); }
-        }, 0);
+        // Flush log every 200 replay events so the log panel
+        // populates progressively instead of staying empty.
+        if (connCount % 200 === 0) flushLog();
       } else {
-        // First live event after replay — flush any remaining dirty state.
-        if (inReplay) {
-          inReplay = false;
-          renderAll();
+        // First live event after replay — flush sidebar once immediately
+        // so panels are populated without waiting for the 2s timer.
+        if (!replayDone) {
+          replayDone = true;
+          renderSidebar();
+          flushLog();
         }
         handleArc(ev);  // instant at low rate, batched during floods
       }
