@@ -72,13 +72,14 @@ echo "  management subnet : $SUBNET"
 # ── Build the capture-port nft set literal ────────────────────────────────────
 # TCP ports: existing HTTP ports + new service-emulation ports.
 # Matches the capturePorts slice in main.go AND tcpServices in services.go.
-CAPTURE_PORTS_TCP="21, 22, 23, 25, 80, 110, 143, 443, 445, \
-1433, 3000, 3001, 3128, 3306, 3389, 4000, 4200, 5000, 5001, 5432, \
-5900, 6379, 8000, 8008, 8080, 8081, 8088, 8090, 8443, 8888, \
-9000, 9090, 9200, 11211, 18789, 25565, 27017"
+CAPTURE_PORTS_TCP="21, 22, 23, 25, 80, 110, 135, 139, 143, 443, 445, \
+993, 995, 1433, 1521, 1723, 3000, 3001, 3128, 3306, 3389, \
+4000, 4200, 4444, 5000, 5001, 5432, 5555, \
+5900, 6379, 6667, 8000, 8008, 8080, 8081, 8088, 8090, 8443, 8888, \
+9000, 9090, 9100, 9200, 11211, 18789, 25565, 27017"
 
 # UDP ports: DNS and any other UDP services in services.go.
-CAPTURE_PORTS_UDP="53, 123, 161, 1900, 5060"
+CAPTURE_PORTS_UDP="53, 123, 161, 1434, 1900, 5060"
 
 # ── Apply DISABLE_PORTS exclusions ────────────────────────────────────────────
 # If DISABLE_PORTS is set (e.g. DISABLE_PORTS="22,80"), remove those ports
