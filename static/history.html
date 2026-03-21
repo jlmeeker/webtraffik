@@ -407,7 +407,7 @@
     <!-- Row 6: Summary table -->
     <div class="chart-row full">
       <div class="chart-card" id="summary-section">
-        <h3>Result Sample (first 200 rows)</h3>
+        <h3>Result Sample (most recent 200 rows)</h3>
         <div style="overflow-x:auto;max-height:320px;overflow-y:auto">
           <table class="summary-table" id="result-table">
             <thead>
@@ -767,7 +767,7 @@ function renderCharts(events) {
 function renderTable(events) {
   const tbody = document.getElementById('result-tbody');
   tbody.innerHTML = '';
-  const slice = events.slice(0, 200);
+  const slice = events.slice(-200);
   const frag = document.createDocumentFragment();
   for (const ev of slice) {
     const tr = document.createElement('tr');
