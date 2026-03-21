@@ -79,7 +79,7 @@
     .corner-panel {
       position: absolute;
       width: 190px;
-      max-height: 45%;
+      max-height: 70%;
       overflow-y: auto;
       background: rgba(8, 15, 30, 0.82);
       border: 1px solid #1e3a5f;
@@ -93,9 +93,6 @@
     .corner-panel::-webkit-scrollbar-thumb { background: #1e3a5f; }
 
     .top-left     { top: 10px; left: 10px; }
-    .top-right    { top: 10px; right: 10px; }
-    .bottom-left  { bottom: 10px; left: 10px; }
-    .bottom-right { bottom: 10px; right: 10px; }
 
     .corner-panel h2 {
       font-size: 0.65rem;
@@ -105,42 +102,6 @@
       padding: 0 10px 6px;
       border-bottom: 1px solid #1e3a5f;
       margin-bottom: 4px;
-    }
-
-    .port-row {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 3px 10px;
-      animation: fadeIn 0.3s ease;
-    }
-
-    .port-swatch {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      flex-shrink: 0;
-    }
-
-    .port-label {
-      font-size: 0.7rem;
-      color: #90a4ae;
-      flex: 1;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .port-label .port-num {
-      color: #e0e0e0;
-      font-weight: 600;
-    }
-
-    .port-count {
-      font-size: 0.7rem;
-      color: #ffb74d;
-      min-width: 28px;
-      text-align: right;
     }
 
     .stat-row {
@@ -323,21 +284,9 @@
 <div id="map-container">
   <svg id="map"></svg>
   <!-- Corner overlay panels -->
-  <div id="panel-port" class="corner-panel top-left">
-    <h2>Traffic by Port</h2>
-    <div id="port-rows"></div>
-  </div>
-  <div id="panel-service" class="corner-panel top-right">
+  <div id="panel-service" class="corner-panel top-left">
     <h2>Top Services</h2>
     <div id="service-rows"></div>
-  </div>
-  <div id="panel-country" class="corner-panel bottom-left">
-    <h2>Traffic by Country</h2>
-    <div id="country-rows"></div>
-  </div>
-  <div id="panel-ip" class="corner-panel bottom-right">
-    <h2>Traffic by IP</h2>
-    <div id="ip-rows"></div>
   </div>
   <!-- Magnifier inset -->
   <div id="magnifier">
@@ -360,6 +309,31 @@
   let connCount = 0;
   let replayDone = false; // becomes true after first non-replay event
 
+  // ── Event window (last 1000 events) ─────────────────────────────────────
+  // All stat maps reflect only events inside this ring buffer.
+  const EVENT_WINDOW = 1000;
+  const eventRing = []; // oldest-first; evicted events decrement stat maps
+
+  function evictEvent(ev) {
+    const port = ev.dst_port || 'unknown';
+    if (portStats[port]) {
+      portStats[port].count--;
+      if (portStats[port].count <= 0) delete portStats[port];
+    }
+    if (port) {
+      serviceStats[port] = (serviceStats[port] || 1) - 1;
+      if (serviceStats[port] <= 0) delete serviceStats[port];
+      serviceDirty = true;
+    }
+  }
+
+  function recordEvent(ev) {
+    eventRing.push(ev);
+    if (eventRing.length > EVENT_WINDOW) {
+      evictEvent(eventRing.shift());
+    }
+  }
+
   // Port stats: { portStr -> { count, color } }
   const portStats = {};
   let portColorIdx = 0;
@@ -370,6 +344,17 @@
     '#ce93d8', '#80cbc4', '#fff176', '#ff8a65',
     '#90caf9', '#a5d6a7', '#ef9a9a', '#b39ddb',
   ];
+
+  // Assigns a stable color to each port and tracks its hit count.
+  // Called on every event so colors are available to arc drawing and panels.
+  function ensurePortColor(port) {
+    if (!port) return;
+    if (!portStats[port]) {
+      portStats[port] = { count: 0, color: PORT_COLORS[portColorIdx % PORT_COLORS.length] };
+      portColorIdx++;
+    }
+    portStats[port].count++;
+  }
 
   // ── Map setup ────────────────────────────────────────────────────────────
   const svg = d3.select('#map');
@@ -802,11 +787,8 @@
     })
     .catch(e => console.warn('Self info fetch failed:', e));
 
-  // ── Port legend ───────────────────────────────────────────────────────────
-  const portRowsEl = document.getElementById('port-rows');
-
   // Dirty flags — set true when data changes; cleared after each render
-  let legendDirty = false, countryDirty = false, ipDirty = false, serviceDirty = false;
+  let serviceDirty = false;
   let logDirty = false;
   let logRafScheduled = false;
 
@@ -826,9 +808,6 @@
   setTimeout(sidebarLoop, 2000);
 
   function renderSidebar() {
-    renderLegend();
-    renderCountry();
-    renderIP();
     renderServiceStats();
   }
 
@@ -837,154 +816,6 @@
     if (logRafScheduled) return;
     logRafScheduled = true;
     requestAnimationFrame(() => { logRafScheduled = false; flushLog(); });
-  }
-
-  function updateLegend(port) {
-    if (!portStats[port]) {
-      const color = PORT_COLORS[portColorIdx % PORT_COLORS.length];
-      portColorIdx++;
-      portStats[port] = { count: 0, color };
-    }
-    portStats[port].count++;
-    legendDirty = true;
-  }
-
-  function renderLegend() {
-    if (!legendDirty) return;
-    legendDirty = false;
-
-    const top10 = Object.entries(portStats)
-      .sort((a, b) => b[1].count - a[1].count)
-      .slice(0, 10)
-      .map(([port]) => port);
-    const top10Set = new Set(top10);
-
-    // Remove rows that are no longer in the top 10
-    portRowsEl.querySelectorAll('.port-row').forEach(r => {
-      const port = r.id.replace('port-row-', '');
-      if (!top10Set.has(port)) r.remove();
-    });
-
-    // Create or update rows for the top 10
-    top10.forEach(port => {
-      const stat = portStats[port];
-      let row = document.getElementById(`port-row-${port}`);
-      if (!row) {
-        row = document.createElement('div');
-        row.className = 'port-row';
-        row.id = `port-row-${port}`;
-        row.innerHTML =
-          `<span class="port-swatch" style="background:${stat.color};box-shadow:0 0 5px ${stat.color}"></span>` +
-          `<span class="port-label"><span class="port-num">:${port}</span></span>` +
-          `<span class="port-count" id="port-count-${port}">0</span>`;
-        portRowsEl.appendChild(row);
-      }
-      const countEl = document.getElementById(`port-count-${port}`);
-      const countStr = String(stat.count);
-      if (countEl.textContent !== countStr) countEl.textContent = countStr;
-    });
-
-    // Re-order rows only if current DOM order differs from sorted order
-    const currentOrder = [...portRowsEl.querySelectorAll('.port-row')].map(r => r.id.replace('port-row-', ''));
-    const orderChanged = top10.length !== currentOrder.length || top10.some((p, i) => p !== currentOrder[i]);
-    if (orderChanged) {
-      top10.forEach(port => {
-        const row = document.getElementById(`port-row-${port}`);
-        if (row) portRowsEl.appendChild(row);
-      });
-    }
-  }
-
-  // ── Country stats ─────────────────────────────────────────────────────────
-  const countryStats = {}; // { cc -> count }
-  const countryRowsEl = document.getElementById('country-rows');
-  const countryRowMap = new Map(); // cc -> DOM row
-
-  function updateCountry(cc) {
-    if (!cc) return;
-    countryStats[cc] = (countryStats[cc] || 0) + 1;
-    countryDirty = true;
-  }
-
-  function renderCountry() {
-    if (!countryDirty) return;
-    countryDirty = false;
-    const top = Object.entries(countryStats).sort((a, b) => b[1] - a[1]).slice(0, 10);
-    const topSet = new Set(top.map(([cc]) => cc));
-
-    // Remove rows no longer in top 10
-    for (const [cc, row] of countryRowMap) {
-      if (!topSet.has(cc)) { row.remove(); countryRowMap.delete(cc); }
-    }
-
-    // Create or update rows
-    top.forEach(([cc, count]) => {
-      let row = countryRowMap.get(cc);
-      if (!row) {
-        row = document.createElement('div');
-        row.className = 'stat-row';
-        row.innerHTML = `<span class="stat-label"></span><span class="stat-count"></span>`;
-        countryRowsEl.appendChild(row);
-        countryRowMap.set(cc, row);
-      }
-      if (row.children[0].textContent !== cc) row.children[0].textContent = cc;
-      const countStr = String(count);
-      if (row.children[1].textContent !== countStr) row.children[1].textContent = countStr;
-    });
-
-    // Reorder only if current DOM order differs from sorted order
-    const currentKeys = [...countryRowsEl.children].map(r => r.children[0].textContent);
-    const sortedKeys = top.map(([cc]) => cc);
-    const orderChanged = sortedKeys.length !== currentKeys.length || sortedKeys.some((k, i) => k !== currentKeys[i]);
-    if (orderChanged) {
-      top.forEach(([cc]) => countryRowsEl.appendChild(countryRowMap.get(cc)));
-    }
-  }
-
-  // ── IP stats ──────────────────────────────────────────────────────────────
-  const ipStats = {}; // { ip -> count }
-  const ipRowsEl = document.getElementById('ip-rows');
-  const ipRowMap = new Map(); // ip -> DOM row
-
-  function updateIP(ip) {
-    if (!ip) return;
-    ipStats[ip] = (ipStats[ip] || 0) + 1;
-    ipDirty = true;
-  }
-
-  function renderIP() {
-    if (!ipDirty) return;
-    ipDirty = false;
-    const top = Object.entries(ipStats).sort((a, b) => b[1] - a[1]).slice(0, 10);
-    const topSet = new Set(top.map(([ip]) => ip));
-
-    // Remove rows no longer in top 10
-    for (const [ip, row] of ipRowMap) {
-      if (!topSet.has(ip)) { row.remove(); ipRowMap.delete(ip); }
-    }
-
-    // Create or update rows
-    top.forEach(([addr, count]) => {
-      let row = ipRowMap.get(addr);
-      if (!row) {
-        row = document.createElement('div');
-        row.className = 'stat-row';
-        row.innerHTML = `<span class="stat-label"></span><span class="stat-count"></span>`;
-        ipRowsEl.appendChild(row);
-        ipRowMap.set(addr, row);
-      }
-      if (row.children[0].textContent !== addr) row.children[0].textContent = addr;
-      const countStr = String(count);
-      if (row.children[1].textContent !== countStr) row.children[1].textContent = countStr;
-    });
-
-    // Reorder only if current DOM order differs from sorted order
-    const currentKeys = [...ipRowsEl.children].map(r => r.children[0].textContent);
-    const sortedKeys = top.map(([addr]) => addr);
-    const orderChanged = sortedKeys.length !== currentKeys.length || sortedKeys.some((k, i) => k !== currentKeys[i]);
-    if (orderChanged) {
-      top.forEach(([addr]) => ipRowsEl.appendChild(ipRowMap.get(addr)));
-    }
   }
 
   // ── Service stats ─────────────────────────────────────────────────────────
@@ -1016,11 +847,11 @@
   function renderServiceStats() {
     if (!serviceDirty) return;
     serviceDirty = false;
-    const top = Object.entries(serviceStats).sort((a, b) => b[1] - a[1]).slice(0, 10);
+    const top = Object.entries(serviceStats).sort((a, b) => b[1] - a[1]).slice(0, 20);
     const topSet = new Set(top.map(([p]) => p));
     const maxCount = top.length > 0 ? top[0][1] : 1;
 
-    // Remove rows no longer in top 10
+    // Remove rows no longer in top 20
     for (const [p, entry] of serviceRowMap) {
       if (!topSet.has(p)) { entry.row.remove(); serviceRowMap.delete(p); }
     }
@@ -1095,8 +926,9 @@
 
   // ── Audio engine — Web Audio API tones per event ──────────────────────
   // Plays a short sine-wave tone for each live event. Duration is
-  // proportional to the great-circle arc length. Toggle defaults to off.
-  let audioEnabled = false;
+  // proportional to the great-circle arc length. Toggle persisted in cookie.
+  const _audioCookie = document.cookie.split(';').map(c => c.trim()).find(c => c.startsWith('audioEnabled='));
+  let audioEnabled = _audioCookie ? _audioCookie.split('=')[1] === 'true' : false;
   let audioCtx = null;
 
   const AUDIO_MIN_DURATION = 0.06;  // seconds — shortest tone (nearby)
@@ -1171,9 +1003,11 @@
 
   // Toggle button wiring
   const audioToggleBtn = document.getElementById('audio-toggle');
+  audioToggleBtn.classList.toggle('active', audioEnabled); // reflect cookie state on load
   audioToggleBtn.addEventListener('click', () => {
     audioEnabled = !audioEnabled;
     audioToggleBtn.classList.toggle('active', audioEnabled);
+    document.cookie = `audioEnabled=${audioEnabled};path=/;max-age=31536000`;
     if (audioEnabled) ensureAudioCtx();
   });
 
@@ -1323,16 +1157,18 @@
       }
     }
 
-    // Animate stroke-dash draw-on, then settle to resting opacity
+    // Animate stroke-dash draw-on, then settle to resting opacity.
+    // Named transition 'draw' so a concurrent flashArc() ('flash' transition)
+    // on the same element does not interrupt this animation.
     arcPath
       .attr('stroke-dasharray', totalLen)
       .attr('stroke-dashoffset', totalLen)
       .attr('opacity', 1)
-      .transition()
+      .transition('draw')
         .duration(800)
         .ease(d3.easeQuadInOut)
         .attr('stroke-dashoffset', 0)
-      .transition()
+      .transition('draw')
         .delay(400)
         .duration(600)
         .attr('opacity', ARC_REST_OPACITY)
@@ -1406,10 +1242,12 @@
 
   // ── Flash arc brighter on repeat hit ────────────────────────────────────
   function flashArc(entry) {
+    // Use a named transition ('flash') so it does not interrupt the 'draw'
+    // transition that may still be animating stroke-dashoffset on this element.
     entry.arcPath
-      .interrupt()
+      .interrupt('flash')
       .attr('opacity', 0.85)
-      .transition()
+      .transition('flash')
         .duration(600)
         .attr('opacity', ARC_REST_OPACITY);
     // Thicken stroke based on cumulative hits
@@ -1616,12 +1454,11 @@
       let ev;
       try { ev = JSON.parse(msg.data); } catch { return; }
 
-      connCount++;
+      recordEvent(ev);
+      connCount = eventRing.length;
       connCountEl.textContent = connCount;
 
-      updateLegend(ev.dst_port || 'unknown');
-      updateCountry(ev.src_cc);
-      updateIP(ev.src_ip);
+      ensurePortColor(ev.dst_port || 'unknown');
       updateServiceStats(ev.dst_port || 'unknown');
       addLog(ev);
 

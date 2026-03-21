@@ -371,22 +371,12 @@ func startDashboardServer() {
 			Name  string `json:"name"`
 			Ports []int  `json:"ports"`
 		}
+		// tcpServiceNames is now the single canonical source for all port→name
+		// mappings (TCP services, UDP ports, HTTP capture ports, Minecraft).
 		seen := map[string][]int{}
 		for port, name := range tcpServiceNames {
 			seen[name] = append(seen[name], port)
 		}
-		// HTTP ports
-		httpPorts := []int{}
-		for _, p := range capturePorts {
-			if _, ok := tcpServiceNames[p]; !ok {
-				httpPorts = append(httpPorts, p)
-			}
-		}
-		seen["HTTP"] = append(seen["HTTP"], httpPorts...)
-		for _, p := range udpServicePorts {
-			seen["DNS"] = append(seen["DNS"], p)
-		}
-		seen["Minecraft"] = []int{minecraftPort}
 
 		var result []svcEntry
 		for name, ports := range seen {
