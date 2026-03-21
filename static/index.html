@@ -218,6 +218,7 @@
 
     .src-dot {
       r: 4;
+      pointer-events: all;
     }
 
     /* Log panel */
@@ -512,6 +513,13 @@
 
   const zoom = d3.zoom()
     .scaleExtent([1, 20])       // 1x to 20x zoom
+    .filter((event) => {
+      // Allow wheel events everywhere (for zoom), but block drag-start on
+      // interactive dots so their hover/tooltip events are not swallowed.
+      if (event.type === 'wheel') return true;
+      if (event.target.classList && event.target.classList.contains('src-dot')) return false;
+      return !event.button; // default: ignore right-click
+    })
     .on('zoom', (event) => {
       currentTransform = event.transform;
       reproject();
