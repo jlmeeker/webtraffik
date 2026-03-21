@@ -49,6 +49,44 @@
     }
     #stats span { color: #ffb74d; }
 
+    /* ── Time window slider ── */
+    #time-slider-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.72rem;
+      color: #78909c;
+    }
+    #time-slider-group label { white-space: nowrap; }
+    #time-slider-group .slider-value { color: #4fc3f7; min-width: 24px; text-align: center; }
+    #time-slider {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 120px;
+      height: 4px;
+      background: #1e3a5f;
+      border-radius: 2px;
+      outline: none;
+      cursor: pointer;
+    }
+    #time-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: #4fc3f7;
+      cursor: pointer;
+    }
+    #time-slider::-moz-range-thumb {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: #4fc3f7;
+      border: none;
+      cursor: pointer;
+    }
+
     #audio-toggle {
       background: none;
       border: 1px solid #2a4a6b;
@@ -274,6 +312,11 @@
   <div id="self-info">My IP: <span id="my-ip">—</span> &nbsp;|&nbsp; <span id="my-loc">—</span></div>
   <div style="display:flex;align-items:center;gap:18px">
     <div id="stats">Connections: <span id="conn-count">0</span></div>
+    <div id="time-slider-group">
+      <label>Window:</label>
+      <input type="range" id="time-slider" min="1" max="24" value="1" />
+      <span class="slider-value" id="slider-label">1h</span>
+    </div>
     <button id="audio-toggle" title="Toggle event audio">&#9834;</button>
     <a href="/history.html" style="color:#78909c;text-decoration:none;font-size:0.72rem;letter-spacing:0.05em;transition:color 0.2s" onmouseover="this.style.color='#4fc3f7'" onmouseout="this.style.color='#78909c'">History</a>
   </div>
@@ -309,10 +352,8 @@
   let connCount = 0;
   let replayDone = false; // becomes true after first non-replay event
 
-  // ── Event window (last 1000 events) ─────────────────────────────────────
-  // All stat maps reflect only events inside this ring buffer.
-  const EVENT_WINDOW = 1000;
-  const eventRing = []; // oldest-first; evicted events decrement stat maps
+  // ── Event storage (no cap — controlled by server-side time window) ────
+  const eventRing = []; // oldest-first; all events from the replay + live
 
   function evictEvent(ev) {
     const port = ev.dst_port || 'unknown';
@@ -329,9 +370,6 @@
 
   function recordEvent(ev) {
     eventRing.push(ev);
-    if (eventRing.length > EVENT_WINDOW) {
-      evictEvent(eventRing.shift());
-    }
   }
 
   // Port stats: { portStr -> { count, color } }
@@ -1417,6 +1455,79 @@
   // ── WebSocket ─────────────────────────────────────────────────────────────
   const wsStatus = document.getElementById('ws-status');
   const connCountEl = document.getElementById('conn-count');
+
+  // ── Cookie helpers ──
+  function setCookie(name, value, days) {
+    const d = new Date();
+    d.setTime(d.getTime() + days * 86400000);
+    document.cookie = name + '=' + encodeURIComponent(value) + ';expires=' + d.toUTCString() + ';path=/;SameSite=Lax';
+  }
+  function getCookie(name) {
+    const prefix = name + '=';
+    const parts = document.cookie.split(';');
+    for (let i = 0; i < parts.length; i++) {
+      const c = parts[i].trim();
+      if (c.indexOf(prefix) === 0) return decodeURIComponent(c.substring(prefix.length));
+    }
+    return '';
+  }
+
+  // ── Time slider state ──
+  const timeSlider = document.getElementById('time-slider');
+  const sliderLabel = document.getElementById('slider-label');
+  let currentHours = 1;
+
+  // Restore from cookie or default to 1h
+  const savedHours = getCookie('wt_live_hours');
+  if (savedHours) {
+    const n = parseInt(savedHours, 10);
+    if (n >= 1 && n <= 24) currentHours = n;
+  }
+  timeSlider.value = currentHours;
+  sliderLabel.textContent = currentHours + 'h';
+
+  // ── Reset all visual state for reconnect ──
+  function resetState() {
+    // Clear event ring + stats
+    eventRing.length = 0;
+    connCount = 0;
+    connCountEl.textContent = '0';
+    replayDone = false;
+
+    // Clear port stats
+    for (const k in portStats) delete portStats[k];
+    portColorIdx = 0;
+
+    // Clear service stats + DOM rows
+    for (const k in serviceStats) delete serviceStats[k];
+    for (const [, entry] of serviceRowMap) entry.row.remove();
+    serviceRowMap.clear();
+    serviceDirty = true;
+
+    // Clear dots
+    dotRing.length = 0;
+    dotGroup.selectAll('.src-dot').remove();
+
+    // Clear arcs
+    arcRegistry.forEach((entry, key) => {
+      if (entry.expireTimer) clearTimeout(entry.expireTimer);
+      entry.arcPath.remove();
+      releaseGradient(entry.c1, entry.c2);
+    });
+    arcRegistry.clear();
+    arcRing.length = 0;
+    arcGroup.selectAll('path').remove();
+    activePulses = 0;
+
+    // Clear arc flood buffer
+    arcBuffer.clear();
+    if (floodFlushTimer) { clearTimeout(floodFlushTimer); floodFlushTimer = null; }
+
+    // Clear log
+    logBuffer.length = 0;
+    logPanel.innerHTML = '';
+    logDirty = false;
+  }
   const dotTooltip = document.getElementById('dot-tooltip');
 
   function tooltipLabel(ev, hitCount = 1) {
@@ -1459,8 +1570,14 @@
     trackDot(dot.node());
   }
 
+  let currentWs = null;
+  let intentionalClose = false; // suppress auto-reconnect on slider change
+
   function connect() {
-    const ws = new WebSocket(`ws://${location.host}/ws`);
+    resetState();
+    intentionalClose = false;
+    const ws = new WebSocket(`ws://${location.host}/ws?hours=${currentHours}`);
+    currentWs = ws;
 
     ws.onopen = () => {
       wsStatus.className = 'connected';
@@ -1497,12 +1614,30 @@
 
     ws.onclose = () => {
       wsStatus.className = 'disconnected';
-      // Reconnect after 2s
-      setTimeout(connect, 2000);
+      currentWs = null;
+      // Reconnect after 2s unless we closed intentionally (slider change)
+      if (!intentionalClose) setTimeout(connect, 2000);
     };
 
     ws.onerror = () => ws.close();
   }
+
+  // Slider: update label instantly, debounce reconnect until user stops dragging
+  let sliderTimer = null;
+  timeSlider.addEventListener('input', () => {
+    const val = parseInt(timeSlider.value, 10);
+    sliderLabel.textContent = val + 'h';
+    if (sliderTimer) clearTimeout(sliderTimer);
+    sliderTimer = setTimeout(() => {
+      sliderTimer = null;
+      if (val === currentHours) return;
+      currentHours = val;
+      setCookie('wt_live_hours', val, 365);
+      intentionalClose = true;
+      if (currentWs) currentWs.close();
+      connect();
+    }, 1000);
+  });
 
   connect();
 

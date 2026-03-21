@@ -334,16 +334,9 @@ func startDashboardServer() {
 		})
 	})
 
-	// History query endpoint — GET /api/history?country=US&ip=1.2&port=22&service=SSH&date_from=2024-01-01&date_to=2024-12-31&limit=5000
+	// History query endpoint — GET /api/history?country=US&ip=1.2&port=22&service=SSH&date_from=2024-01-01T00:00&date_to=2024-12-31T23:59
 	mux.HandleFunc("/api/history", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		limitStr := q.Get("limit")
-		limit := 10000
-		if limitStr != "" {
-			if n, err := strconv.Atoi(limitStr); err == nil && n > 0 {
-				limit = n
-			}
-		}
 		f := HistoryFilter{
 			Country:  q.Get("country"),
 			IP:       q.Get("ip"),
@@ -351,7 +344,6 @@ func startDashboardServer() {
 			Service:  q.Get("service"),
 			DateFrom: q.Get("date_from"),
 			DateTo:   q.Get("date_to"),
-			Limit:    limit,
 		}
 		events, err := appDB.queryHistory(f)
 		if err != nil {
@@ -410,8 +402,17 @@ func startDashboardServer() {
 		ch := appHub.subscribe()
 		defer appHub.unsubscribe(ch)
 
-		// Replay history from DB so new clients see the full persisted history.
-		history, err := appDB.loadHistory(historySize)
+		// Determine replay window: ?hours=N (1-24, default 1)
+		hours := 1
+		if h := r.URL.Query().Get("hours"); h != "" {
+			if n, err := strconv.Atoi(h); err == nil && n >= 1 && n <= 24 {
+				hours = n
+			}
+		}
+		since := time.Now().UTC().Add(-time.Duration(hours) * time.Hour).Format(time.RFC3339)
+
+		// Replay history from DB for the requested time window.
+		history, err := appDB.loadHistorySince(since)
 		if err != nil {
 			log.Printf("WebSocket history load error: %v", err)
 		}
