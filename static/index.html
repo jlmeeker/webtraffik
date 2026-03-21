@@ -1011,6 +1011,20 @@
     if (audioEnabled) ensureAudioCtx();
   });
 
+  // Browsers block AudioContext creation until a user gesture has occurred.
+  // If the cookie restored audioEnabled=true, we need the first interaction
+  // anywhere on the page to unlock the AudioContext — otherwise no sound
+  // plays even though the button shows as active.
+  if (audioEnabled) {
+    const unlockAudio = () => {
+      ensureAudioCtx();
+      document.removeEventListener('pointerdown', unlockAudio);
+      document.removeEventListener('keydown', unlockAudio);
+    };
+    document.addEventListener('pointerdown', unlockAudio);
+    document.addEventListener('keydown', unlockAudio);
+  }
+
   // ── Adaptive arc rate control ────────────────────────────────────────────
   // Track event timestamps in a 1-second sliding window to measure rate.
   const FLOOD_THRESHOLD = 10;  // events/sec — above this we batch
