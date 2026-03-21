@@ -136,9 +136,12 @@ This is the authoritative list of **UDP ports**. These use `net.ListenPacket`.
 **4. `firewall.sh` — `CAPTURE_PORTS_TCP` variable (around line 70)**
 
 ```bash
-CAPTURE_PORTS_TCP="80, 8080, 8000, 8008, 8081, 8088, 8090, 8888, \
-3000, 3001, 3128, 4000, 4200, 5000, 5001, 9000, 9090, \
-21, 22, 23, 25, 110, 143, 443, 445, 1433, 3306, 3389, 5432, 6379, 27017"
+CAPTURE_PORTS_TCP="21, 22, 23, 25, 80, 110, 135, 139, 143, 443, 445, \
+993, 995, 1433, 1521, 1723, 3000, 3001, 3128, 3306, 3333, 3389, \
+4000, 4200, 4444, 5000, 5001, 5432, 5555, \
+5900, 6379, 6667, 8000, 8008, 8080, 8081, 8088, 8090, 8333, 8443, \
+8545, 8546, 8888, 9000, 9090, 9100, 9200, 9735, 10009, \
+11211, 18080, 18081, 18789, 25565, 27017, 30303"
 ```
 
 This must include **all TCP ports** — both HTTP ports from `main.go` and service ports from `services.go` — as a comma-separated nftables set literal.
@@ -146,7 +149,7 @@ This must include **all TCP ports** — both HTTP ports from `main.go` and servi
 **5. `firewall.sh` — `CAPTURE_PORTS_UDP` variable (around line 75)**
 
 ```bash
-CAPTURE_PORTS_UDP="53"
+CAPTURE_PORTS_UDP="53, 123, 161, 1434, 1900, 5060, 30303"
 ```
 
 This must include **all UDP ports** from `services.go` as a comma-separated nftables set literal.
@@ -157,10 +160,10 @@ This must include **all UDP ports** from `services.go` as a comma-separated nfta
 80, 8080, 8000, 8008, 8081, 8088, 8090, 8888, 3000, 3001, 3128, 4000, 4200, 5000, 5001, 9000, 9090
 
 **TCP service ports (services.go `tcpServices` — raw TCP listeners with banners):**
-21 (FTP), 22 (SSH), 23 (Telnet), 25 (SMTP), 110 (POP3), 143 (IMAP), 443 (HTTPS), 445 (SMB), 1433 (MSSQL), 3306 (MySQL), 3389 (RDP), 5432 (PostgreSQL), 6379 (Redis), 27017 (MongoDB), 5900 (VNC), 8443 (HTTPS-Alt), 9200 (Elasticsearch), 11211 (Memcached)
+21 (FTP), 22 (SSH), 23 (Telnet), 25 (SMTP), 110 (POP3), 143 (IMAP), 443 (HTTPS), 445 (SMB), 1433 (MSSQL), 3306 (MySQL), 3333 (Stratum), 3389 (RDP), 5432 (PostgreSQL), 6379 (Redis), 8333 (Bitcoin P2P), 8443 (HTTPS-Alt), 8545 (Ethereum RPC), 8546 (Ethereum WS), 9200 (Elasticsearch), 9735 (Lightning), 10009 (Lightning gRPC), 11211 (Memcached), 18080 (Monero P2P), 18081 (Monero RPC), 27017 (MongoDB), 30303 (Ethereum P2P), 5900 (VNC)
 
 **UDP ports (services.go `udpServicePorts` — UDP listeners):**
-53 (DNS), 123 (NTP), 161 (SNMP), 1900 (SSDP), 5060 (SIP)
+53 (DNS), 123 (NTP), 161 (SNMP), 1900 (SSDP), 5060 (SIP), 30303 (Ethereum P2P)
 
 ### Dashboard port
 
