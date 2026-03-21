@@ -171,6 +171,16 @@
       stroke-linecap: round;
     }
 
+    .arc-path.resting {
+      pointer-events: none;
+    }
+
+    .arc-pulse {
+      fill: none;
+      stroke-linecap: round;
+      pointer-events: none;
+    }
+
     .src-dot {
       r: 4;
     }
@@ -411,6 +421,7 @@
   const graticuleGroup = svg.append('g');
   const landGroup = svg.append('g');
   const arcGroup = svg.append('g');
+  const pulseGroup = svg.append('g');  // pulse particles render above arcs
   const dotGroup = svg.append('g');
 
   const graticule = d3.geoGraticule()();
@@ -725,6 +736,40 @@
        d3.select(this).attr('cx', x).attr('cy', y);
      });
 
+     // Reproject persistent arcs in the registry
+     arcRegistry.forEach((entry) => {
+       const interp = d3.geoInterpolate(entry.srcPt, entry.dstPt);
+       let fullD;
+       if (entry.crossesAntimeridian) {
+         const N = 40;
+         const geoCoords = [];
+         for (let i = 0; i <= N; i++) geoCoords.push(interp(i / N));
+         const geoLine = { type: 'LineString', coordinates: geoCoords };
+         fullD = path(geoLine);
+         entry.lineData = geoCoords.map(c => projection(c));
+       } else {
+         const N = 20;
+         entry.lineData = [];
+         for (let i = 0; i <= N; i++) entry.lineData.push(projection(interp(i / N)));
+         const lineGen = d3.line().x(d => d[0]).y(d => d[1]).curve(d3.curveNatural);
+         fullD = lineGen(entry.lineData);
+       }
+       entry.arcPath.attr('d', fullD);
+       // Recalculate path length
+       let totalLen = 0;
+       for (let i = 1; i < entry.lineData.length; i++) {
+         const dx = entry.lineData[i][0] - entry.lineData[i - 1][0];
+         const dy = entry.lineData[i][1] - entry.lineData[i - 1][1];
+         totalLen += Math.sqrt(dx * dx + dy * dy);
+       }
+       entry.totalLen = totalLen;
+       entry.arcPath.attr('stroke-dasharray', totalLen).attr('stroke-dashoffset', 0);
+       // Update gradient coordinates
+       const [x0, y0] = projection(entry.srcPt);
+       const [x1, y1] = projection(entry.dstPt);
+       entry.gradEntry.el.attr('x1', x0).attr('y1', y0).attr('x2', x1).attr('y2', y1);
+     });
+
      drawSelfDot();
    }
 
@@ -1021,6 +1066,18 @@
     ['#66bb6a', '#f48fb1'],
   ];
 
+  // ── Arc registry — persistent arcs with pulse reuse ─────────────────────
+  // Key: src_ip (string)
+  // Value: { arcPath, gradEntry, c1, c2, srcPt, dstPt, lineData,
+  //          totalLen, crossesAntimeridian, hitCount, expireTimer,
+  //          dotEl, ev }
+  const arcRegistry = new Map();
+  const ARC_TTL = 12000;         // ms — idle timeout before arc fades out
+  const ARC_REST_OPACITY = 0.18; // resting opacity of persistent arcs
+  const PULSE_DURATION = 700;    // ms — pulse travel time src→dst
+  const MAX_PULSES = 80;         // cap concurrent pulse particles
+  let activePulses = 0;
+
   // ── Adaptive arc rate control ────────────────────────────────────────────
   // Track event timestamps in a 1-second sliding window to measure rate.
   const FLOOD_THRESHOLD = 10;  // events/sec — above this we batch
@@ -1046,7 +1103,7 @@
 
     if (currentRate() < FLOOD_THRESHOLD) {
       // Normal traffic — draw immediately, no latency
-      drawArc(ev, 1);
+      dispatchArc(ev, 1);
     } else {
       // Flood — buffer and deduplicate by source IP
       const key = ev.src_ip || `${ev.src_lon},${ev.src_lat}`;
@@ -1072,9 +1129,36 @@
     if (arcBuffer.size === 0) return;
     const entries = [...arcBuffer.values()];
     arcBuffer.clear();
-    entries.forEach(({ ev, count }) => drawArc(ev, count));
+    entries.forEach(({ ev, count }) => dispatchArc(ev, count));
   }
 
+  // ── Dispatch: reuse existing arc or create new one ──────────────────────
+  function dispatchArc(ev, hitCount) {
+    const key = ev.src_ip || `${ev.src_lon},${ev.src_lat}`;
+    const existing = arcRegistry.get(key);
+
+    if (existing) {
+      // Reuse — reset TTL, pulse, flash arc brighter
+      existing.hitCount += hitCount;
+      resetArcTTL(key, existing);
+      flashArc(existing);
+      sendPulse(existing, hitCount);
+      pulseDot(existing, hitCount);
+      // Update tooltip with new hit count
+      attachTooltip(existing.dotEl, tooltipLabel(existing.ev, existing.hitCount));
+      // Trigger magnifier for short arcs
+      const [x0, y0] = projection(existing.srcPt);
+      const [x1, y1] = projection(existing.dstPt);
+      const arcPixelDist = Math.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2);
+      if (arcPixelDist < w * 0.25) {
+        magShowArc(ev, existing.srcPt, existing.dstPt, existing.c1, existing.c2, existing.hitCount);
+      }
+    } else {
+      drawArc(ev, hitCount);
+    }
+  }
+
+  // ── Draw a new persistent arc ───────────────────────────────────────────
   function drawArc(ev, hitCount = 1) {
     const srcPt = [ev.src_lon, ev.src_lat];
     const dstPt = [ev.dst_lon, ev.dst_lat];
@@ -1094,29 +1178,21 @@
     // Reuse pooled gradient by color pair
     const gradEntry = acquireGradient(c1, c2, x0, y0, x1, y1);
 
-    // Detect antimeridian crossing — when source and dest longitudes are
-    // far apart and on opposite sides, the great-circle path crosses the
-    // date line.  In that case, use d3.geoPath which handles clipping
-    // correctly, instead of d3.line which draws straight pixel segments.
+    // Detect antimeridian crossing
     const lonDiff = Math.abs(srcPt[0] - dstPt[0]);
     const crossesAntimeridian = lonDiff > 180;
 
     let fullD, lineData;
 
     if (crossesAntimeridian) {
-      // Build a GeoJSON LineString from great-circle samples — geoPath
-      // will clip and split it at the antimeridian automatically.
       const interp = d3.geoInterpolate(srcPt, dstPt);
-      const N = 40; // more samples for accuracy across the split
+      const N = 40;
       const geoCoords = [];
       for (let i = 0; i <= N; i++) geoCoords.push(interp(i / N));
       const geoLine = { type: 'LineString', coordinates: geoCoords };
       fullD = path(geoLine);
-      // For path length, project the clipped result's points
-      // Use a rough estimate from the projected endpoints on each side
       lineData = geoCoords.map(c => projection(c));
     } else {
-      // Normal path — 20 samples with natural curve
       const interp = d3.geoInterpolate(srcPt, dstPt);
       const N = 20;
       lineData = [];
@@ -1133,9 +1209,7 @@
       .attr('stroke-width', sw)
       .attr('opacity', 0);
 
-    // Approximate path length from segment distances (avoids synchronous getTotalLength)
-    // For antimeridian-crossing arcs, the projected points jump across the SVG
-    // so we must use the rendered path's getTotalLength instead.
+    // Approximate path length from segment distances
     let totalLen = 0;
     if (crossesAntimeridian) {
       totalLen = arcPath.node().getTotalLength();
@@ -1147,7 +1221,7 @@
       }
     }
 
-    // Animate stroke-dash draw-on, then fade and remove (~2.6s total lifespan)
+    // Animate stroke-dash draw-on, then settle to resting opacity
     arcPath
       .attr('stroke-dasharray', totalLen)
       .attr('stroke-dashoffset', totalLen)
@@ -1157,15 +1231,12 @@
         .ease(d3.easeQuadInOut)
         .attr('stroke-dashoffset', 0)
       .transition()
-        .delay(1200)
+        .delay(400)
         .duration(600)
-        .attr('opacity', 0)
-      .on('end', () => {
-        arcPath.remove();
-        releaseGradient(c1, c2);
+        .attr('opacity', ARC_REST_OPACITY)
+      .on('end', function() {
+        d3.select(this).classed('resting', true);
       });
-
-    trackArc(arcPath.node());
 
     // Source dot — animates in bright, then settles as a persistent faded dot
     const dotR = Math.min(6, 3 + Math.log2(hitCount));
@@ -1188,12 +1259,122 @@
 
     trackDot(srcDot.node());
 
-    // Trigger magnifier inset only for short arcs (roughly US-width or less).
-    // Compare pixel distance between src and dst to a fraction of SVG width.
+    // Register this arc for pulse reuse
+    const key = ev.src_ip || `${ev.src_lon},${ev.src_lat}`;
+    const entry = {
+      arcPath, gradEntry, c1, c2, srcPt, dstPt,
+      lineData, totalLen, crossesAntimeridian,
+      hitCount, expireTimer: null, dotEl: srcDot, ev,
+    };
+    arcRegistry.set(key, entry);
+    resetArcTTL(key, entry);
+    trackArc(key); // track by registry key, not DOM node
+
+    // Trigger magnifier for short arcs
     const arcPixelDist = Math.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2);
     if (arcPixelDist < w * 0.25) {
       magShowArc(ev, srcPt, dstPt, c1, c2, hitCount);
     }
+  }
+
+  // ── Arc TTL management ──────────────────────────────────────────────────
+  function resetArcTTL(key, entry) {
+    if (entry.expireTimer) clearTimeout(entry.expireTimer);
+    entry.expireTimer = setTimeout(() => expireArc(key), ARC_TTL);
+  }
+
+  function expireArc(key) {
+    const entry = arcRegistry.get(key);
+    if (!entry) return;
+    arcRegistry.delete(key);
+    // Fade out and remove the arc path
+    entry.arcPath
+      .interrupt() // cancel any in-progress transition
+      .transition()
+        .duration(800)
+        .attr('opacity', 0)
+      .on('end', function() {
+        d3.select(this).remove();
+      });
+    releaseGradient(entry.c1, entry.c2);
+    // Remove from arcRing
+    const idx = arcRing.indexOf(key);
+    if (idx !== -1) arcRing.splice(idx, 1);
+  }
+
+  // ── Flash arc brighter on repeat hit ────────────────────────────────────
+  function flashArc(entry) {
+    entry.arcPath
+      .interrupt()
+      .attr('opacity', 0.85)
+      .transition()
+        .duration(600)
+        .attr('opacity', ARC_REST_OPACITY);
+    // Thicken stroke based on cumulative hits
+    const sw = arcWidth(Math.min(entry.hitCount, 20));
+    entry.arcPath.attr('stroke-width', sw);
+  }
+
+  // ── Pulse particle — travels along cached path points ───────────────────
+  function sendPulse(entry, hitCount) {
+    if (activePulses >= MAX_PULSES) return; // cap to avoid DOM overload
+    activePulses++;
+
+    const pts = entry.lineData;
+    if (!pts || pts.length < 2) { activePulses--; return; }
+
+    const pulseR = Math.min(5, 2.5 + Math.log2(hitCount) * 0.5);
+    const pulse = pulseGroup.append('circle')
+      .attr('class', 'arc-pulse')
+      .attr('cx', pts[0][0])
+      .attr('cy', pts[0][1])
+      .attr('r', pulseR)
+      .attr('fill', entry.c1)
+      .attr('opacity', 0.9)
+      .attr('stroke', entry.c1)
+      .attr('stroke-width', pulseR * 0.6)
+      .attr('stroke-opacity', 0.4);
+
+    const duration = PULSE_DURATION;
+    const lastIdx = pts.length - 1;
+
+    d3.timer(function(elapsed) {
+      const t = Math.min(1, elapsed / duration);
+      // Ease for smooth acceleration/deceleration
+      const et = d3.easeQuadInOut(t);
+      // Interpolate along the pre-computed point array
+      const rawIdx = et * lastIdx;
+      const i = Math.floor(rawIdx);
+      const f = rawIdx - i;
+      const i2 = Math.min(i + 1, lastIdx);
+      const x = pts[i][0] + (pts[i2][0] - pts[i][0]) * f;
+      const y = pts[i][1] + (pts[i2][1] - pts[i][1]) * f;
+
+      pulse.attr('cx', x).attr('cy', y);
+      // Fade out over the last 30% of travel
+      if (t > 0.7) {
+        pulse.attr('opacity', 0.9 * (1 - (t - 0.7) / 0.3));
+      }
+
+      if (t >= 1) {
+        pulse.remove();
+        activePulses--;
+        return true; // stop timer
+      }
+    });
+  }
+
+  // ── Pulse the existing dot on repeat hit ────────────────────────────────
+  function pulseDot(entry, hitCount) {
+    if (!entry.dotEl) return;
+    const dotR = Math.min(6, 3 + Math.log2(entry.hitCount));
+    entry.dotEl
+      .interrupt()
+      .attr('opacity', 1)
+      .attr('r', dotR + 2)
+      .transition().duration(400)
+        .attr('r', dotR)
+        .attr('opacity', 0.50);
   }
 
   // ── Dot lifecycle cap ───────────────────────────────────────────────────
@@ -1210,13 +1391,20 @@
 
   // ── Arc lifecycle cap ─────────────────────────────────────────────────
   const MAX_ARCS = 150;
-  const arcRing = []; // circular buffer of arc path DOM nodes
+  const arcRing = []; // circular buffer of registry keys
 
-  function trackArc(node) {
-    arcRing.push(node);
+  function trackArc(key) {
+    arcRing.push(key);
     while (arcRing.length > MAX_ARCS) {
-      const old = arcRing.shift();
-      if (old.parentNode) old.parentNode.removeChild(old);
+      const oldKey = arcRing.shift();
+      // Force-expire the oldest arc
+      const entry = arcRegistry.get(oldKey);
+      if (entry) {
+        if (entry.expireTimer) clearTimeout(entry.expireTimer);
+        arcRegistry.delete(oldKey);
+        entry.arcPath.remove();
+        releaseGradient(entry.c1, entry.c2);
+      }
     }
   }
 
@@ -1254,7 +1442,7 @@
         `${protoLabel ? '<span class="log-proto">' + protoLabel + '</span>' : ''}`;
       if (ev.src_lat && ev.src_lon) {
         row.addEventListener('click', () => {
-          drawArc(ev, 1);
+          dispatchArc(ev, 1);
           row.classList.add('arc-flash');
           setTimeout(() => row.classList.remove('arc-flash'), 400);
         });
