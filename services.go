@@ -19,16 +19,26 @@ var tcpServiceNames = map[int]string{
 	23:    "Telnet",
 	25:    "SMTP",
 	110:   "POP3",
+	135:   "RPC",
+	139:   "NetBIOS",
 	143:   "IMAP",
 	443:   "HTTPS",
 	445:   "SMB",
+	993:   "IMAPS",
+	995:   "POP3S",
 	1433:  "MSSQL",
+	1521:  "Oracle",
+	1723:  "PPTP",
 	3306:  "MySQL",
 	3389:  "RDP",
+	4444:  "Metasploit",
 	5432:  "PostgreSQL",
+	5555:  "ADB",
 	6379:  "Redis",
-	27017: "MongoDB",
+	6667:  "IRC",
+	9100:  "Printer",
 	18789: "OpenClaw",
+	27017: "MongoDB",
 }
 
 // serviceEntry describes a TCP service the app impersonates.
@@ -72,6 +82,41 @@ var tcpServices = []serviceEntry{
 		},
 	},
 	{
+		Port: 135, // RPC (Microsoft DCE/RPC)
+		Banner: func() []byte {
+			// DCE/RPC bind_nak response — the standard rejection when a client
+			// sends a bind request to an endpoint mapper that refuses the call.
+			// Header: version=5, minor=0, type=0x0d (bind_nak), flags=0x03,
+			// data_rep=little-endian, frag_len=28, auth_len=0, call_id=1,
+			// reject_reason=0x02 (LOCAL_LIMIT_EXCEEDED), num_protocols=0
+			return []byte{
+				0x05, 0x00, // version 5.0
+				0x0d,                   // packet type: bind_nak
+				0x03,                   // flags: first+last frag
+				0x10, 0x00, 0x00, 0x00, // data representation (LE, ASCII, IEEE)
+				0x1c, 0x00, // frag length = 28
+				0x00, 0x00, // auth length = 0
+				0x01, 0x00, 0x00, 0x00, // call id = 1
+				0x02, 0x00, // reject reason: LOCAL_LIMIT_EXCEEDED
+				0x00, 0x00, 0x00, 0x00, // num protocols = 0 (padding)
+			}
+		},
+	},
+	{
+		Port: 139, // NetBIOS Session Service
+		Banner: func() []byte {
+			// NetBIOS negative session response — sent when the server
+			// rejects the session request. Type=0x83 (negative response),
+			// length=1, error=0x80 (not listening on called name).
+			return []byte{
+				0x83,       // type: negative session response
+				0x00,       // flags
+				0x00, 0x01, // length = 1
+				0x80, // error: not listening on called name
+			}
+		},
+	},
+	{
 		Port: 143, // IMAP
 		Banner: func() []byte {
 			return []byte("* OK [CAPABILITY IMAP4rev1 LITERAL+ SASL-IR LOGIN-REFERRALS ID ENABLE IDLE STARTTLS AUTH=PLAIN] Dovecot ready.\r\n")
@@ -112,6 +157,21 @@ var tcpServices = []serviceEntry{
 		},
 	},
 	{
+		Port: 993, // IMAP over SSL/TLS
+		Banner: func() []byte {
+			// Same TLS handshake_failure alert as port 443. Scanners probing
+			// mail ports expect a TLS handshake; this is the correct rejection.
+			return []byte{0x15, 0x03, 0x01, 0x00, 0x02, 0x02, 0x28}
+		},
+	},
+	{
+		Port: 995, // POP3 over SSL/TLS
+		Banner: func() []byte {
+			// Same TLS handshake_failure alert as port 443/993.
+			return []byte{0x15, 0x03, 0x01, 0x00, 0x02, 0x02, 0x28}
+		},
+	},
+	{
 		Port: 1433, // MSSQL
 		Banner: func() []byte {
 			// TDS pre-login response: server version 15.00.2000, encryption not supported
@@ -133,6 +193,79 @@ var tcpServices = []serviceEntry{
 				// ENCRYPTION: 0x02 = ENCRYPT_NOT_SUP
 				0x02,
 			}
+		},
+	},
+	{
+		Port: 1521, // Oracle Database TNS Listener
+		Banner: func() []byte {
+			// TNS Refuse packet — the standard response from an Oracle TNS
+			// listener that rejects a connection request. The refuse reason
+			// mimics "no listener" which is what scanners expect from a
+			// real Oracle instance that is not accepting connections.
+			// Packet: type=4 (REFUSE), data includes refuse reason.
+			reasonData := "(DESCRIPTION=(ERR=1153)(VSNNUM=0)(ERROR_STACK=(ERROR=(CODE=1153)(EMFI=1))))"
+			pktLen := 8 + len(reasonData) // TNS header (8 bytes) + data
+			return append([]byte{
+				byte(pktLen >> 8), byte(pktLen), // packet length (big-endian)
+				0x00, 0x00, // packet checksum
+				0x04,       // type: REFUSE
+				0x00,       // reserved
+				0x00, 0x00, // header checksum
+			}, []byte(reasonData)...)
+		},
+	},
+	{
+		Port: 1723, // PPTP VPN
+		Banner: func() []byte {
+			// PPTP Start-Control-Connection-Reply (SCCRP) — the server's
+			// response to a client's SCCRP request. This is a fixed 156-byte
+			// message that indicates a PPTP VPN server is listening.
+			reply := make([]byte, 156)
+			// Length (2 bytes, big-endian) = 156
+			reply[0] = 0x00
+			reply[1] = 0x9c
+			// PPTP Message Type: Control Message (1)
+			reply[2] = 0x00
+			reply[3] = 0x01
+			// Magic Cookie: 0x1A2B3C4D
+			reply[4] = 0x1a
+			reply[5] = 0x2b
+			reply[6] = 0x3c
+			reply[7] = 0x4d
+			// Control Message Type: Start-Control-Connection-Reply (2)
+			reply[8] = 0x00
+			reply[9] = 0x02
+			// Reserved
+			reply[10] = 0x00
+			reply[11] = 0x00
+			// Protocol Version: 1.0
+			reply[12] = 0x01
+			reply[13] = 0x00
+			// Result Code: 1 (Successful channel establishment)
+			reply[14] = 0x01
+			// Error Code: 0 (None)
+			reply[15] = 0x00
+			// Framing Capabilities: async + sync
+			reply[16] = 0x00
+			reply[17] = 0x00
+			reply[18] = 0x00
+			reply[19] = 0x03
+			// Bearer Capabilities: analog + digital
+			reply[20] = 0x00
+			reply[21] = 0x00
+			reply[22] = 0x00
+			reply[23] = 0x03
+			// Maximum Channels: 1
+			reply[24] = 0x00
+			reply[25] = 0x01
+			// Firmware Revision: 1
+			reply[26] = 0x00
+			reply[27] = 0x01
+			// Host Name (64 bytes at offset 28): "pptp-server"
+			copy(reply[28:], "pptp-server")
+			// Vendor String (64 bytes at offset 92): "linux"
+			copy(reply[92:], "linux")
+			return reply
 		},
 	},
 	{
@@ -190,6 +323,16 @@ var tcpServices = []serviceEntry{
 		},
 	},
 	{
+		Port: 4444, // Metasploit default reverse shell
+		Banner: func() []byte {
+			// Port 4444 is the default Meterpreter reverse shell port. There is
+			// no standard protocol banner — a real compromised host would just
+			// accept the connection silently. We send nothing; the connection
+			// accept itself is the event that matters.
+			return nil
+		},
+	},
+	{
 		Port: 5432, // PostgreSQL
 		Banner: func() []byte {
 			// PostgreSQL sends nothing until the client sends a startup message.
@@ -204,10 +347,55 @@ var tcpServices = []serviceEntry{
 		},
 	},
 	{
+		Port: 5555, // Android Debug Bridge (ADB)
+		Banner: func() []byte {
+			// ADB protocol CNXN (connect) response. This is the first message
+			// an ADB daemon sends after accepting a TCP connection. The format
+			// is: command(4) + arg0(4) + arg1(4) + data_length(4) + data_crc(4) + magic(4)
+			// followed by the system identity string.
+			// command: "CNXN" = 0x4e584e43
+			// arg0: version (0x01000000 = version 1.0)
+			// arg1: max data (4096 = 0x00001000)
+			identity := "device::ro.product.model=Android;ro.product.device=generic\x00"
+			dataLen := len(identity)
+			// Simple checksum: sum of all bytes in data
+			var crc uint32
+			for _, b := range []byte(identity) {
+				crc += uint32(b)
+			}
+			hdr := []byte{
+				// CNXN command (little-endian)
+				0x43, 0x4e, 0x58, 0x4e,
+				// version 1.0
+				0x00, 0x00, 0x00, 0x01,
+				// max data: 4096
+				0x00, 0x10, 0x00, 0x00,
+				// data length
+				byte(dataLen), byte(dataLen >> 8), byte(dataLen >> 16), byte(dataLen >> 24),
+				// data crc32
+				byte(crc), byte(crc >> 8), byte(crc >> 16), byte(crc >> 24),
+				// magic: CNXN ^ 0xFFFFFFFF
+				0xbc, 0xb1, 0xa7, 0xb1,
+			}
+			return append(hdr, []byte(identity)...)
+		},
+	},
+	{
 		Port: 6379, // Redis
 		Banner: func() []byte {
 			// Redis inline error: not accepting connections (AUTH required or protected mode)
 			return []byte("-DENIED Redis is running in protected mode\r\n")
+		},
+	},
+	{
+		Port: 6667, // IRC
+		Banner: func() []byte {
+			// IRC server welcome — the standard sequence an IRC daemon sends
+			// upon connection. Includes a NOTICE AUTH and RPL_YOURHOST-style
+			// response. Scanners and botnets probing for IRC C&C servers
+			// expect this exact pattern.
+			return []byte(":irc.localhost NOTICE AUTH :*** Looking up your hostname...\r\n" +
+				":irc.localhost NOTICE AUTH :*** Found your hostname\r\n")
 		},
 	},
 	{
@@ -270,6 +458,15 @@ var tcpServices = []serviceEntry{
 		},
 	},
 	{
+		Port: 9100, // HP JetDirect / Printer
+		Banner: func() []byte {
+			// PJL (Printer Job Language) ready response. HP JetDirect printers
+			// and print servers respond with a PJL info status when probed.
+			// This is what Shodan and mass-scanners fingerprint as "printer".
+			return []byte("@PJL INFO STATUS\r\nCODE=10001\r\nDISPLAY=\"Ready\"\r\nONLINE=TRUE\r\n")
+		},
+	},
+	{
 		Port: 9200, // Elasticsearch
 		Banner: func() []byte {
 			// Elasticsearch returns a JSON body on GET /. Mimic a 7.17.x node
@@ -327,6 +524,7 @@ var udpServicePorts = []int{
 	53,   // DNS
 	123,  // NTP
 	161,  // SNMP
+	1434, // MSSQL Browser/Monitor
 	1900, // SSDP/UPnP
 	5060, // SIP
 }
@@ -631,7 +829,22 @@ func portServiceName(port string) string {
 	}
 	for _, p := range udpServicePorts {
 		if fmt.Sprintf("%d", p) == port {
-			return "DNS"
+			switch port {
+			case "53":
+				return "DNS"
+			case "123":
+				return "NTP"
+			case "161":
+				return "SNMP"
+			case "1434":
+				return "MSSQL-Mon"
+			case "1900":
+				return "SSDP"
+			case "5060":
+				return "SIP"
+			default:
+				return port
+			}
 		}
 	}
 	return port
