@@ -273,20 +273,24 @@ func (e *eventDB) queryHistory(f HistoryFilter) ([]ConnectionEvent, error) {
 		args = append(args, dateTo)
 	}
 
+	// Build inner query that selects the most recent N matching rows.
+	inner := `SELECT * FROM events`
+	if len(where) > 0 {
+		inner += " WHERE "
+		for i, w := range where {
+			if i > 0 {
+				inner += " AND "
+			}
+			inner += w
+		}
+	}
+	inner += " ORDER BY id DESC LIMIT ?"
+
+	// Wrap in a subquery to re-sort oldest-first for chronological display.
 	query := `SELECT time, src_ip, dst_ip, dst_port, protocol,
 	                 src_lat, src_lon, dst_lat, dst_lon,
 	                 src_city, dst_city, src_cc, dst_cc
-	          FROM events`
-	if len(where) > 0 {
-		query += " WHERE "
-		for i, w := range where {
-			if i > 0 {
-				query += " AND "
-			}
-			query += w
-		}
-	}
-	query += " ORDER BY id ASC LIMIT ?"
+	          FROM (` + inner + `) ORDER BY id ASC`
 	args = append(args, limit)
 
 	rows, err := e.db.Query(query, args...)
