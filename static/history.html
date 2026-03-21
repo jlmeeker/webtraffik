@@ -306,20 +306,11 @@
     </div>
     <div class="filter-group">
       <label>From</label>
-      <input type="date" id="f-date-from" />
+      <input type="datetime-local" id="f-date-from" step="1" />
     </div>
     <div class="filter-group">
       <label>To</label>
-      <input type="date" id="f-date-to" />
-    </div>
-    <div class="filter-group">
-      <label>Max rows</label>
-      <select id="f-limit">
-        <option value="1000">1,000</option>
-        <option value="5000">5,000</option>
-        <option value="10000" selected>10,000</option>
-        <option value="50000">50,000</option>
-      </select>
+      <input type="datetime-local" id="f-date-to" step="1" />
     </div>
     <button id="btn-query">Query</button>
     <button id="btn-clear">Clear</button>
@@ -822,15 +813,13 @@ async function runQuery() {
   const service = document.getElementById('f-service').value;
   const from    = document.getElementById('f-date-from').value;
   const to      = document.getElementById('f-date-to').value;
-  const limit   = document.getElementById('f-limit').value;
 
   if (country) params.set('country', country);
   if (ip)      params.set('ip', ip);
   if (port)    params.set('port', port);
   if (service) params.set('service', service);
-  if (from)    params.set('date_from', localDateToUTCStart(from));
-  if (to)      params.set('date_to',   localDateToUTCEnd(to));
-  params.set('limit', limit);
+  if (from)    params.set('date_from', localDateTimeToUTC(from));
+  if (to)      params.set('date_to',   localDateTimeToUTC(to));
 
   try {
     const resp = await fetch('/api/history?' + params.toString());
@@ -840,9 +829,6 @@ async function runQuery() {
     // Update status
     const summary = document.getElementById('result-summary');
     summary.innerHTML = `Returned <span class="stat">${events.length.toLocaleString()}</span> events`;
-    if (events.length === +limit) {
-      summary.innerHTML += ' <span style="color:#ef9a9a">(limit reached — try narrowing filters)</span>';
-    }
 
     if (events.length === 0) {
       document.getElementById('charts-grid').classList.remove('visible');
@@ -871,9 +857,7 @@ function clearFilters() {
   document.getElementById('f-ip').value = '';
   document.getElementById('f-port').value = '';
   document.getElementById('f-service').value = '';
-  document.getElementById('f-date-from').value = '';
-  document.getElementById('f-date-to').value = '';
-  document.getElementById('f-limit').value = '10000';
+  setDefaultDates();
   destroyAll();
   document.getElementById('charts-grid').classList.remove('visible');
   document.getElementById('summary-section').classList.remove('visible');
@@ -892,35 +876,61 @@ document.querySelectorAll('#filter-panel input').forEach(el => {
   el.addEventListener('keydown', e => { if (e.key === 'Enter') runQuery(); });
 });
 
-// Format a Date as YYYY-MM-DD in local time
-function localDateStr(d) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
+// Format a Date as YYYY-MM-DDTHH:MM:SS for datetime-local input
+function localDateTimeStr(d) {
+  const y   = d.getFullYear();
+  const mo  = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+  const h   = String(d.getHours()).padStart(2, '0');
+  const mi  = String(d.getMinutes()).padStart(2, '0');
+  const s   = String(d.getSeconds()).padStart(2, '0');
+  return `${y}-${mo}-${day}T${h}:${mi}:${s}`;
 }
 
-// Convert a local YYYY-MM-DD string to a UTC ISO string for the start of that local day
-function localDateToUTCStart(dateStr) {
-  // Parse as local midnight
-  const [y, m, d] = dateStr.split('-').map(Number);
-  return new Date(y, m - 1, d, 0, 0, 0, 0).toISOString();
+// Convert a datetime-local value (YYYY-MM-DDTHH:MM or YYYY-MM-DDTHH:MM:SS) to UTC ISO string
+function localDateTimeToUTC(dtStr) {
+  return new Date(dtStr).toISOString();
 }
 
-// Convert a local YYYY-MM-DD string to a UTC ISO string for the end of that local day
-function localDateToUTCEnd(dateStr) {
-  const [y, m, d] = dateStr.split('-').map(Number);
-  return new Date(y, m - 1, d, 23, 59, 59, 999).toISOString();
+// ── Cookie helpers ──
+function setCookie(name, value, days) {
+  const d = new Date();
+  d.setTime(d.getTime() + days * 86400000);
+  document.cookie = name + '=' + encodeURIComponent(value) + ';expires=' + d.toUTCString() + ';path=/;SameSite=Lax';
+}
+function getCookie(name) {
+  const prefix = name + '=';
+  const parts = document.cookie.split(';');
+  for (let i = 0; i < parts.length; i++) {
+    const c = parts[i].trim();
+    if (c.indexOf(prefix) === 0) return decodeURIComponent(c.substring(prefix.length));
+  }
+  return '';
 }
 
-// Default date range: last 30 days (in local time)
-(function setDefaultDates() {
-  const today = new Date();
-  const from = new Date(today);
-  from.setDate(from.getDate() - 30);
-  document.getElementById('f-date-to').value = localDateStr(today);
-  document.getElementById('f-date-from').value = localDateStr(from);
-})();
+// Persist time range to cookie whenever inputs change
+document.getElementById('f-date-from').addEventListener('change', function() {
+  setCookie('wt_hist_from', this.value, 365);
+});
+document.getElementById('f-date-to').addEventListener('change', function() {
+  setCookie('wt_hist_to', this.value, 365);
+});
+
+// Set date inputs — restore from cookie or default to last 1 hour
+function setDefaultDates() {
+  const savedFrom = getCookie('wt_hist_from');
+  const savedTo   = getCookie('wt_hist_to');
+  if (savedFrom && savedTo) {
+    document.getElementById('f-date-from').value = savedFrom;
+    document.getElementById('f-date-to').value   = savedTo;
+  } else {
+    const now  = new Date();
+    const from = new Date(now.getTime() - 3600000); // 1 hour ago
+    document.getElementById('f-date-to').value   = localDateTimeStr(now);
+    document.getElementById('f-date-from').value = localDateTimeStr(from);
+  }
+}
+setDefaultDates();
 
 loadServices();
 </script>

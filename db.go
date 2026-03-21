@@ -206,6 +206,38 @@ func (e *eventDB) loadHistory(limit int) ([]ConnectionEvent, error) {
 	return events, rows.Err()
 }
 
+// loadHistorySince returns all events since the given RFC3339 timestamp,
+// oldest-first, with no row limit.
+func (e *eventDB) loadHistorySince(since string) ([]ConnectionEvent, error) {
+	rows, err := e.db.Query(`
+		SELECT time, src_ip, dst_ip, dst_port, protocol,
+		       src_lat, src_lon, dst_lat, dst_lon,
+		       src_city, dst_city, src_cc, dst_cc
+		FROM events
+		WHERE time >= ?
+		ORDER BY id ASC`,
+		since,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []ConnectionEvent
+	for rows.Next() {
+		var ev ConnectionEvent
+		if err := rows.Scan(
+			&ev.Time, &ev.SrcIP, &ev.DstIP, &ev.DstPort, &ev.Protocol,
+			&ev.SrcLat, &ev.SrcLon, &ev.DstLat, &ev.DstLon,
+			&ev.SrcCity, &ev.DstCity, &ev.SrcCC, &ev.DstCC,
+		); err != nil {
+			return nil, err
+		}
+		events = append(events, ev)
+	}
+	return events, rows.Err()
+}
+
 // HistoryFilter holds optional filter criteria for queryHistory.
 // Zero values / empty strings mean "no filter" for that field.
 type HistoryFilter struct {
@@ -215,17 +247,11 @@ type HistoryFilter struct {
 	Service  string // resolved via portServiceName(); matched against dst_port
 	DateFrom string // RFC3339 / YYYY-MM-DD lower bound (inclusive)
 	DateTo   string // RFC3339 / YYYY-MM-DD upper bound (inclusive, treated as end-of-day)
-	Limit    int    // max rows returned; 0 → 10 000
 }
 
 // queryHistory executes a filtered SELECT against the events table and returns
 // matching events oldest-first.
 func (e *eventDB) queryHistory(f HistoryFilter) ([]ConnectionEvent, error) {
-	limit := f.Limit
-	if limit <= 0 {
-		limit = 10000
-	}
-
 	where := []string{}
 	args := []interface{}{}
 
@@ -273,25 +299,21 @@ func (e *eventDB) queryHistory(f HistoryFilter) ([]ConnectionEvent, error) {
 		args = append(args, dateTo)
 	}
 
-	// Build inner query that selects the most recent N matching rows.
-	inner := `SELECT * FROM events`
-	if len(where) > 0 {
-		inner += " WHERE "
-		for i, w := range where {
-			if i > 0 {
-				inner += " AND "
-			}
-			inner += w
-		}
-	}
-	inner += " ORDER BY id DESC LIMIT ?"
-
-	// Wrap in a subquery to re-sort oldest-first for chronological display.
+	// Build the query with optional WHERE filters, ordered oldest-first.
 	query := `SELECT time, src_ip, dst_ip, dst_port, protocol,
 	                 src_lat, src_lon, dst_lat, dst_lon,
 	                 src_city, dst_city, src_cc, dst_cc
-	          FROM (` + inner + `) ORDER BY id ASC`
-	args = append(args, limit)
+	          FROM events`
+	if len(where) > 0 {
+		query += " WHERE "
+		for i, w := range where {
+			if i > 0 {
+				query += " AND "
+			}
+			query += w
+		}
+	}
+	query += " ORDER BY id ASC"
 
 	rows, err := e.db.Query(query, args...)
 	if err != nil {
