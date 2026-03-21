@@ -738,21 +738,26 @@
 
      // Reproject persistent arcs in the registry
      arcRegistry.forEach((entry) => {
-       const interp = d3.geoInterpolate(entry.srcPt, entry.dstPt);
-       let fullD;
-       if (entry.crossesAntimeridian) {
-         const N = 40;
-         const geoCoords = [];
-         for (let i = 0; i <= N; i++) geoCoords.push(interp(i / N));
-         const geoLine = { type: 'LineString', coordinates: geoCoords };
-         fullD = path(geoLine);
-         entry.lineData = geoCoords.map(c => projection(c));
-       } else {
-         const N = 20;
-         entry.lineData = [];
-         for (let i = 0; i <= N; i++) entry.lineData.push(projection(interp(i / N)));
-         const lineGen = d3.line().x(d => d[0]).y(d => d[1]).curve(d3.curveNatural);
-         fullD = lineGen(entry.lineData);
+       const [x0, y0] = projection(entry.srcPt);
+       const [x1, y1] = projection(entry.dstPt);
+       // Rebuild screen-space quadratic bezier
+       const mx = (x0 + x1) / 2;
+       const my = (y0 + y1) / 2;
+       const chord = Math.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2);
+       const bulge = Math.min(chord * 0.35, h * 0.25);
+       const cx = mx;
+       const cy = my - bulge;
+       const fullD = `M${x0},${y0} Q${cx},${cy} ${x1},${y1}`;
+       // Resample points for pulse animation
+       const N = 20;
+       entry.lineData = [];
+       for (let i = 0; i <= N; i++) {
+         const t = i / N;
+         const u = 1 - t;
+         entry.lineData.push([
+           u * u * x0 + 2 * u * t * cx + t * t * x1,
+           u * u * y0 + 2 * u * t * cy + t * t * y1,
+         ]);
        }
        entry.arcPath.attr('d', fullD);
        // Recalculate path length
@@ -765,8 +770,6 @@
        entry.totalLen = totalLen;
        entry.arcPath.attr('stroke-dasharray', totalLen).attr('stroke-dashoffset', 0);
        // Update gradient coordinates
-       const [x0, y0] = projection(entry.srcPt);
-       const [x1, y1] = projection(entry.dstPt);
        entry.gradEntry.el.attr('x1', x0).attr('y1', y0).attr('x2', x1).attr('y2', y1);
      });
 
@@ -915,8 +918,7 @@
   // ── Arc registry — persistent arcs with pulse reuse ─────────────────────
   // Key: src_ip (string)
   // Value: { arcPath, gradEntry, c1, c2, srcPt, dstPt, lineData,
-  //          totalLen, crossesAntimeridian, hitCount, expireTimer,
-  //          dotEl, ev }
+  //          totalLen, hitCount, expireTimer, dotEl, ev }
   const arcRegistry = new Map();
   const ARC_TTL = 12000;         // ms — idle timeout before arc fades out
   const ARC_REST_OPACITY = 0.18; // resting opacity of persistent arcs
@@ -1128,27 +1130,27 @@
     // Reuse pooled gradient by color pair
     const gradEntry = acquireGradient(c1, c2, x0, y0, x1, y1);
 
-    // Detect antimeridian crossing
-    const lonDiff = Math.abs(srcPt[0] - dstPt[0]);
-    const crossesAntimeridian = lonDiff > 180;
+    // Build arc as a simple screen-space quadratic bezier.
+    // Control point sits above the midpoint; the bulge height scales with the
+    // chord distance so short arcs get a gentle curve, long arcs get a taller bow.
+    const mx = (x0 + x1) / 2;
+    const my = (y0 + y1) / 2;
+    const chord = Math.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2);
+    const bulge = Math.min(chord * 0.35, h * 0.25);
+    const cx = mx;
+    const cy = my - bulge;
+    const fullD = `M${x0},${y0} Q${cx},${cy} ${x1},${y1}`;
 
-    let fullD, lineData;
-
-    if (crossesAntimeridian) {
-      const interp = d3.geoInterpolate(srcPt, dstPt);
-      const N = 40;
-      const geoCoords = [];
-      for (let i = 0; i <= N; i++) geoCoords.push(interp(i / N));
-      const geoLine = { type: 'LineString', coordinates: geoCoords };
-      fullD = path(geoLine);
-      lineData = geoCoords.map(c => projection(c));
-    } else {
-      const interp = d3.geoInterpolate(srcPt, dstPt);
-      const N = 20;
-      lineData = [];
-      for (let i = 0; i <= N; i++) lineData.push(projection(interp(i / N)));
-      const lineGen = d3.line().x(d => d[0]).y(d => d[1]).curve(d3.curveNatural);
-      fullD = lineGen(lineData);
+    // Sample points along the bezier for pulse animation & length estimation
+    const N = 20;
+    const lineData = [];
+    for (let i = 0; i <= N; i++) {
+      const t = i / N;
+      const u = 1 - t;
+      lineData.push([
+        u * u * x0 + 2 * u * t * cx + t * t * x1,
+        u * u * y0 + 2 * u * t * cy + t * t * y1,
+      ]);
     }
 
     const sw = arcWidth(hitCount);
@@ -1161,14 +1163,10 @@
 
     // Approximate path length from segment distances
     let totalLen = 0;
-    if (crossesAntimeridian) {
-      totalLen = arcPath.node().getTotalLength();
-    } else {
-      for (let i = 1; i < lineData.length; i++) {
-        const dx = lineData[i][0] - lineData[i - 1][0];
-        const dy = lineData[i][1] - lineData[i - 1][1];
-        totalLen += Math.sqrt(dx * dx + dy * dy);
-      }
+    for (let i = 1; i < lineData.length; i++) {
+      const dx = lineData[i][0] - lineData[i - 1][0];
+      const dy = lineData[i][1] - lineData[i - 1][1];
+      totalLen += Math.sqrt(dx * dx + dy * dy);
     }
 
     // Animate stroke-dash draw-on, then settle to resting opacity.
@@ -1215,7 +1213,7 @@
     const key = ev.src_ip || `${ev.src_lon},${ev.src_lat}`;
     const entry = {
       arcPath, gradEntry, c1, c2, srcPt, dstPt,
-      lineData, totalLen, crossesAntimeridian,
+      lineData, totalLen,
       hitCount, expireTimer: null, dotEl: srcDot, ev,
     };
     arcRegistry.set(key, entry);
