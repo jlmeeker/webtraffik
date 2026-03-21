@@ -372,7 +372,7 @@ Reference the new field as `ev.new_field` (matching the JSON tag) wherever the e
 
 ### 4. Adding a new TCP service port (non-HTTP)
 
-Edit **three files** and redeploy:
+Edit **four files** and redeploy:
 
 **`services.go`** — add to `tcpServices` slice (around line 21):
 ```go
@@ -395,6 +395,11 @@ CAPTURE_PORTS_TCP="..., NNNN"
 - Banner content and format
 - Why the banner is convincing to scanners
 
+**`static/index.html`** — add an entry to the `PORT_SERVICE_NAMES` map (around line 992):
+```js
+'NNNN': 'ServiceName',
+```
+
 Then rebuild and redeploy:
 ```bash
 make remote-install IP=x.x.x.x
@@ -404,7 +409,7 @@ Do not change one file without the other.
 
 ### 5. Adding a new UDP service port
 
-Edit **three files** and redeploy:
+Edit **four files** and redeploy:
 
 **`services.go`** — add to `udpServicePorts` slice (around line 240):
 ```go
@@ -424,6 +429,11 @@ CAPTURE_PORTS_UDP="..., NNNN"
 - Protocol description
 - Why this port is targeted by scanners
 
+**`static/index.html`** — add an entry to the `PORT_SERVICE_NAMES` map (around line 992):
+```js
+'NNNN': 'ServiceName',
+```
+
 Then rebuild and redeploy:
 ```bash
 make remote-install IP=x.x.x.x
@@ -442,3 +452,4 @@ Do not change one file without the other.
 - Static files are embedded at compile time via `static_embed.go`. Changes to `static/index.html` require a rebuild to take effect.
 - The `tcpServices` slice in `services.go` owns all non-HTTP TCP emulation. Each entry has a `Banner()` func that returns the bytes sent immediately after accepting the connection. The `udpServicePorts` slice owns all UDP capture ports. Neither uses `net/http` — they use raw `net.Listener` / `net.ListenPacket`.
 - When adding or removing services in `services.go`, update `SERVICES.md` to reflect the change. This file is the human-readable reference for all emulated services.
+- When adding or removing services in `services.go`, also update the `PORT_SERVICE_NAMES` map in `static/index.html` to add or remove the corresponding port→name entry. This keeps the frontend log and panel labels in sync with the backend.
