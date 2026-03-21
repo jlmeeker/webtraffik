@@ -29,11 +29,13 @@ A real-time network traffic sensor and visualization tool that captures incoming
 
 webTraffik listens on:
 - **17 HTTP ports** (80, 8080, 8000, 8008, 8081, 8088, 8090, 8888, 3000, 3001, 3128, 4000, 4200, 5000, 5001, 9000, 9090)
-- **14 TCP service ports** with protocol emulation (21/FTP, 22/SSH, 23/Telnet, 25/SMTP, 110/POP3, 143/IMAP, 443/HTTPS, 445/SMB, 1433/MSSQL, 3306/MySQL, 3389/RDP, 5432/PostgreSQL, 6379/Redis, 27017/MongoDB)
-- **1 UDP port** (53/DNS)
-- **1 TCP service port** for Minecraft Java Edition (25565)
+- **18 TCP service ports** with protocol emulation (21/FTP, 22/SSH, 23/Telnet, 25/SMTP, 110/POP3, 143/IMAP, 443/HTTPS, 445/SMB, 1433/MSSQL, 3306/MySQL, 3389/RDP, 5432/PostgreSQL, 6379/Redis, 27017/MongoDB, 5900/VNC, 8443/HTTPS-Alt, 9200/Elasticsearch, 11211/Memcached)
+- **5 UDP ports** (53/DNS, 123/NTP, 161/SNMP, 1900/SSDP, 5060/SIP)
+- **1 TCP service port** for Minecraft Java Edition (25565) with full Server List Ping emulation
 
 The dashboard is served on port **8999** (management-only, restricted to your subnet by the firewall).
+
+For a detailed description of each emulated service and its protocol banner, see [SERVICES.md](SERVICES.md).
 
 Traffic reaches the app via **pure NAT redirect** — your firewall forwards packets without injecting proxy headers, so `RemoteAddr` contains the original source IP.
 
@@ -233,8 +235,10 @@ nft list ruleset
 
 ```
 webTraffik/
+├── README.md            # This file — project overview, installation, configuration
+├── SERVICES.md          # Detailed reference of all emulated services and protocol banners
 ├── main.go              # Entry point, hub, WebSocket server, HTTP capture listeners
-├── services.go          # TCP service emulation (14 services), UDP capture, Minecraft support
+├── services.go          # TCP service emulation (18 services), UDP capture, Minecraft support
 ├── db.go                # SQLite event persistence (openEventDB, insert, loadHistory)
 ├── geo.go               # GeoLite2 + rgeo reverse geocoding
 ├── geodb.go             # Auto-download GeoLite2-City.mmdb from GitHub mirror

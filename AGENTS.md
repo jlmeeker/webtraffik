@@ -81,6 +81,7 @@ handleCapture(srcIP, dstPort)
 |------|------|
 | `main.go` | `ConnectionEvent` struct, `hub` (ring buffer + fan-out), HTTP capture listeners, dashboard server, `/ws` handler, `/api/self` endpoint, `capturePorts` var (HTTP-only ports) |
 | `services.go` | TCP service port emulation (`tcpServices` with banners for FTP, SSH, Telnet, SMTP, etc.) and UDP port capture (`udpServicePorts`) |
+| `SERVICES.md` | Detailed reference of all emulated TCP/UDP services and their protocol banners; must be kept in sync with `services.go` |
 | `db.go` | SQLite open/close, schema creation, `insert()`, `loadHistory()` |
 | `geo.go` | `GeoLocator` (GeoLite2 reader + rgeo fallback), `Lookup()`, `Location` struct |
 | `geodb.go` | `ensureGeoDB()` — auto-download of `GeoLite2-City.mmdb` from GitHub mirror |
@@ -156,10 +157,10 @@ This must include **all UDP ports** from `services.go` as a comma-separated nfta
 80, 8080, 8000, 8008, 8081, 8088, 8090, 8888, 3000, 3001, 3128, 4000, 4200, 5000, 5001, 9000, 9090
 
 **TCP service ports (services.go `tcpServices` — raw TCP listeners with banners):**
-21 (FTP), 22 (SSH), 23 (Telnet), 25 (SMTP), 110 (POP3), 143 (IMAP), 443 (HTTPS), 445 (SMB), 1433 (MSSQL), 3306 (MySQL), 3389 (RDP), 5432 (PostgreSQL), 6379 (Redis), 27017 (MongoDB)
+21 (FTP), 22 (SSH), 23 (Telnet), 25 (SMTP), 110 (POP3), 143 (IMAP), 443 (HTTPS), 445 (SMB), 1433 (MSSQL), 3306 (MySQL), 3389 (RDP), 5432 (PostgreSQL), 6379 (Redis), 27017 (MongoDB), 5900 (VNC), 8443 (HTTPS-Alt), 9200 (Elasticsearch), 11211 (Memcached)
 
 **UDP ports (services.go `udpServicePorts` — UDP listeners):**
-53 (DNS)
+53 (DNS), 123 (NTP), 161 (SNMP), 1900 (SSDP), 5060 (SIP)
 
 ### Dashboard port
 
@@ -371,7 +372,7 @@ Reference the new field as `ev.new_field` (matching the JSON tag) wherever the e
 
 ### 4. Adding a new TCP service port (non-HTTP)
 
-Edit **two files** and redeploy:
+Edit **three files** and redeploy:
 
 **`services.go`** — add to `tcpServices` slice (around line 21):
 ```go
@@ -388,6 +389,12 @@ You must also define a `Banner()` function that returns the protocol-specific by
 CAPTURE_PORTS_TCP="..., NNNN"
 ```
 
+**`SERVICES.md`** — add a detailed entry for the new service documenting:
+- Port number and service name
+- Protocol description
+- Banner content and format
+- Why the banner is convincing to scanners
+
 Then rebuild and redeploy:
 ```bash
 make remote-install IP=x.x.x.x
@@ -397,7 +404,7 @@ Do not change one file without the other.
 
 ### 5. Adding a new UDP service port
 
-Edit **two files** and redeploy:
+Edit **three files** and redeploy:
 
 **`services.go`** — add to `udpServicePorts` slice (around line 240):
 ```go
@@ -411,6 +418,11 @@ var udpServicePorts = []int{
 ```bash
 CAPTURE_PORTS_UDP="..., NNNN"
 ```
+
+**`SERVICES.md`** — add an entry to the UDP Capture Ports section documenting:
+- Port number and service name
+- Protocol description
+- Why this port is targeted by scanners
 
 Then rebuild and redeploy:
 ```bash
@@ -429,3 +441,4 @@ Do not change one file without the other.
 - `insert()` queues events into a buffered channel and never blocks. A dedicated `writeLoop()` goroutine drains the channel and batches writes into SQLite for high throughput. The `database/sql` pool handles concurrent reads safely.
 - Static files are embedded at compile time via `static_embed.go`. Changes to `static/index.html` require a rebuild to take effect.
 - The `tcpServices` slice in `services.go` owns all non-HTTP TCP emulation. Each entry has a `Banner()` func that returns the bytes sent immediately after accepting the connection. The `udpServicePorts` slice owns all UDP capture ports. Neither uses `net/http` — they use raw `net.Listener` / `net.ListenPacket`.
+- When adding or removing services in `services.go`, update `SERVICES.md` to reflect the change. This file is the human-readable reference for all emulated services.
