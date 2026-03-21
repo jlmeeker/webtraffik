@@ -49,6 +49,20 @@
     }
     #stats span { color: #ffb74d; }
 
+    #audio-toggle {
+      background: none;
+      border: 1px solid #2a4a6b;
+      border-radius: 4px;
+      color: #546e7a;
+      font-size: 0.82rem;
+      padding: 2px 8px;
+      cursor: pointer;
+      transition: color 0.2s, border-color 0.2s;
+      line-height: 1;
+    }
+    #audio-toggle:hover { color: #90a4ae; border-color: #3a6a9b; }
+    #audio-toggle.active { color: #4fc3f7; border-color: #4fc3f7; }
+
     #map-container {
       flex: 1;
       position: relative;
@@ -299,6 +313,7 @@
   <div id="self-info">My IP: <span id="my-ip">—</span> &nbsp;|&nbsp; <span id="my-loc">—</span></div>
   <div style="display:flex;align-items:center;gap:18px">
     <div id="stats">Connections: <span id="conn-count">0</span></div>
+    <button id="audio-toggle" title="Toggle event audio">&#9834;</button>
     <a href="/history.html" style="color:#78909c;text-decoration:none;font-size:0.72rem;letter-spacing:0.05em;transition:color 0.2s" onmouseover="this.style.color='#4fc3f7'" onmouseout="this.style.color='#78909c'">History</a>
   </div>
 </header>
@@ -1078,6 +1093,90 @@
   const MAX_PULSES = 80;         // cap concurrent pulse particles
   let activePulses = 0;
 
+  // ── Audio engine — Web Audio API tones per event ──────────────────────
+  // Plays a short sine-wave tone for each live event. Duration is
+  // proportional to the great-circle arc length. Toggle defaults to off.
+  let audioEnabled = false;
+  let audioCtx = null;
+
+  const AUDIO_MIN_DURATION = 0.06;  // seconds — shortest tone (nearby)
+  const AUDIO_MAX_DURATION = 0.50;  // seconds — longest tone (antipodal)
+  const AUDIO_BASE_FREQ    = 220;   // Hz — lowest pitch (long arcs)
+  const AUDIO_TOP_FREQ     = 1320;  // Hz — highest pitch (short arcs)
+  const AUDIO_GAIN         = 0.07;  // master volume (gentle)
+  const MAX_CONCURRENT_TONES = 12;  // prevent audio pile-up under floods
+  let activeTones = 0;
+
+  function ensureAudioCtx() {
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    return audioCtx;
+  }
+
+  // Great-circle distance in km between two [lon, lat] points.
+  function geoDistKm(a, b) {
+    const R = 6371;
+    const toRad = Math.PI / 180;
+    const dLat = (b[1] - a[1]) * toRad;
+    const dLon = (b[0] - a[0]) * toRad;
+    const sinLat = Math.sin(dLat / 2);
+    const sinLon = Math.sin(dLon / 2);
+    const h = sinLat * sinLat +
+              Math.cos(a[1] * toRad) * Math.cos(b[1] * toRad) * sinLon * sinLon;
+    return R * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+  }
+
+  const MAX_GEO_DIST = 20015; // half Earth circumference in km
+
+  // Play a tone for a single event.
+  // srcPt/dstPt are [lon, lat].
+  function playEventTone(srcPt, dstPt) {
+    if (!audioEnabled || activeTones >= MAX_CONCURRENT_TONES) return;
+    const ctx = ensureAudioCtx();
+
+    const dist = geoDistKm(srcPt, dstPt);
+    const t = Math.min(dist / MAX_GEO_DIST, 1); // 0 = nearby, 1 = antipodal
+
+    // Duration: longer arcs get longer tones
+    const duration = AUDIO_MIN_DURATION + t * (AUDIO_MAX_DURATION - AUDIO_MIN_DURATION);
+    // Frequency: shorter arcs get higher pitch, longer arcs get lower pitch
+    const freq = AUDIO_TOP_FREQ - t * (AUDIO_TOP_FREQ - AUDIO_BASE_FREQ);
+
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(freq, now);
+    // Gentle pitch glide down over the tone duration
+    osc.frequency.exponentialRampToValueAtTime(freq * 0.85, now + duration);
+
+    gain.gain.setValueAtTime(0, now);
+    // Fast attack
+    gain.gain.linearRampToValueAtTime(AUDIO_GAIN, now + 0.008);
+    // Sustain then smooth release
+    gain.gain.setValueAtTime(AUDIO_GAIN, now + duration * 0.5);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    activeTones++;
+    osc.start(now);
+    osc.stop(now + duration);
+    osc.onended = () => { activeTones--; osc.disconnect(); gain.disconnect(); };
+  }
+
+  // Toggle button wiring
+  const audioToggleBtn = document.getElementById('audio-toggle');
+  audioToggleBtn.addEventListener('click', () => {
+    audioEnabled = !audioEnabled;
+    audioToggleBtn.classList.toggle('active', audioEnabled);
+    if (audioEnabled) ensureAudioCtx();
+  });
+
   // ── Adaptive arc rate control ────────────────────────────────────────────
   // Track event timestamps in a 1-second sliding window to measure rate.
   const FLOOD_THRESHOLD = 10;  // events/sec — above this we batch
@@ -1156,6 +1255,9 @@
     } else {
       drawArc(ev, hitCount);
     }
+
+    // Audio: play a tone for this event (src/dst coords always available)
+    playEventTone([ev.src_lon, ev.src_lat], [ev.dst_lon, ev.dst_lat]);
   }
 
   // ── Draw a new persistent arc ───────────────────────────────────────────
