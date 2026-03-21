@@ -111,7 +111,29 @@
       width: 100%;
       height: 100%;
       display: block;
+      cursor: grab;
     }
+    svg#map:active {
+      cursor: grabbing;
+    }
+
+    /* ── Zoom level indicator ── */
+    #zoom-level {
+      position: absolute;
+      bottom: 10px;
+      right: 10px;
+      font-size: 0.62rem;
+      color: #546e7a;
+      background: rgba(8, 15, 30, 0.72);
+      border: 1px solid #1e3a5f;
+      border-radius: 4px;
+      padding: 2px 8px;
+      z-index: 5;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+    #zoom-level.visible { opacity: 1; }
 
     /* ── Corner overlay panels ── */
     .corner-panel {
@@ -326,6 +348,8 @@
 
 <div id="map-container">
   <svg id="map"></svg>
+  <!-- Zoom level indicator -->
+  <div id="zoom-level">1.0x</div>
   <!-- Corner overlay panels -->
   <div id="panel-service" class="corner-panel top-left">
     <h2>Top Services</h2>
@@ -403,11 +427,111 @@
 
   let { w, h } = dims();
 
+  // Base projection scale/translate (viewport-derived); zoom modifies these.
+  let baseScale = w / 6.3;
+  let baseTranslate = [w / 2, h / 2];
+
   const projection = d3.geoNaturalEarth1()
-    .scale(w / 6.3)
-    .translate([w / 2, h / 2]);
+    .scale(baseScale)
+    .translate(baseTranslate);
 
   const path = d3.geoPath().projection(projection);
+
+  // ── Projection-based zoom ──────────────────────────────────────────────
+  // Instead of applying an SVG transform (which would scale strokes and dots),
+  // we update the projection's scale and translate on every zoom event, then
+  // reproject all geo paths, dots, and arcs.  This keeps strokes crisp at all
+  // zoom levels and reuses the same reprojection logic as resize().
+
+  let currentTransform = d3.zoomIdentity; // track for resize integration
+
+  function reproject() {
+    // Apply zoom transform to the base projection parameters
+    projection
+      .scale(baseScale * currentTransform.k)
+      .translate([
+        currentTransform.x + currentTransform.k * baseTranslate[0],
+        currentTransform.y + currentTransform.k * baseTranslate[1],
+      ]);
+
+    // Reproject all geo paths (sphere, graticule, land/borders/lakes/rivers)
+    sphereGroup.select('path').attr('d', path);
+    graticuleGroup.select('path').attr('d', path);
+    landGroup.selectAll('path').attr('d', path);
+
+    // Reproject all source dots from their stored [lon, lat] datum
+    dotGroup.selectAll('.src-dot').each(function(d) {
+      if (!d) return;
+      const pt = projection(d);
+      if (!pt) return;
+      d3.select(this).attr('cx', pt[0]).attr('cy', pt[1]);
+    });
+
+    // Reproject persistent arcs in the registry
+    arcRegistry.forEach((entry) => {
+      const p0 = projection(entry.srcPt);
+      const p1 = projection(entry.dstPt);
+      if (!p0 || !p1) return;
+      const [x0, y0] = p0;
+      const [x1, y1] = p1;
+      const mx = (x0 + x1) / 2;
+      const my = (y0 + y1) / 2;
+      const chord = Math.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2);
+      const bulge = Math.min(chord * 0.35, h * 0.25);
+      const cx = mx;
+      const cy = my - bulge;
+      const fullD = `M${x0},${y0} Q${cx},${cy} ${x1},${y1}`;
+      const N = 20;
+      entry.lineData = [];
+      for (let i = 0; i <= N; i++) {
+        const t = i / N;
+        const u = 1 - t;
+        entry.lineData.push([
+          u * u * x0 + 2 * u * t * cx + t * t * x1,
+          u * u * y0 + 2 * u * t * cy + t * t * y1,
+        ]);
+      }
+      entry.arcPath.attr('d', fullD);
+      let totalLen = 0;
+      for (let i = 1; i < entry.lineData.length; i++) {
+        const dx = entry.lineData[i][0] - entry.lineData[i - 1][0];
+        const dy = entry.lineData[i][1] - entry.lineData[i - 1][1];
+        totalLen += Math.sqrt(dx * dx + dy * dy);
+      }
+      entry.totalLen = totalLen;
+      entry.arcPath.attr('stroke-dasharray', totalLen).attr('stroke-dashoffset', 0);
+      entry.gradEntry.el.attr('x1', x0).attr('y1', y0).attr('x2', x1).attr('y2', y1);
+    });
+
+    // Reproject self dot
+    drawSelfDot();
+  }
+
+  const zoomLevelEl = document.getElementById('zoom-level');
+  let zoomLevelTimer = null;
+
+  const zoom = d3.zoom()
+    .scaleExtent([1, 20])       // 1x to 20x zoom
+    .on('zoom', (event) => {
+      currentTransform = event.transform;
+      reproject();
+      // Show zoom level indicator briefly
+      const k = currentTransform.k;
+      zoomLevelEl.textContent = k.toFixed(1) + 'x';
+      zoomLevelEl.classList.add('visible');
+      if (zoomLevelTimer) clearTimeout(zoomLevelTimer);
+      zoomLevelTimer = setTimeout(() => {
+        zoomLevelEl.classList.remove('visible');
+      }, k === 1 ? 600 : 1500);
+    });
+
+  svg.call(zoom);
+
+  // Double-click resets to default view with a smooth transition
+  svg.on('dblclick.zoom', null); // remove d3's default dblclick-zoom
+  svg.on('dblclick', () => {
+    svg.transition().duration(750).call(zoom.transform, d3.zoomIdentity);
+  });
 
   // Defs: glow filters
   const defs = svg.append('defs');
@@ -759,59 +883,13 @@
    function resize() {
      const d = dims();
      w = d.w; h = d.h;
-     projection
-       .scale(w / 6.3)
-       .translate([w / 2, h / 2]);
 
-     sphereGroup.select('path').attr('d', path);
-     graticuleGroup.select('path').attr('d', path);
-     landGroup.selectAll('path').attr('d', path);
+     // Update base projection parameters for the new viewport size.
+     // reproject() will apply the current zoom transform on top.
+     baseScale = w / 6.3;
+     baseTranslate = [w / 2, h / 2];
 
-     // Reproject all source dots using their stored [lon, lat] datum
-     dotGroup.selectAll('.src-dot').each(function(d) {
-       if (!d) return;
-       const [x, y] = projection(d);
-       d3.select(this).attr('cx', x).attr('cy', y);
-     });
-
-     // Reproject persistent arcs in the registry
-     arcRegistry.forEach((entry) => {
-       const [x0, y0] = projection(entry.srcPt);
-       const [x1, y1] = projection(entry.dstPt);
-       // Rebuild screen-space quadratic bezier
-       const mx = (x0 + x1) / 2;
-       const my = (y0 + y1) / 2;
-       const chord = Math.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2);
-       const bulge = Math.min(chord * 0.35, h * 0.25);
-       const cx = mx;
-       const cy = my - bulge;
-       const fullD = `M${x0},${y0} Q${cx},${cy} ${x1},${y1}`;
-       // Resample points for pulse animation
-       const N = 20;
-       entry.lineData = [];
-       for (let i = 0; i <= N; i++) {
-         const t = i / N;
-         const u = 1 - t;
-         entry.lineData.push([
-           u * u * x0 + 2 * u * t * cx + t * t * x1,
-           u * u * y0 + 2 * u * t * cy + t * t * y1,
-         ]);
-       }
-       entry.arcPath.attr('d', fullD);
-       // Recalculate path length
-       let totalLen = 0;
-       for (let i = 1; i < entry.lineData.length; i++) {
-         const dx = entry.lineData[i][0] - entry.lineData[i - 1][0];
-         const dy = entry.lineData[i][1] - entry.lineData[i - 1][1];
-         totalLen += Math.sqrt(dx * dx + dy * dy);
-       }
-       entry.totalLen = totalLen;
-       entry.arcPath.attr('stroke-dasharray', totalLen).attr('stroke-dashoffset', 0);
-       // Update gradient coordinates
-       entry.gradEntry.el.attr('x1', x0).attr('y1', y0).attr('x2', x1).attr('y2', y1);
-     });
-
-     drawSelfDot();
+     reproject();
    }
 
   window.addEventListener('resize', () => resize());
@@ -1488,6 +1566,10 @@
 
   // ── Reset all visual state for reconnect ──
   function resetState() {
+    // Reset zoom to default view
+    currentTransform = d3.zoomIdentity;
+    svg.call(zoom.transform, d3.zoomIdentity);
+
     // Clear event ring + stats
     eventRing.length = 0;
     connCount = 0;
@@ -1571,11 +1653,9 @@
   }
 
   let currentWs = null;
-  let intentionalClose = false; // suppress auto-reconnect on slider change
 
   function connect() {
     resetState();
-    intentionalClose = false;
     const ws = new WebSocket(`ws://${location.host}/ws?hours=${currentHours}`);
     currentWs = ws;
 
@@ -1584,6 +1664,7 @@
     };
 
     ws.onmessage = (msg) => {
+      if (ws !== currentWs) return; // stale connection, ignore
       let ev;
       try { ev = JSON.parse(msg.data); } catch { return; }
 
@@ -1613,10 +1694,12 @@
     };
 
     ws.onclose = () => {
+      // Only auto-reconnect if this is still the active connection
+      // (slider changes replace currentWs before the old one closes)
+      if (ws !== currentWs) return;
       wsStatus.className = 'disconnected';
       currentWs = null;
-      // Reconnect after 2s unless we closed intentionally (slider change)
-      if (!intentionalClose) setTimeout(connect, 2000);
+      setTimeout(connect, 2000);
     };
 
     ws.onerror = () => ws.close();
@@ -1633,7 +1716,6 @@
       if (val === currentHours) return;
       currentHours = val;
       setCookie('wt_live_hours', val, 365);
-      intentionalClose = true;
       if (currentWs) currentWs.close();
       connect();
     }, 1000);
