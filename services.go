@@ -46,6 +46,16 @@ var tcpServiceNames = map[int]string{
 	11211: "Memcached",
 	18789: "OpenClaw",
 	27017: "MongoDB",
+	// Cryptocurrency / blockchain ports
+	3333:  "Stratum",
+	8333:  "Bitcoin P2P",
+	8545:  "Ethereum RPC",
+	8546:  "Ethereum WS",
+	9735:  "Lightning",
+	10009: "Lightning gRPC",
+	18080: "Monero P2P",
+	18081: "Monero RPC",
+	30303: "Ethereum P2P",
 	// UDP capture ports
 	53:   "DNS",
 	123:  "NTP",
@@ -550,17 +560,192 @@ Content-Type: application/json; charset=UTF-8
 				"WebSocket upgrade required")
 		},
 	},
+	// ── Cryptocurrency / Blockchain services ─────────────────────────────
+	{
+		Port: 3333, // Stratum Mining Protocol
+		Banner: func() []byte {
+			// Stratum mining servers send a JSON-RPC notification on connect.
+			// This mimics a mining pool ready response that scanners expect.
+			return []byte(`{"id":null,"method":"mining.notify","params":["0001","` +
+				`00000000000000000000000000000000000000000000000000000000` +
+				`00000000","01000000010000000000000000000000000000000000` +
+				`00000000000000000000000000ffffffff","07040700","00000001",` +
+				`[],"00000002","1d00ffff","64000000",true]}` + "\n")
+		},
+	},
+	{
+		Port: 8333, // Bitcoin P2P
+		Banner: func() []byte {
+			// Bitcoin protocol version message. This is the first message a
+			// Bitcoin node sends after accepting a connection. The format is:
+			// magic(4) + command(12) + payload_length(4) + checksum(4) + payload
+			// Magic: 0xF9BEB4D9 (mainnet)
+			// Command: "version" padded to 12 bytes
+			// We send a minimal version message that identifies as Bitcoin Core 25.0
+			magic := []byte{0xf9, 0xbe, 0xb4, 0xd9}
+			cmd := make([]byte, 12)
+			copy(cmd, "version")
+			// Minimal payload: version(4) + services(8) + timestamp(8) +
+			// addr_recv(26) + addr_from(26) + nonce(8) + user_agent_len(1) +
+			// user_agent + start_height(4) + relay(1)
+			userAgent := "/Satoshi:25.0.0/"
+			payloadLen := 4 + 8 + 8 + 26 + 26 + 8 + 1 + len(userAgent) + 4 + 1
+			payload := make([]byte, payloadLen)
+			// Protocol version: 70016
+			payload[0] = 0x80
+			payload[1] = 0x11
+			payload[2] = 0x01
+			payload[3] = 0x00
+			// Services: NODE_NETWORK (1)
+			payload[4] = 0x01
+			// Timestamp: zeros (good enough for a banner)
+			// addr_recv and addr_from: zeros
+			// Nonce: arbitrary
+			payload[46] = 0x42
+			// User agent
+			uaOffset := 4 + 8 + 8 + 26 + 26 + 8
+			payload[uaOffset] = byte(len(userAgent))
+			copy(payload[uaOffset+1:], userAgent)
+			// Start height: 850000 (0x000CF850)
+			heightOffset := uaOffset + 1 + len(userAgent)
+			payload[heightOffset] = 0x50
+			payload[heightOffset+1] = 0xf8
+			payload[heightOffset+2] = 0x0c
+			payload[heightOffset+3] = 0x00
+			// Relay: true
+			payload[heightOffset+4] = 0x01
+
+			// Payload length (little-endian uint32)
+			pLen := make([]byte, 4)
+			pLen[0] = byte(payloadLen)
+			pLen[1] = byte(payloadLen >> 8)
+			pLen[2] = byte(payloadLen >> 16)
+			pLen[3] = byte(payloadLen >> 24)
+			// Checksum: first 4 bytes of double-SHA256 of payload — use zeros
+			// (close enough; real nodes will disconnect but scanners just fingerprint)
+			checksum := []byte{0x00, 0x00, 0x00, 0x00}
+
+			msg := make([]byte, 0, 4+12+4+4+payloadLen)
+			msg = append(msg, magic...)
+			msg = append(msg, cmd...)
+			msg = append(msg, pLen...)
+			msg = append(msg, checksum...)
+			msg = append(msg, payload...)
+			return msg
+		},
+	},
+	{
+		Port: 8545, // Ethereum JSON-RPC
+		Banner: func() []byte {
+			// Ethereum JSON-RPC endpoints return an HTTP 200 with a JSON-RPC
+			// error when no method is provided. This is the #1 target for
+			// crypto-draining bots — an exposed RPC means wallet access.
+			body := `{"jsonrpc":"2.0","error":{"code":-32600,"message":"Invalid Request"},"id":null}`
+			return []byte(fmt.Sprintf("HTTP/1.1 200 OK\r\n"+
+				"Content-Type: application/json\r\n"+
+				"Content-Length: %d\r\n"+
+				"\r\n%s", len(body), body))
+		},
+	},
+	{
+		Port: 8546, // Ethereum WebSocket RPC
+		Banner: func() []byte {
+			// WebSocket endpoint — scanners send an HTTP upgrade request.
+			// Return 426 like a real geth node that requires WS upgrade.
+			return []byte("HTTP/1.1 426 Upgrade Required\r\n" +
+				"Connection: Upgrade\r\n" +
+				"Upgrade: websocket\r\n" +
+				"Content-Type: text/plain\r\n" +
+				"Content-Length: 22\r\n" +
+				"\r\n" +
+				"WebSocket upgrade only")
+		},
+	},
+	{
+		Port: 9735, // Lightning Network P2P (BOLT #8)
+		Banner: func() []byte {
+			// Lightning Network uses a Noise_XK handshake (BOLT #8).
+			// The responder's first message is a 50-byte Act One response
+			// (1 byte version + 33 bytes ephemeral pubkey + 16 bytes tag).
+			// We send random-looking bytes of the correct length — scanners
+			// just check that 50 bytes arrive.
+			act1 := make([]byte, 50)
+			act1[0] = 0x00 // version byte
+			// Fill with deterministic but realistic-looking bytes
+			for i := 1; i < 50; i++ {
+				act1[i] = byte((i * 37) ^ 0xAB)
+			}
+			return act1
+		},
+	},
+	{
+		Port: 10009, // Lightning Network gRPC (lnd)
+		Banner: func() []byte {
+			// lnd's gRPC endpoint uses HTTP/2. Send a minimal HTTP/2
+			// connection preface (server settings frame) that scanners
+			// recognize as an active gRPC endpoint.
+			// HTTP/2 SETTINGS frame: length=0, type=0x04, flags=0, stream=0
+			return []byte{
+				0x00, 0x00, 0x00, // length: 0
+				0x04,                   // type: SETTINGS
+				0x00,                   // flags
+				0x00, 0x00, 0x00, 0x00, // stream ID: 0
+			}
+		},
+	},
+	{
+		Port: 18080, // Monero P2P (monerod)
+		Banner: func() []byte {
+			// Monero's Levin protocol sends a handshake response. The header
+			// starts with the Levin signature (0x0121010101010101) followed by
+			// the data length, flags, and command fields.
+			// We send a minimal Levin bucket header indicating a handshake
+			// response (command 1001), then close.
+			return []byte{
+				0x01, 0x21, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, // Levin signature
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // data length: 0
+				0x01,             // expect response: false
+				0x00, 0x00, 0x00, // flags: response
+				0x00, 0x00, 0x00, 0x01, // flags contd (Q_NORMAL_RESPONSE)
+				0xe9, 0x03, 0x00, 0x00, // command: 1001 (HANDSHAKE)
+				0x00, 0x00, 0x00, 0x00, // return code: 0 (OK)
+			}
+		},
+	},
+	{
+		Port: 18081, // Monero RPC (monerod JSON-RPC)
+		Banner: func() []byte {
+			// Monero's restricted RPC returns a JSON-RPC error on invalid requests.
+			body := `{"jsonrpc":"2.0","error":{"code":-32600,"message":"Invalid Request"},"id":null}`
+			return []byte(fmt.Sprintf("HTTP/1.1 200 OK\r\n"+
+				"Content-Type: application/json\r\n"+
+				"Content-Length: %d\r\n"+
+				"\r\n%s", len(body), body))
+		},
+	},
+	{
+		Port: 30303, // Ethereum P2P (devp2p/RLPx)
+		Banner: func() []byte {
+			// Ethereum's RLPx protocol starts with an ECIES encrypted
+			// handshake (EIP-8). The initiator sends an auth message;
+			// the responder sends an ack. We don't actually do crypto,
+			// but sending nothing is fine — the connection accept is the
+			// event. Real geth nodes wait for the initiator's auth first.
+			return nil
+		},
+	},
 }
 
 // udpServicePorts are the UDP ports webTraffik captures.
 // We bind, read one datagram to get the source address, fire the event, and discard the payload.
 var udpServicePorts = []int{
-	53,   // DNS
-	123,  // NTP
-	161,  // SNMP
-	1434, // MSSQL Browser/Monitor
-	1900, // SSDP/UPnP
-	5060, // SIP
+	53,    // DNS
+	123,   // NTP
+	161,   // SNMP
+	1434,  // MSSQL Browser/Monitor
+	1900,  // SSDP/UPnP
+	5060,  // SIP
+	30303, // Ethereum P2P (devp2p discovery)
 }
 
 // minecraftPort is the default Minecraft Java Edition server port.
