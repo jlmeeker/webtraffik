@@ -11,9 +11,12 @@ import (
 	"time"
 )
 
-// tcpServiceNames maps well-known TCP service ports to a display name.
-// This is the canonical source used by portServiceName() and portsForService().
+// tcpServiceNames maps every port the app listens on to a display name.
+// This is the canonical source used by portServiceName(), portsForService(),
+// and the /api/services dropdown. It covers TCP service ports, UDP ports,
+// HTTP capture ports, and the Minecraft port.
 var tcpServiceNames = map[int]string{
+	// TCP service ports (banner emulation)
 	21:    "FTP",
 	22:    "SSH",
 	23:    "Telnet",
@@ -34,11 +37,42 @@ var tcpServiceNames = map[int]string{
 	4444:  "Metasploit",
 	5432:  "PostgreSQL",
 	5555:  "ADB",
+	5900:  "VNC",
 	6379:  "Redis",
 	6667:  "IRC",
+	8443:  "HTTPS alt",
 	9100:  "Printer",
+	9200:  "Elasticsearch",
+	11211: "Memcached",
 	18789: "OpenClaw",
 	27017: "MongoDB",
+	// UDP capture ports
+	53:   "DNS",
+	123:  "NTP",
+	161:  "SNMP",
+	1434: "MSSQL Browser",
+	1900: "SSDP",
+	5060: "SIP",
+	// HTTP capture ports
+	80:   "HTTP",
+	3000: "Node/Express",
+	3001: "Node alt",
+	3128: "Squid",
+	4000: "Phoenix",
+	4200: "Angular",
+	5000: "Flask",
+	5001: "Flask alt",
+	8000: "HTTP alt",
+	8008: "HTTP alt",
+	8080: "HTTP proxy",
+	8081: "HTTP proxy",
+	8088: "HTTP alt",
+	8090: "Confluence",
+	8888: "Jupyter",
+	9000: "SonarQube",
+	9090: "Prometheus",
+	// Minecraft
+	25565: "Minecraft",
 }
 
 // serviceEntry describes a TCP service the app impersonates.
@@ -802,51 +836,6 @@ func portServiceName(port string) string {
 			return name
 		}
 	}
-	// HTTP capture ports
-	switch port {
-	case "80":
-		return "HTTP"
-	case "443":
-		return "HTTPS"
-	case "8080", "8000", "8008", "8081", "8088", "8090", "8888":
-		return "HTTP-Alt"
-	case "3000", "3001":
-		return "Node/Dev"
-	case "3128":
-		return "Proxy"
-	case "4000":
-		return "Phoenix"
-	case "4200":
-		return "Angular"
-	case "5000", "5001":
-		return "Flask/Dev"
-	case "9000":
-		return "SonarQube"
-	case "9090":
-		return "Prometheus"
-	case fmt.Sprintf("%d", minecraftPort):
-		return "Minecraft"
-	}
-	for _, p := range udpServicePorts {
-		if fmt.Sprintf("%d", p) == port {
-			switch port {
-			case "53":
-				return "DNS"
-			case "123":
-				return "NTP"
-			case "161":
-				return "SNMP"
-			case "1434":
-				return "MSSQL-Mon"
-			case "1900":
-				return "SSDP"
-			case "5060":
-				return "SIP"
-			default:
-				return port
-			}
-		}
-	}
 	return port
 }
 
@@ -855,27 +844,9 @@ func portServiceName(port string) string {
 func portsForService(serviceName string) []string {
 	upper := strings.ToUpper(serviceName)
 	var result []string
-	// Check all ports we know about
-	allPorts := []string{}
-	for _, svc := range tcpServices {
-		allPorts = append(allPorts, fmt.Sprintf("%d", svc.Port))
-	}
-	for _, p := range capturePorts {
-		allPorts = append(allPorts, fmt.Sprintf("%d", p))
-	}
-	for _, p := range udpServicePorts {
-		allPorts = append(allPorts, fmt.Sprintf("%d", p))
-	}
-	allPorts = append(allPorts, fmt.Sprintf("%d", minecraftPort))
-
-	seen := map[string]bool{}
-	for _, p := range allPorts {
-		if seen[p] {
-			continue
-		}
-		seen[p] = true
-		if strings.ToUpper(portServiceName(p)) == upper {
-			result = append(result, p)
+	for p, name := range tcpServiceNames {
+		if strings.ToUpper(name) == upper {
+			result = append(result, fmt.Sprintf("%d", p))
 		}
 	}
 	return result
