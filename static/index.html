@@ -992,15 +992,15 @@
   const PORT_SERVICE_NAMES = {
     '21': 'FTP', '22': 'SSH', '23': 'Telnet', '25': 'SMTP',
     '53': 'DNS', '80': 'HTTP', '110': 'POP3', '123': 'NTP',
-    '143': 'IMAP', '161': 'SNMP', '443': 'HTTPS', '445': 'SMB',
-    '1433': 'MSSQL', '1521': 'Oracle', '1900': 'SSDP', '3000': 'Node/Express',
+    '135': 'RPC', '139': 'NetBIOS', '143': 'IMAP', '161': 'SNMP', '443': 'HTTPS', '445': 'SMB',
+    '993': 'IMAPS', '995': 'POP3S', '1433': 'MSSQL', '1434': 'MSSQL Browser', '1521': 'Oracle', '1723': 'PPTP', '1900': 'SSDP', '3000': 'Node/Express',
     '3001': 'Node alt', '3128': 'Squid', '3306': 'MySQL', '3389': 'RDP',
     '4000': 'Phoenix', '4200': 'Angular', '4444': 'Metasploit', '5000': 'Flask', '5001': 'Flask alt',
-    '5060': 'SIP', '5432': 'PostgreSQL', '5900': 'VNC', '6379': 'Redis', '6667': 'IRC',
+    '5060': 'SIP', '5432': 'PostgreSQL', '5555': 'ADB', '5900': 'VNC', '6379': 'Redis', '6667': 'IRC',
     '8000': 'HTTP alt', '8008': 'HTTP alt', '8080': 'HTTP proxy', '8081': 'HTTP proxy',
     '8088': 'HTTP alt', '8090': 'Confluence', '8443': 'HTTPS alt', '8888': 'Jupyter',
-    '9000': 'SonarQube', '9090': 'Prometheus', '9200': 'Elasticsearch',
-    '11211': 'Memcached', '25565': 'Minecraft', '27017': 'MongoDB',
+    '9000': 'SonarQube', '9090': 'Prometheus', '9100': 'Printer', '9200': 'Elasticsearch',
+    '11211': 'Memcached', '18789': 'OpenClaw', '25565': 'Minecraft', '27017': 'MongoDB',
   };
 
   const serviceStats = {}; // { port -> count }
