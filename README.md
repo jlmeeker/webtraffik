@@ -537,20 +537,10 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 Contributions welcome! Please open an issue or pull request.
 
-## Roadmap
-
-- [ ] Add HTTPS support for dashboard (TLS cert config)
-- [ ] Add optional HTTP basic auth for dashboard
-- [x] Add JSON API endpoint for raw events (fulfilled by /api/history)
-- [ ] Add Prometheus metrics exporter
-- [ ] Add configurable port lists via environment variables or config file
-- [ ] Add IPv6 support
-- [ ] Add Docker image
-
 ## Support
 
 For issues or questions:
-- Open a [GitHub Issue](https://github.com/yourusername/webtraffik/issues)
+- Open a [GitHub Issue](https://github.com/jlmeeker/webtraffik/issues)
 - Check logs: `journalctl -u webtraffik -f`
 - Review [Troubleshooting](#troubleshooting) section
 
