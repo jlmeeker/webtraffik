@@ -39,6 +39,7 @@ This creates realistic fingerprints that scanners and reconnaissance tools will 
 | 8443 | HTTPS-Alt | HTTP over TLS (alternate port) | Same TLS handshake_failure alert as port 443 |
 | 9200 | Elasticsearch | Elasticsearch Search Engine | HTTP 200 with JSON body mimicking Elasticsearch 7.17.16 node info |
 | 11211 | Memcached | Memcached In-Memory Cache | `ERROR\r\n` — memcached text protocol error response |
+| 18789 | OpenClaw | OpenClaw AI Assistant Gateway | HTTP 426 Upgrade Required with WebSocket upgrade headers |
 
 ### Detailed Service Descriptions
 
@@ -251,6 +252,35 @@ This is a complete, valid MySQL handshake that clients will recognize as MySQL 8
 
 ---
 
+#### Port 18789 — OpenClaw (OpenClaw AI Assistant Gateway)
+
+**Banner**: HTTP 426 Upgrade Required response:
+
+```
+HTTP/1.1 426 Upgrade Required\r\n
+Connection: Upgrade\r\n
+Upgrade: websocket\r\n
+Content-Type: text/plain\r\n
+Content-Length: 25\r\n
+\r\n
+WebSocket upgrade required
+```
+
+**Purpose**: Mimics the OpenClaw Gateway control plane HTTP/WebSocket endpoint response when a non-WebSocket HTTP request is received.
+
+**Why it's convincing**: This is the exact response a real OpenClaw Gateway returns when it receives a plain HTTP request instead of a WebSocket upgrade request. The HTTP 426 status code specifically indicates that the server requires the client to switch to a different protocol (WebSocket in this case), which is the standard behavior for WebSocket servers that don't support fallback HTTP endpoints. The response headers correctly specify the required upgrade protocol, making it indistinguishable from a real OpenClaw installation.
+
+**Why this port is targeted**: OpenClaw (https://github.com/openclaw/openclaw) is a popular open-source AI assistant platform with 327,000+ GitHub stars. Its Gateway component listens on TCP port 18789 by default (`ws://127.0.0.1:18789`) as the central control plane for managing AI assistant sessions, multi-channel integrations (WhatsApp, Telegram, Slack, Discord, SMS, Email), tool access (browser automation, shell execution, file operations, API calls), and event streaming. Attackers actively scan for exposed OpenClaw Gateways to:
+- Access and exfiltrate conversation histories and session data
+- Abuse tool access to execute arbitrary commands on the host system
+- Hijack AI assistant sessions to manipulate conversations or inject malicious responses
+- Exploit misconfigured channel integrations to gain access to connected messaging platforms
+- Extract API keys, credentials, and configuration data stored in the Gateway
+
+The default port 18789 is well-documented in OpenClaw's installation guides and is a known reconnaissance target for attackers seeking to compromise AI assistant infrastructure.
+
+---
+
 ## Minecraft Java Edition (Port 25565)
 
 **Port 25565** is handled differently from the banner-based services above. webTraffik implements a full **Server List Ping** protocol emulation as defined in the [Minecraft protocol specification](https://wiki.vg/Server_List_Ping).
@@ -362,4 +392,4 @@ The port lists in `firewall.sh` must always match the port lists in `services.go
 
 ---
 
-**Last synchronized with**: `services.go` as of the current codebase state (18 TCP services, 5 UDP services, 1 Minecraft service, 17 HTTP ports)
+**Last synchronized with**: `services.go` as of the current codebase state (19 TCP services, 5 UDP services, 1 Minecraft service, 17 HTTP ports)

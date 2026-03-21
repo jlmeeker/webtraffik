@@ -28,6 +28,7 @@ var tcpServiceNames = map[int]string{
 	5432:  "PostgreSQL",
 	6379:  "Redis",
 	27017: "MongoDB",
+	18789: "OpenClaw",
 }
 
 // serviceEntry describes a TCP service the app impersonates.
@@ -300,6 +301,22 @@ Content-Type: application/json; charset=UTF-8
 			// "stats\r\n" or "version\r\n"; reply with an error to fingerprint
 			// as a real memcached instance while giving nothing away.
 			return []byte("ERROR\r\n")
+		},
+	},
+	{
+		Port: 18789, // OpenClaw Gateway
+		Banner: func() []byte {
+			// OpenClaw is a personal AI assistant whose Gateway listens on
+			// port 18789 as an HTTP/WebSocket control plane. A non-WebSocket
+			// request receives an HTTP 426 Upgrade Required — the standard
+			// response a real OpenClaw Gateway returns to plain HTTP clients.
+			return []byte("HTTP/1.1 426 Upgrade Required\r\n" +
+				"Connection: Upgrade\r\n" +
+				"Upgrade: websocket\r\n" +
+				"Content-Type: text/plain\r\n" +
+				"Content-Length: 25\r\n" +
+				"\r\n" +
+				"WebSocket upgrade required")
 		},
 	},
 }
