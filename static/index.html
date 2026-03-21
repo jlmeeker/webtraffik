@@ -856,6 +856,43 @@
     magShow();
   }
 
+  // Determine whether to show the magnifier for a given arc.
+  // Returns true if:
+  //   (a) the arc is short on screen AND the main map isn't already zoomed
+  //       enough to make it clearly visible, OR
+  //   (b) the main map is zoomed in far enough that the arc can't be seen
+  //       in its entirety (one or both endpoints are outside the viewport).
+  const MAG_SHORT_THRESHOLD = 0.25; // fraction of viewport width
+  const MAG_ZOOMED_THRESHOLD = 0.12; // arc considered "large enough" when zoomed
+
+  function shouldShowMagnifier(srcPt, dstPt) {
+    const [x0, y0] = projection(srcPt);
+    const [x1, y1] = projection(dstPt);
+    const arcPixelDist = Math.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2);
+    const isShort = arcPixelDist < w * MAG_SHORT_THRESHOLD;
+
+    // Check if either endpoint falls outside the visible viewport
+    const offScreen = x0 < 0 || x0 > w || y0 < 0 || y0 > h ||
+                      x1 < 0 || x1 > w || y1 < 0 || y1 > h;
+
+    const isZoomed = currentTransform.k > 1.5;
+
+    // Case 1: Arc is short on screen but the map is zoomed in enough that
+    // the arc is already reasonably sized — suppress the magnifier.
+    if (isShort && isZoomed && arcPixelDist >= w * MAG_ZOOMED_THRESHOLD) {
+      return false;
+    }
+
+    // Case 2: Map is zoomed in and the arc extends beyond the viewport —
+    // show the magnifier so the user can see the full arc.
+    if (isZoomed && offScreen) {
+      return true;
+    }
+
+    // Case 3: Original behavior — show for short arcs at default zoom.
+    return isShort;
+  }
+
   function magShow() {
     if (!magVisible) {
       magVisible = true;
@@ -1223,11 +1260,8 @@
       pulseDot(existing, hitCount);
       // Update tooltip with new hit count
       attachTooltip(existing.dotEl, tooltipLabel(existing.ev, existing.hitCount));
-      // Trigger magnifier for short arcs
-      const [x0, y0] = projection(existing.srcPt);
-      const [x1, y1] = projection(existing.dstPt);
-      const arcPixelDist = Math.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2);
-      if (arcPixelDist < w * 0.25) {
+      // Trigger magnifier for short arcs or arcs clipped by zoom
+      if (shouldShowMagnifier(existing.srcPt, existing.dstPt)) {
         magShowArc(ev, existing.srcPt, existing.dstPt, existing.c1, existing.c2, existing.hitCount);
       }
     } else {
@@ -1348,9 +1382,8 @@
     resetArcTTL(key, entry);
     trackArc(key); // track by registry key, not DOM node
 
-    // Trigger magnifier for short arcs
-    const arcPixelDist = Math.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2);
-    if (arcPixelDist < w * 0.25) {
+    // Trigger magnifier for short arcs or arcs clipped by zoom
+    if (shouldShowMagnifier(srcPt, dstPt)) {
       magShowArc(ev, srcPt, dstPt, c1, c2, hitCount);
     }
   }
