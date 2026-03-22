@@ -50,6 +50,12 @@
     }
     nav a:hover, nav a.active { color: #4fc3f7; }
 
+    #self-info {
+      font-size: 0.72rem;
+      color: #78909c;
+    }
+    #self-info span { color: #80cbc4; }
+
     /* ── Toolbar ── */
     #toolbar {
       display: flex;
@@ -183,6 +189,7 @@
 
 <header>
   <h1>webTraffik</h1>
+  <div id="self-info">My IP: <span id="my-ip">&mdash;</span> &nbsp;|&nbsp; <span id="my-loc">&mdash;</span></div>
   <nav>
     <a href="/">Live Map</a>
     <a href="/history.html">History</a>
@@ -206,6 +213,16 @@
 
 <script>
 (() => {
+  // ── Self info ──
+  fetch('/api/self')
+    .then(r => r.json())
+    .then(data => {
+      document.getElementById('my-ip').textContent = data.ip || '\u2014';
+      document.getElementById('my-loc').textContent =
+        [data.city, data.cc].filter(Boolean).join(', ') || '\u2014';
+    })
+    .catch(() => {});
+
   const PORT_SERVICE_NAMES = {
     '21': 'FTP', '22': 'SSH', '23': 'Telnet', '25': 'SMTP',
     '53': 'DNS', '80': 'HTTP', '110': 'POP3', '123': 'NTP',
