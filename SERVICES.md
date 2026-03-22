@@ -407,20 +407,19 @@ Port 5555 is the network ADB port (vs. USB ADB) and is one of the most dangerous
 
 #### Port 5900 — VNC (Virtual Network Computing)
 
-**Protocol Flow**: Complete RFB handshake with clean rejection (dedicated listener, like Lightning and Minecraft)
+**Protocol Flow**: Partial RFB handshake with silent drop (anti-brute-force behavior)
 
-VNC now implements a full minimal RFB protocol handshake sequence instead of just a banner:
+VNC implements the initial RFB protocol version exchange and then silently closes the connection:
 
 1. **Server → Client**: Protocol version — `RFB 003.008\n` (VNC 3.8)
 2. **Client → Server**: Client version string (12 bytes) — **captured as client data**
-3. **Server → Client**: Security types — `\x01\x01` (1 type: "None"/type 1)
-4. **Server → Client**: SecurityResult — `\x00\x00\x00\x01` (failed/access denied)
+3. **Server**: Closes connection silently (no further response)
 
-**Purpose**: Completes the VNC authentication handshake far enough to give the client a proper "access denied" rejection instead of dropping the connection mid-handshake.
+**Purpose**: Captures VNC reconnaissance traffic while discouraging brute-force attempts. The connection drops after the version exchange, mimicking a network error or firewall reset rather than an authentication failure.
 
-**Why it's convincing**: All VNC servers start by announcing their RFB protocol version (3.8 is the most widely supported). The security negotiation sequence exactly matches real VNC server behavior — offering "None" authentication and then immediately failing with SecurityResult:1 (failed) is the standard way VNC servers reject unauthorized connections. Scanners and VNC clients will recognize this as a real VNC server with access control enabled.
+**Why it's convincing**: All VNC servers start by announcing their RFB protocol version (3.8 is the most widely supported). The version exchange is enough to fingerprint as a real VNC server to reconnaissance scanners and initial connection attempts.
 
-**Why this changed**: Previously VNC was a simple banner service that sent `RFB 003.008\n` and immediately closed the connection after reading the client's response. This caused VNC clients to retry aggressively because the connection dropped mid-handshake (after version exchange but before security negotiation). By completing the security negotiation phase and sending a proper "access denied" response, clients now receive a clean protocol-level rejection and stop retrying.
+**Why this behavior**: A silent drop after version exchange (before security negotiation) looks like a network error or firewall reset to automated scanners. This causes most brute-force bots to back off and move on, treating it as an infrastructure failure rather than a target to attack. By contrast, sending a proper SecurityResult:failed response (the old behavior) looks identical to a real VNC server rejecting a bad password, which signals brute-force bots that authentication is present and encourages them to retry indefinitely. The silent drop strategy reduces sustained hammering on the port while still capturing initial reconnaissance traffic.
 
 ---
 

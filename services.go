@@ -833,18 +833,18 @@ func extractConnIP(addr net.Addr) string {
 	}
 }
 
-// ── VNC (RFB) clean handshake emulator ───────────────────────────────────────
+// ── VNC (RFB) version exchange ────────────────────────────────────────────────
 //
-// Without completing the RFB handshake, clients see a mid-handshake disconnect
-// after the version exchange and retry aggressively. This listener completes
-// the minimal handshake so the client gets a clean "access denied":
+// Handshake sequence:
+//   1. Server → Client: "RFB 003.008\n"   (protocol version)
+//   2. Client → Server: "RFB 003.0xx\n"   (client version — captured)
+//   3. Connection closed silently
 //
-//   1. Server → Client: "RFB 003.008\n"       (protocol version)
-//   2. Client → Server: "RFB 003.0xx\n"       (client version — captured)
-//   3. Server → Client: \x01\x01              (1 security type: None)
-//   4. Server → Client: \x00\x00\x00\x01     (SecurityResult: failed)
-//
-// The client receives a proper rejection and does not retry.
+// We do not send a SecurityResult. Sending SecurityResult failed looks
+// identical to a real VNC server rejecting a bad password, which signals
+// brute-force bots to retry immediately and indefinitely. A silent drop
+// after the version exchange looks like a network error or firewall reset,
+// causing most scanners to back off or move on rather than hammer the port.
 
 const vncPort = 5900
 
@@ -886,18 +886,15 @@ func handleVNCConn(c net.Conn) []byte {
 		return nil
 	}
 
-	// Step 2: Read client version (12 bytes)
+	// Step 2: Read client version (12 bytes) — this is the captured payload
 	clientVersion := make([]byte, 12)
 	if _, err := io.ReadFull(c, clientVersion); err != nil {
 		return nil
 	}
 
-	// Step 3: Offer security type "None" (type 1)
-	c.Write([]byte{1, 1}) //nolint:errcheck
-
-	// Step 4: Send SecurityResult — failed
-	c.Write([]byte{0x00, 0x00, 0x00, 0x01}) //nolint:errcheck
-
+	// Close silently — no SecurityResult sent. A SecurityResult failed
+	// response triggers immediate retries from brute-force bots; a silent
+	// drop looks like a network error and causes scanners to back off.
 	return clientVersion
 }
 
