@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -21,20 +22,21 @@ import (
 
 // ConnectionEvent is sent to the browser over WebSocket
 type ConnectionEvent struct {
-	Time     string  `json:"time"`
-	SrcIP    string  `json:"src_ip"`
-	DstIP    string  `json:"dst_ip"`
-	DstPort  string  `json:"dst_port"`
-	Protocol string  `json:"protocol"` // "tcp" or "udp"
-	SrcLat   float64 `json:"src_lat"`
-	SrcLon   float64 `json:"src_lon"`
-	DstLat   float64 `json:"dst_lat"`
-	DstLon   float64 `json:"dst_lon"`
-	SrcCity  string  `json:"src_city"`
-	DstCity  string  `json:"dst_city"`
-	SrcCC    string  `json:"src_cc"`
-	DstCC    string  `json:"dst_cc"`
-	Replay   bool    `json:"replay,omitempty"` // true when replayed from history
+	Time       string  `json:"time"`
+	SrcIP      string  `json:"src_ip"`
+	DstIP      string  `json:"dst_ip"`
+	DstPort    string  `json:"dst_port"`
+	Protocol   string  `json:"protocol"` // "tcp" or "udp"
+	SrcLat     float64 `json:"src_lat"`
+	SrcLon     float64 `json:"src_lon"`
+	DstLat     float64 `json:"dst_lat"`
+	DstLon     float64 `json:"dst_lon"`
+	SrcCity    string  `json:"src_city"`
+	DstCity    string  `json:"dst_city"`
+	SrcCC      string  `json:"src_cc"`
+	DstCC      string  `json:"dst_cc"`
+	Replay     bool    `json:"replay,omitempty"`      // true when replayed from history
+	ClientData string  `json:"client_data,omitempty"` // hex-encoded first bytes from client (ephemeral, not persisted)
 }
 
 const historySize = 1000
@@ -287,7 +289,12 @@ func startCaptureListener(port int) {
 		w.Header().Set("Connection", "close")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, "<html><head><title>Welcome to nginx!</title></head><body><h1>Welcome to nginx!</h1><p>If you see this page, the nginx web server is successfully installed and working.</p></body></html>")
-		go handleCapture(srcIP, portStr, "tcp")
+		// Build a text summary of the HTTP request for client data capture.
+		// This is safe text (method/path/UA), but we still hex-encode it
+		// for consistency with raw TCP/UDP captures.
+		httpSummary := fmt.Sprintf("%s %s %s\nHost: %s\nUser-Agent: %s",
+			r.Method, r.URL.RequestURI(), r.Proto, r.Host, r.UserAgent())
+		go handleCapture(srcIP, portStr, "tcp", []byte(httpSummary))
 	})
 	log.Printf("Capture listener on %s", addr)
 	if err := http.ListenAndServe(addr, mux); err != nil {
@@ -295,7 +302,7 @@ func startCaptureListener(port int) {
 	}
 }
 
-func handleCapture(srcIP, dstPort, protocol string) {
+func handleCapture(srcIP, dstPort, protocol string, clientData []byte) {
 	// Rate-limit check: only meaningful for TCP — UDP is stateless/fire-and-forget
 	// so there is nothing to terminate and no cost to absorb per-packet.
 	if protocol != "udp" && !appLimiter.Record(srcIP, dstPort) {
@@ -316,19 +323,20 @@ func handleCapture(srcIP, dstPort, protocol string) {
 	}
 
 	ev := ConnectionEvent{
-		Time:     time.Now().UTC().Format(time.RFC3339),
-		SrcIP:    srcIP,
-		DstIP:    selfIP,
-		DstPort:  dstPort,
-		Protocol: protocol,
-		SrcLat:   srcLat,
-		SrcLon:   srcLon,
-		DstLat:   selfLat,
-		DstLon:   selfLon,
-		SrcCity:  srcCity,
-		DstCity:  selfCity,
-		SrcCC:    srcCC,
-		DstCC:    selfCC,
+		Time:       time.Now().UTC().Format(time.RFC3339),
+		SrcIP:      srcIP,
+		DstIP:      selfIP,
+		DstPort:    dstPort,
+		Protocol:   protocol,
+		SrcLat:     srcLat,
+		SrcLon:     srcLon,
+		DstLat:     selfLat,
+		DstLon:     selfLon,
+		SrcCity:    srcCity,
+		DstCity:    selfCity,
+		SrcCC:      srcCC,
+		DstCC:      selfCC,
+		ClientData: hex.EncodeToString(clientData),
 	}
 	appHub.broadcast(ev)
 	appDB.insert(ev)

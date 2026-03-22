@@ -239,6 +239,7 @@
 
     .log-entry {
       display: flex;
+      flex-wrap: wrap;
       gap: 10px;
       border-bottom: 1px solid rgba(30,58,95,0.3);
       padding: 2px 0;
@@ -291,6 +292,31 @@
     .log-arrow { color: #455a64; }
     .log-port  { color: #4fc3f7; }
     .log-proto { color: #78909c; font-size: 0.62rem; min-width: 28px; text-align: right; }
+
+    .log-client-data {
+      display: none;
+      width: 100%;
+      font-family: 'Fira Code', 'Consolas', monospace;
+      font-size: 0.62rem;
+      color: #80cbc4;
+      background: rgba(0,0,0,0.25);
+      border-radius: 3px;
+      padding: 3px 6px;
+      margin-top: 2px;
+      white-space: pre;
+      overflow-x: auto;
+      max-width: 100%;
+      line-height: 1.3;
+    }
+    .log-entry.expanded .log-client-data { display: block; }
+    .log-data-hint {
+      color: #546e7a;
+      font-size: 0.58rem;
+      cursor: pointer;
+      margin-left: 6px;
+      user-select: none;
+    }
+    .log-data-hint:hover { color: #80cbc4; }
 
     #ws-status {
       width: 8px; height: 8px;
@@ -1667,6 +1693,27 @@
     }
   }
 
+  // ── Client data hex decoder ─────────────────────────────────────────────
+  // Decodes a hex string into a combined hex + ASCII preview.
+  // Non-printable bytes are shown as dots in the ASCII column.
+  // Returns plain text (no HTML) — safe for use with textContent.
+  function hexPreview(hexStr) {
+    if (!hexStr) return '';
+    const bytes = [];
+    for (let i = 0; i < hexStr.length; i += 2) {
+      bytes.push(parseInt(hexStr.substr(i, 2), 16));
+    }
+    const lines = [];
+    for (let off = 0; off < bytes.length; off += 16) {
+      const chunk = bytes.slice(off, off + 16);
+      const hexPart = chunk.map(b => b.toString(16).padStart(2, '0')).join(' ');
+      const ascPart = chunk.map(b => (b >= 0x20 && b <= 0x7e) ? String.fromCharCode(b) : '.').join('');
+      const addr = off.toString(16).padStart(4, '0');
+      lines.push(addr + '  ' + hexPart.padEnd(48) + '  ' + ascPart);
+    }
+    return lines.join('\n');
+  }
+
   // ── Log panel ─────────────────────────────────────────────────────────────
   const logPanel = document.getElementById('log-panel');
   const logBuffer = []; // pending entries, flushed on next rAF
@@ -1694,11 +1741,53 @@
       const protoLabel = ev.protocol ? ev.protocol.toUpperCase() : '';
       const row = document.createElement('div');
       row.className = 'log-entry';
-      row.innerHTML =
-        `<span class="log-time">${ts}</span>` +
-        `<span class="log-src">${srcLabel}</span>` +
-        `${portLabel ? '<span class="log-arrow">→</span><span class="log-port">' + portLabel + '</span>' : ''}` +
-        `${protoLabel ? '<span class="log-proto">' + protoLabel + '</span>' : ''}`;
+
+      // Build the main line using textContent (safe from XSS)
+      const timeSpan = document.createElement('span');
+      timeSpan.className = 'log-time';
+      timeSpan.textContent = ts;
+      row.appendChild(timeSpan);
+
+      const srcSpan = document.createElement('span');
+      srcSpan.className = 'log-src';
+      srcSpan.textContent = srcLabel;
+      row.appendChild(srcSpan);
+
+      if (portLabel) {
+        const arrowSpan = document.createElement('span');
+        arrowSpan.className = 'log-arrow';
+        arrowSpan.textContent = '\u2192';
+        row.appendChild(arrowSpan);
+        const portSpan = document.createElement('span');
+        portSpan.className = 'log-port';
+        portSpan.textContent = portLabel;
+        row.appendChild(portSpan);
+      }
+      if (protoLabel) {
+        const protoSpan = document.createElement('span');
+        protoSpan.className = 'log-proto';
+        protoSpan.textContent = protoLabel;
+        row.appendChild(protoSpan);
+      }
+
+      // Client data: show a clickable hint that expands a hex+ASCII preview
+      if (ev.client_data) {
+        const hint = document.createElement('span');
+        hint.className = 'log-data-hint';
+        hint.textContent = '[data]';
+        hint.addEventListener('click', e => {
+          e.stopPropagation();
+          row.classList.toggle('expanded');
+        });
+        row.appendChild(hint);
+
+        const dataBlock = document.createElement('pre');
+        dataBlock.className = 'log-client-data';
+        // textContent is safe — no HTML parsing, no XSS vector
+        dataBlock.textContent = hexPreview(ev.client_data);
+        row.appendChild(dataBlock);
+      }
+
       if (ev.src_lat && ev.src_lon) {
         row.addEventListener('click', () => {
           dispatchArc(ev, 1);
