@@ -345,7 +345,7 @@
     <div class="chart-row full">
       <div class="chart-card">
         <h3>Connections Over Time</h3>
-        <div class="chart-wrap" style="height:200px">
+        <div class="chart-wrap" style="height:240px">
           <canvas id="chart-timeline"></canvas>
         </div>
       </div>
@@ -598,24 +598,80 @@ function renderCharts(metrics, events) {
   if (!metrics && (!events || events.length === 0)) return;
 
   // ── 1. Timeline from pre-aggregated hourly buckets ──
+  //    Connections as bars (left axis), Unique IPs as line (right axis),
+  //    Bans as small bars (left axis, stacked visual cue).
   const tb = metrics.time_buckets || [];
   if (tb.length > 0) {
-    const timelineData = tb.map(b => ({ x: new Date(b.bucket), y: b.value }));
+    const timelineConns = tb.map(b => ({ x: new Date(b.bucket), y: b.value }));
+    const timelineIPs   = tb.map(b => ({ x: new Date(b.bucket), y: b.unique_ips || 0 }));
+    const timelineBans  = tb.map(b => ({ x: new Date(b.bucket), y: b.bans || 0 }));
+    const hasBans = timelineBans.some(d => d.y > 0);
+    const hasIPs  = timelineIPs.some(d => d.y > 0);
+
+    const datasets = [{
+      label: 'Connections',
+      data: timelineConns,
+      backgroundColor: 'rgba(79,195,247,0.5)',
+      borderColor: '#4fc3f7',
+      borderWidth: 1,
+      borderRadius: 2,
+      yAxisID: 'y',
+      order: 2,
+    }];
+
+    if (hasBans) {
+      datasets.push({
+        label: 'Bans',
+        data: timelineBans,
+        backgroundColor: 'rgba(239,83,80,0.6)',
+        borderColor: '#ef5350',
+        borderWidth: 1,
+        borderRadius: 2,
+        yAxisID: 'y',
+        order: 1,
+      });
+    }
+
+    if (hasIPs) {
+      datasets.push({
+        label: 'Unique IPs',
+        data: timelineIPs,
+        type: 'line',
+        borderColor: '#81c784',
+        backgroundColor: 'rgba(129,199,132,0.15)',
+        borderWidth: 2,
+        pointRadius: tb.length <= 24 ? 3 : 0,
+        pointHoverRadius: 5,
+        tension: 0.3,
+        fill: false,
+        yAxisID: 'y1',
+        order: 0,
+      });
+    }
+
+    const tlOpts = timelineDefaults('hour',
+      new Date(tb[0].bucket),
+      new Date(tb[tb.length - 1].bucket));
+
+    // Add right Y-axis for unique IPs
+    if (hasIPs) {
+      tlOpts.scales.y1 = {
+        position: 'right',
+        beginAtZero: true,
+        grid: { drawOnChartArea: false },
+        ticks: { color: '#81c784', font: { family: "'JetBrains Mono', monospace", size: 10 } },
+        title: { display: true, text: 'Unique IPs', color: '#81c784', font: { family: "'JetBrains Mono', monospace", size: 10 } },
+      };
+      tlOpts.scales.y.title = {
+        display: true, text: 'Connections', color: '#4fc3f7',
+        font: { family: "'JetBrains Mono', monospace", size: 10 },
+      };
+    }
+
     charts.timeline = new Chart(document.getElementById('chart-timeline'), {
       type: 'bar',
-      data: {
-        datasets: [{
-          label: 'Connections',
-          data: timelineData,
-          backgroundColor: 'rgba(79,195,247,0.5)',
-          borderColor: '#4fc3f7',
-          borderWidth: 1,
-          borderRadius: 2,
-        }]
-      },
-      options: timelineDefaults('hour',
-        new Date(tb[0].bucket),
-        new Date(tb[tb.length - 1].bucket)),
+      data: { datasets },
+      options: tlOpts,
     });
   }
 
@@ -878,11 +934,19 @@ async function runQuery() {
     // Compute total connections from metrics
     const totalConns = (metrics.connections || []).reduce((s, c) => s + c.value, 0);
 
+    // Compute ban totals from metrics
+    const bans = metrics.bans || [];
+    const totalBans = bans.reduce((s, b) => s + b.value, 0);
+    const autoBans = bans.filter(b => b.labels.type === 'auto').reduce((s, b) => s + b.value, 0);
+    const manualBans = bans.filter(b => b.labels.type === 'manual').reduce((s, b) => s + b.value, 0);
+
     // Update status
     const summary = document.getElementById('result-summary');
     summary.innerHTML =
       `<span class="stat">${totalConns.toLocaleString()}</span> connections` +
       ` &nbsp;|&nbsp; <span class="stat">~${(metrics.unique_ips || 0).toLocaleString()}</span> unique IPs (approx)` +
+      ` &nbsp;|&nbsp; <span class="stat">${totalBans.toLocaleString()}</span> bans` +
+      (totalBans > 0 ? ` (${autoBans} auto, ${manualBans} manual)` : '') +
       ` &nbsp;|&nbsp; <span class="stat">${events.length.toLocaleString()}</span> raw events`;
 
     if (totalConns === 0 && events.length === 0) {
