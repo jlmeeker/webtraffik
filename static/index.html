@@ -8,8 +8,8 @@
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
-      background: #0a0e1a;
-      color: #c8d8f0;
+      background: #111827;
+      color: #dce8f8;
       font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
       height: 100vh;
       overflow: hidden;
@@ -22,8 +22,8 @@
       align-items: center;
       justify-content: space-between;
       padding: 8px 18px;
-      background: rgba(12, 20, 40, 0.95);
-      border-bottom: 1px solid #1e3a5f;
+      background: rgba(18, 30, 58, 0.97);
+      border-bottom: 1px solid #2a4a70;
       flex-shrink: 0;
       z-index: 10;
     }
@@ -38,14 +38,14 @@
 
     #self-info {
       font-size: 0.72rem;
-      color: #78909c;
+      color: #8eaac4;
     }
 
     #self-info span { color: #80cbc4; }
 
     #stats {
       font-size: 0.72rem;
-      color: #78909c;
+      color: #8eaac4;
     }
     #stats span { color: #ffb74d; }
 
@@ -55,7 +55,7 @@
       align-items: center;
       gap: 8px;
       font-size: 0.72rem;
-      color: #78909c;
+      color: #8eaac4;
     }
     #time-slider-group label { white-space: nowrap; }
     #time-slider-group .slider-value { color: #4fc3f7; min-width: 24px; text-align: center; }
@@ -64,7 +64,7 @@
       appearance: none;
       width: 120px;
       height: 4px;
-      background: #1e3a5f;
+      background: #2a4a70;
       border-radius: 2px;
       outline: none;
       cursor: pointer;
@@ -89,16 +89,16 @@
 
     #audio-toggle {
       background: none;
-      border: 1px solid #2a4a6b;
+      border: 1px solid #3a5a80;
       border-radius: 4px;
-      color: #546e7a;
+      color: #6a8aaa;
       font-size: 0.82rem;
       padding: 2px 8px;
       cursor: pointer;
       transition: color 0.2s, border-color 0.2s;
       line-height: 1;
     }
-    #audio-toggle:hover { color: #90a4ae; border-color: #3a6a9b; }
+    #audio-toggle:hover { color: #a0bcd8; border-color: #4a7ab0; }
     #audio-toggle.active { color: #4fc3f7; border-color: #4fc3f7; }
 
     #map-container {
@@ -123,9 +123,9 @@
       bottom: 10px;
       right: 10px;
       font-size: 0.62rem;
-      color: #546e7a;
-      background: rgba(8, 15, 30, 0.72);
-      border: 1px solid #1e3a5f;
+      color: #6a8aaa;
+      background: rgba(14, 24, 46, 0.80);
+      border: 1px solid #2a4a70;
       border-radius: 4px;
       padding: 2px 8px;
       z-index: 5;
@@ -143,8 +143,8 @@
          max-height: 70%;
          overflow-y: auto;
       */
-      background: rgba(8, 15, 30, 0.82);
-      border: 1px solid #1e3a5f;
+      background: rgba(14, 24, 46, 0.88);
+      border: 1px solid #2a4a70;
       border-radius: 6px;
       padding: 8px 0;
       z-index: 5;
@@ -152,7 +152,7 @@
     }
 
     .corner-panel::-webkit-scrollbar { width: 3px; }
-    .corner-panel::-webkit-scrollbar-thumb { background: #1e3a5f; }
+    .corner-panel::-webkit-scrollbar-thumb { background: #2a4a70; }
 
     .top-left     { top: 10px; left: 10px; }
     .top-right    { top: 10px; right: 10px; }
@@ -161,9 +161,9 @@
       font-size: 0.65rem;
       text-transform: uppercase;
       letter-spacing: 0.1em;
-      color: #546e7a;
+      color: #6a8aaa;
       padding: 0 10px 6px;
-      border-bottom: 1px solid #1e3a5f;
+      border-bottom: 1px solid #2a4a70;
       margin-bottom: 4px;
     }
 
@@ -177,7 +177,7 @@
 
     .stat-label {
       font-size: 0.7rem;
-      color: #90a4ae;
+      color: #a0bcd8;
       flex: 1;
       white-space: nowrap;
       overflow: hidden;
@@ -191,12 +191,12 @@
       text-align: right;
     }
 
-    .graticule { fill: none; stroke: #0d2035; stroke-width: 0.5px; }
-    .sphere { fill: #060d1a; }
-    .land  { fill: #122035; stroke: #1e3a5f; stroke-width: 0.4px; }
-    .border { fill: none; stroke: #2a4a6f; stroke-width: 0.4px; }
-    .lake  { fill: #0a1a2e; stroke: #1a3050; stroke-width: 0.3px; }
-    .river { fill: none; stroke: #0e2540; stroke-width: 0.4px; }
+    .graticule { fill: none; stroke: #1a3a55; stroke-width: 0.5px; }
+    .sphere { fill: #0d1b2e; }
+    .land  { fill: #1a2f4a; stroke: #2e5278; stroke-width: 0.4px; }
+    .border { fill: none; stroke: #3a6090; stroke-width: 0.4px; }
+    .lake  { fill: #0f2035; stroke: #1e3a5a; stroke-width: 0.3px; }
+    .river { fill: none; stroke: #1a3550; stroke-width: 0.4px; }
 
     .self-dot {
       fill: #4fc3f7;
@@ -226,8 +226,8 @@
 
     /* Log panel */
     #log-panel {
-      background: rgba(8, 15, 30, 0.92);
-      border-top: 1px solid #1e3a5f;
+      background: rgba(14, 24, 46, 0.94);
+      border-top: 1px solid #2a4a70;
       height: 130px;
       overflow-y: auto;
       flex-shrink: 0;
@@ -237,13 +237,13 @@
     }
 
     #log-panel::-webkit-scrollbar { width: 4px; }
-    #log-panel::-webkit-scrollbar-thumb { background: #1e3a5f; }
+    #log-panel::-webkit-scrollbar-thumb { background: #2a4a70; }
 
     .log-entry {
       display: flex;
       flex-wrap: wrap;
       gap: 10px;
-      border-bottom: 1px solid rgba(30,58,95,0.3);
+      border-bottom: 1px solid rgba(42,74,112,0.4);
       padding: 2px 0;
       animation: fadeIn 0.3s ease;
       cursor: pointer;
@@ -270,35 +270,35 @@
     }
     .ban-meta {
       font-size: 0.62rem;
-      color: #546e7a;
+      color: #6a8aaa;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
     .ban-expire {
       font-size: 0.60rem;
-      color: #37474f;
+      color: #4a6a88;
     }
     #panel-banned h2 { color: #ef5350; border-bottom-color: rgba(239,83,80,0.25); }
     #panel-banned .ban-empty {
       font-size: 0.65rem;
-      color: #37474f;
+      color: #4a6a88;
       padding: 6px 10px;
       font-style: italic;
     }
 
     @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; } }
 
-    .log-time  { color: #546e7a; min-width: 80px; }
+    .log-time  { color: #6a8aaa; min-width: 80px; }
     .log-src   { color: #ffb74d; flex: 1; }
-    .log-arrow { color: #455a64; }
+    .log-arrow { color: #5a7a9a; }
     .log-port  { color: #4fc3f7; }
-    .log-proto { color: #78909c; font-size: 0.62rem; min-width: 28px; text-align: right; }
+    .log-proto { color: #8eaac4; font-size: 0.62rem; min-width: 28px; text-align: right; }
 
     #ws-status {
       width: 8px; height: 8px;
       border-radius: 50%;
-      background: #546e7a;
+      background: #6a8aaa;
       display: inline-block;
       margin-right: 6px;
       transition: background 0.3s;
@@ -314,15 +314,15 @@
       transform: translateX(-50%);
       width: 420px;
       height: 300px;
-      background: rgba(6, 13, 26, 0.92);
-      border: 1px solid #1e3a5f;
+      background: rgba(14, 24, 46, 0.94);
+      border: 1px solid #2a4a70;
       border-radius: 8px;
       z-index: 6;
       pointer-events: none;
       opacity: 0;
       transition: opacity 0.5s ease;
       overflow: hidden;
-      box-shadow: 0 0 20px rgba(0, 0, 0, 0.6), 0 0 2px rgba(79, 195, 247, 0.15);
+      box-shadow: 0 0 20px rgba(0, 0, 0, 0.5), 0 0 2px rgba(79, 195, 247, 0.2);
     }
     #magnifier.visible { opacity: 1; }
     #magnifier svg {
@@ -337,14 +337,14 @@
       font-size: 0.58rem;
       text-transform: uppercase;
       letter-spacing: 0.1em;
-      color: #546e7a;
+      color: #6a8aaa;
       pointer-events: none;
     }
-    #magnifier .mag-land   { fill: #122035; stroke: #1e3a5f; stroke-width: 0.5px; }
-    #magnifier .mag-border { fill: none; stroke: #0d2035; stroke-width: 0.3px; }
-    #magnifier .mag-sphere { fill: #060d1a; }
-    #magnifier .mag-lake   { fill: #0a1a2e; stroke: #1a3050; stroke-width: 0.3px; }
-    #magnifier .mag-river  { fill: none; stroke: #0e2540; stroke-width: 0.5px; }
+    #magnifier .mag-land   { fill: #1a2f4a; stroke: #2e5278; stroke-width: 0.5px; }
+    #magnifier .mag-border { fill: none; stroke: #3a6090; stroke-width: 0.3px; }
+    #magnifier .mag-sphere { fill: #0d1b2e; }
+    #magnifier .mag-lake   { fill: #0f2035; stroke: #1e3a5a; stroke-width: 0.3px; }
+    #magnifier .mag-river  { fill: none; stroke: #1a3550; stroke-width: 0.5px; }
     #magnifier .mag-arc    { fill: none; stroke-linecap: round; }
     #magnifier .mag-dot    { }
     #magnifier .mag-self-dot {
@@ -369,9 +369,9 @@
     #dot-tooltip {
       position: fixed;
       pointer-events: auto;
-      background: rgba(8, 15, 30, 0.95);
-      border: 1px solid #1e3a5f;
-      color: #c8d8f0;
+      background: rgba(14, 24, 46, 0.97);
+      border: 1px solid #2a4a70;
+      color: #dce8f8;
       font-size: 0.72rem;
       border-radius: 5px;
       display: none;
@@ -393,7 +393,7 @@
       text-align: left;
       background: none;
       border: none;
-      border-top: 1px solid #1e3a5f;
+      border-top: 1px solid #2a4a70;
       cursor: pointer;
       font-family: inherit;
       color: #ef9a9a;
