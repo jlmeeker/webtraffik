@@ -20,6 +20,7 @@ import (
 var tcpServiceNames = map[int]string{
 	// TCP service ports (banner emulation)
 	21:    "FTP",
+	554:   "RTSP",
 	22:    "SSH",
 	23:    "Telnet",
 	25:    "SMTP",
@@ -34,12 +35,14 @@ var tcpServiceNames = map[int]string{
 	1433:  "MSSQL",
 	1521:  "Oracle",
 	1723:  "PPTP",
+	2375:  "Docker",
 	3306:  "MySQL",
 	3389:  "RDP",
 	4444:  "Metasploit",
 	5432:  "PostgreSQL",
 	5555:  "ADB",
 	5900:  "VNC",
+	6000:  "X11",
 	6379:  "Redis",
 	6667:  "IRC",
 	8443:  "HTTPS alt",
@@ -203,6 +206,18 @@ var tcpServices = []serviceEntry{
 		},
 	},
 	{
+		Port: 554, // RTSP (Real Time Streaming Protocol)
+		Banner: func() []byte {
+			// RTSP servers respond with a 200 OK to an OPTIONS request.
+			// This mimics a generic IP camera or media server RTSP endpoint.
+			return []byte("RTSP/1.0 200 OK\r\n" +
+				"CSeq: 1\r\n" +
+				"Public: DESCRIBE, SETUP, TEARDOWN, PLAY, PAUSE\r\n" +
+				"Server: GStreamer RTSP Server\r\n" +
+				"\r\n")
+		},
+	},
+	{
 		Port: 993, // IMAP over SSL/TLS
 		Banner: func() []byte {
 			// Same TLS handshake_failure alert as port 443. Scanners probing
@@ -312,6 +327,24 @@ var tcpServices = []serviceEntry{
 			// Vendor String (64 bytes at offset 92): "linux"
 			copy(reply[92:], "linux")
 			return reply
+		},
+	},
+	{
+		Port: 2375, // Docker API (unencrypted)
+		Banner: func() []byte {
+			// Docker daemon's REST API returns a JSON version response
+			// when queried at GET /version or GET /_ping. Scanners send
+			// an HTTP GET and look for Docker-specific headers/JSON.
+			// This mimics the /_ping endpoint (simplest fingerprint).
+			return []byte("HTTP/1.1 200 OK\r\n" +
+				"Api-Version: 1.45\r\n" +
+				"Docker-Experimental: false\r\n" +
+				"Ostype: linux\r\n" +
+				"Server: Docker/25.0.3 (linux)\r\n" +
+				"Content-Type: text/plain; charset=utf-8\r\n" +
+				"Content-Length: 2\r\n" +
+				"\r\n" +
+				"OK")
 		},
 	},
 	{
@@ -503,6 +536,32 @@ var tcpServices = []serviceEntry{
 	// Port 5900 (VNC) is handled by startVNCListener() — it completes the
 	// full RFB version + security handshake so clients get a clean refusal
 	// instead of retrying endlessly after a mid-handshake disconnect.
+	{
+		Port: 6000, // X11 (X Window System)
+		Banner: func() []byte {
+			// X11 servers send a connection-refused response when they reject
+			// a client. The X11 protocol initial response: 0x00 = Failed,
+			// then reason-length, protocol version, additional-data-length,
+			// and a human-readable reason string.
+			reason := "No protocol specified"
+			padded := len(reason)
+			if padded%4 != 0 {
+				padded += 4 - padded%4
+			}
+			addlData := (padded) / 4 // in 4-byte units
+			resp := make([]byte, 8+padded)
+			resp[0] = 0x00                // Failed
+			resp[1] = byte(len(reason))   // reason length
+			resp[2] = 0x00                // protocol-major-version (11) LE
+			resp[3] = 0x0b                // ...high byte
+			resp[4] = 0x00                // protocol-minor-version (0) LE
+			resp[5] = 0x00                // ...high byte
+			resp[6] = byte(addlData)      // additional data length (4-byte units) LE
+			resp[7] = byte(addlData >> 8) // ...high byte
+			copy(resp[8:], reason)
+			return resp
+		},
+	},
 	{
 		Port: 8443, // HTTPS alt
 		Banner: func() []byte {
