@@ -483,6 +483,11 @@
 
   function recordEvent(ev) {
     eventRing.push(ev);
+    // Evict events that have fallen outside the current time window.
+    const cutoff = Date.now() - currentHours * 3600_000;
+    while (eventRing.length > 0 && new Date(eventRing[0].time).getTime() < cutoff) {
+      evictEvent(eventRing.shift());
+    }
   }
 
   // Port stats: { portStr -> { count, color } }
