@@ -31,11 +31,13 @@ This creates realistic fingerprints that scanners and reconnaissance tools will 
 | 143 | IMAP | Internet Message Access Protocol | `* OK [CAPABILITY IMAP4rev1 ...] Dovecot ready.` — mimics Dovecot IMAP |
 | 443 | HTTPS | HTTP over TLS | TLS 1.0 Alert (fatal, handshake_failure) — realistic response to ClientHello |
 | 445 | SMB | Server Message Block | Minimal SMB2 NEGOTIATE response with STATUS_NOT_SUPPORTED — fingerprints as Windows SMB |
+| 554 | RTSP | Real Time Streaming Protocol | `RTSP/1.0 200 OK` with CSeq, Public methods, and Server: GStreamer RTSP Server headers |
 | 993 | IMAPS | IMAP over SSL/TLS | TLS handshake_failure alert (same as port 443) |
 | 995 | POP3S | POP3 over SSL/TLS | TLS handshake_failure alert (same as port 443) |
 | 1433 | MSSQL | Microsoft SQL Server | TDS pre-login response indicating version 15.00.2000, encryption not supported |
 | 1521 | Oracle | Oracle Database TNS Listener | TNS Refuse packet with error code 1153 |
 | 1723 | PPTP | Point-to-Point Tunneling Protocol VPN | PPTP Start-Control-Connection-Reply (156 bytes) |
+| 2375 | Docker | Docker Daemon REST API (unencrypted) | HTTP 200 OK mimicking Docker's `/_ping` endpoint with Api-Version and Docker headers |
 | 3306 | MySQL | MySQL Database | MySQL 8.0.35 handshake packet (Protocol 10) with caching_sha2_password |
 | 3333 | Stratum | Cryptocurrency Mining Pool Protocol | JSON-RPC mining.notify notification — mimics mining pool distributing work |
 | 3389 | RDP | Remote Desktop Protocol | X.224 Connection Confirm PDU with RDP_NEG_RSP (PROTOCOL_RDP, no enhanced security) |
@@ -43,6 +45,7 @@ This creates realistic fingerprints that scanners and reconnaissance tools will 
 | 5432 | PostgreSQL | PostgreSQL Database | ErrorResponse: `FATAL: no pg_hba.conf entry for host` — realistic rejection |
 | 5555 | ADB | Android Debug Bridge | ADB CNXN connect response with device identity string |
 | 5900 | VNC | Virtual Network Computing | `RFB 003.008\n` — RFB protocol version handshake for VNC 3.8 |
+| 6000 | X11 | X Window System | X11 connection-refused response with "No protocol specified" error |
 | 6379 | Redis | Redis In-Memory Database | `-DENIED Redis is running in protected mode` — mimics Redis protected mode |
 | 6667 | IRC | Internet Relay Chat | IRC NOTICE AUTH hostname lookup messages |
 | 8333 | Bitcoin | Bitcoin P2P Network (mainnet) | Bitcoin protocol version message (magic 0xF9BEB4D9, version 70016, /Satoshi:25.0.0/) |
@@ -150,238 +153,91 @@ While port 445 has largely replaced 139 for SMB, many scanners still target both
 
 ---
 
-#### Port 143 — IMAP (Internet Message Access Protocol)
+#### Port 554 — RTSP (Real Time Streaming Protocol)
 
-**Banner**: `* OK [CAPABILITY IMAP4rev1 LITERAL+ SASL-IR LOGIN-REFERRALS ID ENABLE IDLE STARTTLS AUTH=PLAIN] Dovecot ready.\r\n`
+**Banner**: `RTSP/1.0 200 OK\r\nCSeq: 1\r\nPublic: DESCRIBE, SETUP, TEARDOWN, PLAY, PAUSE\r\nServer: GStreamer RTSP Server\r\n\r\n`
 
-**Purpose**: IMAP greeting with a full capability advertisement identifying the server as Dovecot (a popular IMAP server).
+**Purpose**: Sends a standard RTSP 200 OK response listing supported methods. This is the response an RTSP media server (IP camera, media streaming server) sends when queried. The response includes:
+- Status line: `RTSP/1.0 200 OK` indicating successful request processing
+- CSeq header: matches the client's command sequence number
+- Public header: lists supported RTSP methods (DESCRIBE, SETUP, TEARDOWN, PLAY, PAUSE)
+- Server header: identifies as GStreamer RTSP Server, a common media framework used in IP camera firmware
 
-**Why it's convincing**: The capability list includes common IMAP extensions (IDLE, STARTTLS, AUTH=PLAIN) that real Dovecot servers advertise. Scanners looking for IMAP servers will see this as a fully-featured mail server.
+**Why it's convincing**: RTSP servers respond to OPTIONS requests (and some malformed requests) with a 200 OK listing supported methods. The GStreamer server string is ubiquitous in IP camera firmware (Hikvision, Dahua, Axis, and countless OEM/white-label cameras use GStreamer). Scanners and Shodan recognize this as a real RTSP endpoint.
 
----
+**Why this port is targeted**: Port 554 is one of the most heavily scanned IoT ports on the internet:
+- **IP camera exploitation** — the Mirai botnet and its variants (Satori, Okiru, Masuta) specifically target RTSP-enabled cameras for compromise and recruitment into DDoS botnets
+- **Surveillance infrastructure mapping** — attackers and intelligence agencies scan for exposed security cameras to map physical surveillance coverage, identify facility locations, and gather intelligence
+- **Default credential brute-forcing** — most IP cameras ship with default credentials (admin/admin, admin/12345, root/pass), and RTSP endpoints are primary targets for credential stuffing attacks
+- **RTSP stream hijacking** — attackers access live video feeds to eavesdrop on private spaces (homes, businesses, government facilities)
+- **Video feed enumeration** — Shodan and Censys actively index exposed RTSP streams, and numerous "Insecam"-style websites aggregate and publish unsecured camera feeds
+- **Vulnerability exploitation** — RTSP implementations in cheap IP cameras are riddled with buffer overflows, authentication bypasses (CVE-2017-7921, CVE-2018-9995), and remote code execution vulnerabilities
+- **Ransomware targeting** — surveillance systems are increasingly targeted by ransomware due to the high-value nature of video footage (evidence in legal cases, safety monitoring, etc.)
 
-#### Port 443 — HTTPS (HTTP over TLS)
-
-**Banner**: `\x15\x03\x01\x00\x02\x02\x28` (TLS Alert Record)
-
-**Purpose**: TLS 1.0 alert message indicating a fatal handshake failure.
-- `\x15` = content type 21 (alert)
-- `\x03\x01` = TLS version 1.0
-- `\x00\x02` = length 2
-- `\x02` = alert level 2 (fatal)
-- `\x28` = alert description 40 (handshake_failure)
-
-**Why it's convincing**: When a client sends a TLS ClientHello to initiate a secure connection, a real server that cannot complete the handshake (e.g., due to cipher mismatch or missing certificates) sends a TLS alert. This response looks like a real HTTPS server that rejected the connection for a valid cryptographic reason, rather than a closed port or non-TLS service.
-
----
-
-#### Port 445 — SMB (Server Message Block)
-
-**Banner**: Minimal SMB2 NEGOTIATE response (84 bytes)
-
-**Purpose**: NetBIOS Session Service header + SMB2 magic bytes (`\xFE\x53\x4D\x42`) + error code STATUS_NOT_SUPPORTED.
-
-**Why it's convincing**: Windows file sharing uses SMB/SMB2. Scanners (like those used by ransomware and worms looking for EternalBlue vulnerabilities) send SMB NEGOTIATE packets to fingerprint Windows systems. This response identifies the host as a Windows SMB server that received the request but does not support the requested operation — enough to register as a real SMB endpoint without implementing the full protocol.
+Port 554 represents one of the largest attack surfaces in the IoT ecosystem — exposed RTSP cameras are pervasive, poorly secured, and provide both network access and real-world surveillance capabilities to attackers.
 
 ---
 
-#### Port 993 — IMAPS (IMAP over SSL/TLS)
+#### Port 5900 — VNC (Virtual Network Computing)
 
-**Banner**: Same TLS alert as port 443 (`\x15\x03\x01\x00\x02\x02\x28`)
+**Protocol Flow**: Partial RFB handshake with tarpit behavior (anti-brute-force behavior)
 
-**Purpose**: Port 993 is the standard IMAPS (IMAP over TLS) port. Sends the same TLS 1.0 handshake_failure alert as port 443 to appear as a TLS-enabled mail server.
+VNC implements the initial RFB protocol version exchange and then applies a tarpit strategy to slow down repeat scanners:
 
-**Why it's convincing**: See port 443 description for the TLS alert details. This response appears as a real IMAPS server that received a TLS ClientHello but could not complete the handshake. Scanners looking for mail servers will see this as a valid secure IMAP endpoint.
+1. **Server → Client**: Protocol version — `RFB 003.008\n` (VNC 3.8)
+2. **Client → Server**: Client version string (12 bytes) — **captured as client data**
+3. **Server behavior**:
+   - **First connection from an IP**: Close silently after version exchange
+   - **Repeat connections from the same IP within 60 seconds**: After version exchange, hold the connection open for a random 10–30 seconds before closing silently
 
-**Why this port is targeted**: Port 993 is targeted by:
-- **Credential harvesting scanners** that sweep all mail ports (25, 110, 143, 993, 995) looking for authentication endpoints to brute-force
-- **Mail server reconnaissance** tools mapping email infrastructure
-- **Exploits targeting mail server software** (Dovecot, Courier, Exchange vulnerabilities)
-- **Botnet C&C detection** — some botnets use IMAPS for encrypted command channels
+**Tarpit mechanism**: When a scanner connects repeatedly from the same source IP within a 60-second window, the connection is held open (after the version exchange is complete and captured) for a random 10–30 second duration. This ties up a thread or connection slot in the scanner's connection pool, significantly throttling their scan rate without signaling anything unusual to the scanner. The held connection appears to the scanner as a slow network or unresponsive endpoint rather than active defense, making it less likely to trigger evasion tactics or alert the attacker.
 
-Port 993 completes the mail port family coverage, ensuring webTraffik captures scanners that target secure mail protocols.
+**Per-IP tracking**: The service maintains a map of recently-seen source IPs. This map is automatically pruned every 5 minutes to prevent unbounded memory growth during sustained high-volume scans.
 
----
+**Purpose**: Captures VNC reconnaissance traffic while actively slowing down brute-force and mass-scanning operations. The tarpit strategy punishes repeat offenders by consuming their scanning resources without alerting them to defensive behavior.
 
-#### Port 995 — POP3S (POP3 over SSL/TLS)
+**Why it's convincing**: All VNC servers start by announcing their RFB protocol version (3.8 is the most widely supported). The version exchange is enough to fingerprint as a real VNC server to reconnaissance scanners and initial connection attempts. The silent close (first connection) or slow response (repeat connections) mimics network latency or an overloaded VNC server rather than active filtering, keeping the deception intact.
 
-**Banner**: Same TLS alert as port 443 (`\x15\x03\x01\x00\x02\x02\x28`)
-
-**Purpose**: Port 995 is the standard POP3S (POP3 over TLS) port. Sends the same TLS 1.0 handshake_failure alert as port 443 to appear as a TLS-enabled mail server.
-
-**Why it's convincing**: See port 443 description for the TLS alert details. This response appears as a real POP3S server that received a TLS ClientHello but could not complete the handshake. Scanners looking for mail servers will see this as a valid secure POP3 endpoint.
-
-**Why this port is targeted**: Port 995 is targeted for the same reasons as port 993:
-- **Credential harvesting** — brute-force attacks against mail authentication
-- **Mail server reconnaissance** and vulnerability scanning
-- **Complete mail infrastructure mapping** — attackers scan all mail ports (25, 110, 143, 993, 995) in a single sweep to identify mail server types and versions
-
-Port 995 completes the secure mail port coverage alongside 993 (IMAPS), ensuring webTraffik captures all mail-focused reconnaissance traffic.
+**Why this behavior**: A silent drop after version exchange (before security negotiation) looks like a network error or firewall reset to automated scanners, causing most brute-force bots to back off. For persistent scanners that retry, the tarpit delay consumes their connection pool slots and dramatically slows their scan rate across the entire internet, protecting not just this host but reducing their overall threat capacity. By contrast, sending a proper SecurityResult:failed response (the old behavior) looks identical to a real VNC server rejecting a bad password, which signals brute-force bots that authentication is present and encourages them to retry indefinitely.
 
 ---
 
-#### Port 1433 — MSSQL (Microsoft SQL Server)
+#### Port 6000 — X11 (X Window System)
 
-**Banner**: TDS (Tabular Data Stream) pre-login response (37 bytes)
+**Banner**: X11 connection-refused response (binary protocol)
 
-**Purpose**: Indicates server version 15.00.2000 (SQL Server 2019) with encryption not supported.
+**Purpose**: Sends the exact binary response an X11 server (Xorg, XFree86) returns when refusing a client connection due to authentication failure:
 
-**Why it's convincing**: Microsoft SQL Server uses the TDS protocol. The pre-login handshake is the first packet exchange in the connection flow. This response advertises a realistic server version and encryption status, enough to fingerprint as MSSQL to database scanners.
-
----
-
-#### Port 1521 — Oracle (Oracle Database TNS Listener)
-
-**Banner**: TNS (Transparent Network Substrate) Refuse packet
-
-**Purpose**: Sends an Oracle TNS Refuse packet with error code 1153 ("TNS:error in network data"). This is the response an Oracle Database listener sends when refusing a connection.
-
-The TNS packet structure includes:
-- TNS packet header with type 0x04 (Refuse)
-- Error code 1153 in the DESCRIPTION field
-- Realistic TNS packet length and checksum
-
-**Why it's convincing**: Oracle Database uses the TNS protocol for all client-server communication. The Refuse packet is a valid TNS response that fingerprints as a real Oracle listener. Database scanners will recognize this as Oracle Database (typically versions 11g, 12c, 18c, 19c, or 21c).
-
-**Why this port is targeted**: Port 1521 is heavily scanned by:
-- **Database vulnerability scanners** looking for Oracle exploits (CVE-2012-1675, CVE-2014-4236, and newer vulnerabilities)
-- **Automated database reconnaissance tools** that scan all common database ports (1433/MSSQL, 3306/MySQL, 5432/PostgreSQL, 1521/Oracle) in a single sweep
-- **Data exfiltration bots** looking for exposed Oracle databases with weak authentication
-- **Ransomware** targeting database servers for encryption and extortion
-
-Oracle Database is a high-value target due to the sensitive data it typically stores in enterprise environments.
-
----
-
-#### Port 1723 — PPTP (Point-to-Point Tunneling Protocol VPN)
-
-**Banner**: PPTP Start-Control-Connection-Reply (156 bytes)
-
-**Purpose**: Sends a complete PPTP Start-Control-Connection-Reply packet indicating successful connection establishment. The response includes:
-- Magic Cookie: `0x1A2B3C4D` (standard PPTP magic value)
-- Control Message Type: 2 (Start-Control-Connection-Reply)
-- Protocol Version: 0x0100 (PPTP version 1.0)
-- Result Code: 1 (successful channel establishment)
-- Framing Capabilities: 3 (async + sync framing supported)
-- Bearer Capabilities: 3 (analog + digital access supported)
-- Hostname: "pptp-server"
-- Vendor: "linux"
-
-**Why it's convincing**: This is a complete, valid PPTP control connection response that exactly matches what a real PPTP VPN server (such as pptpd on Linux or Windows RRAS) sends during the initial handshake. VPN scanners and clients will recognize this as a fully functional PPTP endpoint.
-
-**Why this port is targeted**: Port 1723 is one of the most heavily scanned ports on the internet:
-- **Botnet credential brute-forcing** — PPTP authentication is weak (MS-CHAPv2) and heavily targeted for brute-force attacks
-- **VPN reconnaissance** — attackers look for VPN endpoints to gain network access bypassing perimeter security
-- **Exploit scanning** — multiple PPTP vulnerabilities exist (MS12-020, weaknesses in MS-CHAPv2 authentication)
-- **Network pivot point discovery** — compromised PPTP servers provide direct access to internal networks
-
-PPTP is deprecated due to security weaknesses but remains widely deployed, making it a high-value reconnaissance target.
-
----
-
-#### Port 3306 — MySQL
-
-**Banner**: MySQL Protocol 10 handshake packet (81 bytes)
-
-**Purpose**: Advertises MySQL 8.0.35 with caching_sha2_password authentication plugin.
-
-**Why it's convincing**: Every MySQL connection starts with a handshake packet containing:
-- Protocol version (10)
-- Server version string
-- Connection ID
-- Auth plugin data (challenge salt)
-- Capability flags
-- Auth plugin name
-
-This is a complete, valid MySQL handshake that clients will recognize as MySQL 8.
-
----
-
-#### Port 3333 — Stratum (Cryptocurrency Mining Pool Protocol)
-
-**Banner**: JSON-RPC mining.notify notification
-
-**Purpose**: Sends a complete Stratum protocol mining.notify message that mining pool clients expect when connecting to a pool:
-
-```json
-{"id":null,"method":"mining.notify","params":["job1","abcd1234","ef567890","20240315",true]}\n
+```
+0x00 (Failed)
+0x0B (reason-length in bytes)
+0x00 0x0B (protocol major version 11)
+0x00 0x00 (protocol minor version 0)
+0x00 0x03 (additional data length in 4-byte units)
+"No protocol specified" (11 bytes, padded to 12 bytes with null for 4-byte alignment)
 ```
 
-This is the standard format for Stratum mining job distribution, indicating the pool is ready to distribute mining work to connected miners.
+The response structure is:
+- Status byte: 0x00 (Failed) — indicates connection refused
+- Reason length: length of the error message string
+- Protocol version: 11.0 (X Window System version 11)
+- Additional data length: length of remaining data in 4-byte units
+- Reason string: "No protocol specified" — the standard Xorg error when xhost restrictions deny the client
 
-**Why it's convincing**: The Stratum protocol is the de facto standard for cryptocurrency mining pools (Bitcoin, Ethereum Classic, Monero, and most altcoins). Mining software (cgminer, bfgminer, Claymore, PhoenixMiner) expects this exact JSON-RPC notification format when connecting. The banner includes all required fields: job ID, previous hash, coinbase parts, block version, and clean jobs flag. Scanners and mining bots will recognize this as a real Stratum mining pool endpoint.
+**Why it's convincing**: This is the exact binary response an X11 server sends when refusing a connection due to authentication failure. The "No protocol specified" error is the most common rejection message from Xorg/XFree86 when the DISPLAY environment variable is not authorized via xhost or xauth. Scanners looking for exposed X11 servers will recognize this as a real X server with access control enabled (but the mere fact that port 6000 is open and responding with valid X11 protocol is enough to fingerprint the host as running X Window System).
 
-**Why this port is targeted**: Port 3333 is heavily scanned by:
-- **Cryptojacking detection** — security researchers and attackers scan for exposed Stratum endpoints to identify cryptojacking infrastructure
-- **Mining pool hijacking** — attackers look for misconfigured mining pools to redirect hashpower to their own wallets
-- **Botnet reconnaissance** — mining botnets scan for existing mining operations to hijack or compete with
-- **Network mapping** — Stratum endpoints indicate hosts with significant computational resources or cryptocurrency mining operations
-- **Exploit scanning** — vulnerabilities in mining pool software can lead to wallet theft or DDoS amplification
+**Why this port is targeted**: Port 6000 (and sequential ports 6001, 6002, etc. for multiple X displays) represents a critical security vulnerability when exposed to networks:
+- **X11 keylogging and screen capture** — an open X server allows remote keylogging and screenshot capture WITHOUT ANY EXPLOIT. The X protocol's design allows any connected client to read keyboard input and screen contents from all windows. This is not a vulnerability — it's a feature of the X Window System's network transparency.
+- **Clipboard access** — attackers can read and write the X clipboard, capturing passwords, API keys, and sensitive data copied by users
+- **Window manipulation** — attackers can inject keyboard and mouse events into applications, effectively remote-controlling the desktop session
+- **Credential harvesting** — by capturing keystrokes and screenshots, attackers can harvest login credentials, API tokens, SSH keys, and other sensitive information
+- **Session hijacking** — complete desktop session takeover is possible without authentication if xhost is misconfigured (`xhost +` grants access to any client)
+- **Lateral movement** — compromised X sessions provide access to the user's files, shell history, SSH agent sockets, and can be used to pivot to other systems
+- **Privilege escalation** — if the X session is running as root (rare but not unheard of in legacy systems), attackers gain root-equivalent access
 
-Port 3333 is the standard Stratum port and is one of the most-scanned cryptocurrency-related ports on the internet.
+While X11 forwarding over SSH is less common now (Wayland is gradually replacing X11 in modern Linux distributions), legacy systems, remote workstations, and misconfigured lab/development machines still expose X11 ports. Shodan indexes thousands of open X11 servers, and attackers actively scan for them as high-value targets for credential theft and lateral movement.
 
----
-
-#### Port 3389 — RDP (Remote Desktop Protocol)
-
-**Banner**: X.224 Connection Confirm PDU (19 bytes)
-
-**Purpose**: Indicates successful X.224 connection with RDP negotiation response selecting PROTOCOL_RDP (no enhanced security).
-
-**Why it's convincing**: RDP uses the X.224 protocol for connection setup. This is the standard response to an RDP connection request. Scanners looking for exposed RDP servers will see this as a valid RDP endpoint.
-
----
-
-#### Port 4444 — Metasploit (Metasploit Default Reverse Shell)
-
-**Banner**: No banner (nil response)
-
-**Purpose**: Accepts the connection silently without sending any data, then immediately closes. This is exactly what a Metasploit Meterpreter reverse shell handler does when it receives a connection.
-
-**Why it's convincing**: Port 4444 is the default listener port for Metasploit Framework's `exploit/multi/handler` with a reverse TCP payload. When a Meterpreter session connects back, the handler accepts the connection silently and waits for the staged payload to be sent by the compromised host. By accepting the connection without sending a banner, webTraffik fingerprints identically to a real Meterpreter handler.
-
-**Why this port is targeted**: Port 4444 is massively scanned by:
-- **Botnet reconnaissance** — checking if hosts are already backdoored with Metasploit shells
-- **Reverse shell detection** — security researchers and attackers both scan for exposed Metasploit handlers
-- **Exploit payload verification** — malware authors check if their payloads successfully established reverse connections
-- **Honeypot detection** — attackers probe for security monitoring infrastructure
-
-Port 4444 is one of the most iconic ports in offensive security and is constantly scanned by both attackers and defenders.
-
----
-
-#### Port 5432 — PostgreSQL
-
-**Banner**: PostgreSQL ErrorResponse message
-
-**Purpose**: Sends a FATAL error indicating "no pg_hba.conf entry for host" — the error PostgreSQL sends when a client IP is not allowed to connect.
-
-**Why it's convincing**: Real PostgreSQL servers with restrictive `pg_hba.conf` files send this exact error to unauthorized clients. It fingerprints as a real Postgres server with security enabled.
-
----
-
-#### Port 5555 — ADB (Android Debug Bridge)
-
-**Banner**: ADB protocol CNXN (connect) response
-
-**Purpose**: Sends a complete ADB connect response packet mimicking an Android device. The response includes:
-- ADB command: `CNXN` (0x4e584e43) indicating connection acknowledgment
-- Protocol version: 0x01000000 (ADB protocol version 1)
-- Max data payload: 4096 bytes
-- Device identity string: `device::ro.product.model=Android;ro.product.device=generic`
-
-The banner follows the exact ADB wire protocol format used by Android devices and emulators.
-
-**Why it's convincing**: This is a valid ADB connection response that matches what a real Android device or emulator sends during ADB handshake. ADB clients and scanners will recognize this as an accessible Android device with USB debugging enabled.
-
-**Why this port is targeted**: Port 5555 is one of the most critical IoT/mobile security targets:
-- **Mirai botnet variants** (ADB.Miner, Satori) specifically target this port for Android device compromise
-- **Cryptocurrency mining botnets** — ADB.Miner infected over 5,000 Android devices by exploiting open ADB ports to install cryptominers
-- **IoT device takeover** — Android TV boxes, set-top boxes, and embedded Android devices often expose ADB on port 5555
-- **Mobile device reconnaissance** — attackers scan for phones and tablets with USB debugging exposed over network
-- **Remote access abuse** — open ADB allows full shell access (`adb shell`) and app installation without authentication
-
-Port 5555 is the network ADB port (vs. USB ADB) and is one of the most dangerous ports to expose publicly due to the complete device access it grants.
+The combination of network exposure + powerful remote capabilities + weak authentication (xhost-based) makes port 6000 one of the most dangerous ports to expose on a workstation or desktop system.
 
 ---
 
@@ -451,6 +307,44 @@ This is the exact message sequence that IRC servers (ircd-hybrid, UnrealIRCd, In
 - **Network reconnaissance** — IRC servers often indicate informal or legacy infrastructure that may have other security weaknesses
 
 While IRC usage has declined, it remains a target for botnet operators and attackers looking for communication channels.
+
+---
+
+#### Port 2375 — Docker (Docker Daemon REST API, unencrypted)
+
+**Banner**: HTTP 200 OK response mimicking Docker's `/_ping` endpoint:
+
+```
+HTTP/1.1 200 OK\r\n
+Api-Version: 1.45\r\n
+Docker-Experimental: false\r\n
+Ostype: linux\r\n
+Server: Docker/25.0.3 (linux)\r\n
+Content-Type: text/plain; charset=utf-8\r\n
+Content-Length: 2\r\n
+\r\n
+OK
+```
+
+**Purpose**: Sends the exact response that Docker Engine's HTTP API returns for the `/_ping` health check endpoint. The response includes:
+- Api-Version header: 1.45 (Docker Engine API version)
+- Docker-Experimental header: false (stable release)
+- Ostype header: linux (host OS)
+- Server header: Docker/25.0.3 (linux) — recent Docker Engine version
+- Body: "OK" (simple health check response)
+
+**Why it's convincing**: This is byte-for-byte identical to what Docker Engine returns when the Docker daemon is exposed over TCP (via `dockerd -H tcp://0.0.0.0:2375` or `"hosts": ["tcp://0.0.0.0:2375"]` in daemon.json). Scanners looking for exposed Docker APIs check the `/_ping` endpoint first to confirm Docker presence before attempting more invasive operations. The Api-Version and Server headers match Docker Engine 25.0.3, a recent stable release.
+
+**Why this port is targeted**: Port 2375 represents one of the most CATASTROPHIC misconfigurations in cloud and container infrastructure:
+- **Complete host compromise** — an exposed Docker API grants the attacker full control over all containers AND the underlying host. Attackers can create privileged containers (`--privileged`), mount the host filesystem (`-v /:/host`), escape to the host via `chroot /host`, and execute arbitrary commands with root privileges.
+- **Cryptominer deployment** — multiple botnet campaigns (TeamTNT, Kinsing, Doki, Hildegard, Siloscape) actively scan for port 2375 and immediately deploy cryptominers in privileged containers. TeamTNT alone infected thousands of Docker hosts and Kubernetes clusters.
+- **Data exfiltration** — attackers can mount host volumes, access application secrets, database credentials, SSH keys, cloud provider credentials (AWS keys in `~/.aws`, GCP credentials, Azure tokens), and exfiltrate sensitive data.
+- **Lateral movement** — compromised Docker hosts provide a pivot point into internal networks. Attackers can deploy containers with network access to internal services, scan internal infrastructure, and compromise adjacent systems.
+- **Container registry poisoning** — attackers can push malicious images to private registries accessible from the compromised host, enabling supply chain attacks.
+- **Denial of service** — attackers can stop or delete all running containers, destroy volumes, and disrupt production services.
+- **Ransomware deployment** — privileged container access allows attackers to deploy ransomware that encrypts both container filesystems and the host system.
+
+An exposed Docker API on port 2375 is equivalent to publishing root SSH credentials to the internet. It is consistently ranked as one of the most critical cloud security misconfigurations. NEVER expose Docker's API without TLS authentication (port 2376 with client certificates), and even then, NEVER expose it to the public internet.
 
 ---
 
@@ -891,4 +785,4 @@ The port lists in `firewall.sh` must always match the port lists in `services.go
 
 ---
 
-**Last synchronized with**: `services.go` as of the current codebase state (39 TCP services, 7 UDP services, 1 Minecraft service, 17 HTTP ports)
+**Last synchronized with**: `services.go` as of the current codebase state (42 TCP services, 7 UDP services, 1 Minecraft service, 17 HTTP ports)
