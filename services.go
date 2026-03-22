@@ -379,15 +379,27 @@ var tcpServices = []serviceEntry{
 	{
 		Port: 5432, // PostgreSQL
 		Banner: func() []byte {
-			// PostgreSQL sends nothing until the client sends a startup message.
-			// A realistic response to an unrecognized/short startup is an error.
-			// ErrorResponse: 'E' + int32(len) + fields
-			msg := "EFATAL\x00VFATAL\x00C28000\x00Mno pg_hba.conf entry for host\x00\x00"
-			length := 4 + len(msg) // int32 includes itself
-			return []byte{
+			// PostgreSQL ErrorResponse sent when a client connects without a
+			// valid pg_hba.conf entry. Format per the PG wire protocol:
+			//   'E' (message type, outside the length)
+			//   int32 length (includes itself, not the type byte)
+			//   then field entries: type_char + string + \0 ...
+			//   terminated by \0
+			// Field types: 'S' = severity, 'V' = severity (non-localized),
+			// 'C' = SQLSTATE code, 'M' = message.
+			fields := []byte(
+				"SFATAL\x00" +
+					"VFATAL\x00" +
+					"C28000\x00" +
+					"Mno pg_hba.conf entry for host\x00" +
+					"\x00", // terminator
+			)
+			length := 4 + len(fields) // int32 length includes itself
+			hdr := []byte{
 				'E',
 				byte(length >> 24), byte(length >> 16), byte(length >> 8), byte(length),
 			}
+			return append(hdr, fields...)
 		},
 	},
 	{
@@ -661,23 +673,9 @@ Content-Type: application/json; charset=UTF-8
 				"WebSocket upgrade only")
 		},
 	},
-	{
-		Port: 9735, // Lightning Network P2P (BOLT #8)
-		Banner: func() []byte {
-			// Lightning Network uses a Noise_XK handshake (BOLT #8).
-			// The responder's first message is a 50-byte Act One response
-			// (1 byte version + 33 bytes ephemeral pubkey + 16 bytes tag).
-			// We send random-looking bytes of the correct length — scanners
-			// just check that 50 bytes arrive.
-			act1 := make([]byte, 50)
-			act1[0] = 0x00 // version byte
-			// Fill with deterministic but realistic-looking bytes
-			for i := 1; i < 50; i++ {
-				act1[i] = byte((i * 37) ^ 0xAB)
-			}
-			return act1
-		},
-	},
+	// Port 9735 (Lightning) is handled by startLightningListener() — it
+	// requires reading the client's Act One before replying with Act Two,
+	// which doesn't fit the send-banner-and-close model.
 	{
 		Port: 10009, // Lightning Network gRPC (lnd)
 		Banner: func() []byte {
@@ -828,6 +826,76 @@ func extractConnIP(addr net.Addr) string {
 		}
 		return host
 	}
+}
+
+// ── Lightning Network P2P (BOLT #8) emulator ─────────────────────────────────
+//
+// Protocol reference: BOLT #8 — Encrypted and Authenticated Transport
+//
+// The Noise_XK handshake has three acts:
+//   1. Initiator → Responder: Act One  (50 bytes)
+//   2. Responder → Initiator: Act Two  (50 bytes)
+//   3. Initiator → Responder: Act Three (66 bytes)
+//
+// We read Act One from the client, then send a fake Act Two response.
+// Scanners probing for Lightning nodes expect this read-then-reply pattern.
+
+const lightningPort = 9735
+
+// startLightningListener binds to port 9735 and emulates the BOLT #8
+// Noise_XK handshake: reads the client's 50-byte Act One, then sends
+// a 50-byte Act Two response.
+func startLightningListener() {
+	portStr := fmt.Sprintf("%d", lightningPort)
+	addr := fmt.Sprintf(":%d", lightningPort)
+
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Printf("Lightning listener on %s failed: %v", addr, err)
+		return
+	}
+	log.Printf("Lightning listener on %s", addr)
+
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			log.Printf("Lightning accept on %s: %v", addr, err)
+			time.Sleep(time.Second)
+			continue
+		}
+		go func(c net.Conn) {
+			defer c.Close()
+			srcIP := extractConnIP(c.RemoteAddr())
+			if appLimiter.IsBanned(srcIP, portStr) {
+				return
+			}
+			go handleCapture(srcIP, portStr, "tcp")
+			handleLightningConn(c)
+		}(conn)
+	}
+}
+
+// handleLightningConn processes a single Lightning Network connection:
+// reads the 50-byte Act One from the initiator, then sends a 50-byte
+// Act Two response, then closes.
+func handleLightningConn(c net.Conn) {
+	c.SetDeadline(time.Now().Add(5 * time.Second))
+
+	// Read Act One: 1 byte version + 33 bytes ephemeral pubkey + 16 bytes tag = 50 bytes
+	actOne := make([]byte, 50)
+	if _, err := io.ReadFull(c, actOne); err != nil {
+		return
+	}
+
+	// Send Act Two: 1 byte version + 33 bytes ephemeral pubkey + 16 bytes tag = 50 bytes
+	// We generate deterministic but realistic-looking bytes since we can't
+	// actually perform the Noise_XK crypto without a real static key.
+	actTwo := make([]byte, 50)
+	actTwo[0] = 0x00 // version byte (must be 0)
+	for i := 1; i < 50; i++ {
+		actTwo[i] = byte((i * 37) ^ 0xAB)
+	}
+	c.Write(actTwo) //nolint:errcheck
 }
 
 // ── Minecraft Java Edition server-list-ping emulator ─────────────────────────

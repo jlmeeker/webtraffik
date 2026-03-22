@@ -247,6 +247,11 @@ func main() {
 		go startMinecraftListener()
 	}
 
+	// Start Lightning Network BOLT #8 handshake emulator
+	if !disabledPorts[lightningPort] {
+		go startLightningListener()
+	}
+
 	// Start dashboard server on 8999
 	go startDashboardServer()
 
