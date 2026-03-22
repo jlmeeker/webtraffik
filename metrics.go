@@ -213,10 +213,12 @@ type MetricsResponse struct {
 	CountryTimeline map[string][]TimeBucket `json:"country_timeline,omitempty"` // cc -> hourly buckets
 }
 
-// TimeBucket is a single hour's total connection count.
+// TimeBucket is a single hour's aggregated counts.
 type TimeBucket struct {
-	Bucket string `json:"bucket"`
-	Value  int64  `json:"value"`
+	Bucket    string `json:"bucket"`
+	Value     int64  `json:"value"`                // connections
+	UniqueIPs int64  `json:"unique_ips,omitempty"` // unique source IPs this hour
+	Bans      int64  `json:"bans,omitempty"`       // total bans this hour
 }
 
 // parseLabels converts "cc=CN,port=22,protocol=tcp,service=SSH" into a map.
@@ -265,12 +267,15 @@ func HandleMetrics(w http.ResponseWriter, r *http.Request) {
 	type aggKey struct{ name, labels string }
 	agg := make(map[aggKey]int64)
 	timeBuckets := make(map[string]int64)               // bucket -> total connections
+	ipBuckets := make(map[string]int64)                 // bucket -> unique IPs
+	banBuckets := make(map[string]int64)                // bucket -> total bans
 	portBuckets := make(map[string]map[string]int64)    // port -> bucket -> count
 	countryBuckets := make(map[string]map[string]int64) // cc -> bucket -> count
 
 	for _, row := range rows {
 		agg[aggKey{row.Name, row.Labels}] += row.Value
-		if row.Name == metricConnections {
+		switch row.Name {
+		case metricConnections:
 			timeBuckets[row.Bucket] += row.Value
 
 			lbls := parseLabels(row.Labels)
@@ -286,6 +291,10 @@ func HandleMetrics(w http.ResponseWriter, r *http.Request) {
 				}
 				countryBuckets[cc][row.Bucket] += row.Value
 			}
+		case metricUniqueIPs:
+			ipBuckets[row.Bucket] += row.Value
+		case metricBans:
+			banBuckets[row.Bucket] += row.Value
 		}
 	}
 
@@ -316,9 +325,25 @@ func HandleMetrics(w http.ResponseWriter, r *http.Request) {
 		return resp.Bans[i].Value > resp.Bans[j].Value
 	})
 
-	// Build sorted time buckets for timeline chart
-	for bucket, val := range timeBuckets {
-		resp.TimeBuckets = append(resp.TimeBuckets, TimeBucket{Bucket: bucket, Value: val})
+	// Build sorted time buckets for timeline chart.
+	// Collect all bucket keys from connections, unique IPs, and bans.
+	allBuckets := make(map[string]struct{})
+	for b := range timeBuckets {
+		allBuckets[b] = struct{}{}
+	}
+	for b := range ipBuckets {
+		allBuckets[b] = struct{}{}
+	}
+	for b := range banBuckets {
+		allBuckets[b] = struct{}{}
+	}
+	for bucket := range allBuckets {
+		resp.TimeBuckets = append(resp.TimeBuckets, TimeBucket{
+			Bucket:    bucket,
+			Value:     timeBuckets[bucket],
+			UniqueIPs: ipBuckets[bucket],
+			Bans:      banBuckets[bucket],
+		})
 	}
 	sort.Slice(resp.TimeBuckets, func(i, j int) bool {
 		return resp.TimeBuckets[i].Bucket < resp.TimeBuckets[j].Bucket
