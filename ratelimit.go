@@ -1,6 +1,7 @@
 package main
 
 import (
+	"hash/fnv"
 	"log"
 	"sync"
 	"time"
@@ -16,6 +17,9 @@ const (
 	rateThreshold     = 2                // events per second that triggers tracking
 	rateSustainWindow = 10 * time.Minute // must sustain high rate for this long to get banned
 	banCooldown       = 1 * time.Hour    // ban duration before the IP is allowed again
+	rateShards        = 64               // number of rate-map shards (must be power of 2)
+	rateGCInterval    = 5 * time.Minute  // how often we sweep stale rate entries
+	rateGCMaxAge      = 30 * time.Second // evict rate entries idle longer than this
 )
 
 // BanEntry is a single active ban record.  It is both held in memory and
@@ -36,34 +40,69 @@ type ipPortKey struct {
 
 // rateState tracks recent event timestamps for one IP+port combination.
 type rateState struct {
-	// timestamps is a sliding window of recent event arrival times.
-	// We keep only the last ~2× rateThreshold seconds of entries.
 	timestamps []time.Time
-	// highSince is the time we first observed the rate exceeding rateThreshold.
-	// Zero means the rate is currently below threshold.
-	highSince time.Time
+	highSince  time.Time
+}
+
+// rateShard is one shard of the rate map — its own lock + map.
+type rateShard struct {
+	mu    sync.Mutex
+	rates map[ipPortKey]*rateState
 }
 
 // RateLimiter tracks per-IP/port event rates and maintains the active ban set.
 //
-// The ban map and rate map are protected by separate mutexes so that the
-// high-frequency ban check (IsBanned / fast path in Record) never contends
-// with the rate-tracking write lock, and vice versa.
+// The ban map uses a RWMutex — reads (IsBanned) vastly outnumber writes.
+// The rate map is sharded across rateShards independent locks so goroutines
+// handling connections from different IPs almost never contend.
 type RateLimiter struct {
 	banMu sync.RWMutex
-	bans  map[ipPortKey]*BanEntry // active bans, keyed by ip+port
+	bans  map[ipPortKey]*BanEntry
 
-	rateMu sync.Mutex
-	rates  map[ipPortKey]*rateState
+	shards [rateShards]rateShard
 
-	// db and onChange are written once at startup; reads need no lock.
 	db       *eventDB
 	onChange func()
 }
 
-var appLimiter = &RateLimiter{
-	rates: make(map[ipPortKey]*rateState),
-	bans:  make(map[ipPortKey]*BanEntry),
+var appLimiter = newRateLimiter()
+
+func newRateLimiter() *RateLimiter {
+	rl := &RateLimiter{
+		bans: make(map[ipPortKey]*BanEntry),
+	}
+	for i := range rl.shards {
+		rl.shards[i].rates = make(map[ipPortKey]*rateState)
+	}
+	go rl.rateGC()
+	return rl
+}
+
+// shard returns the rateShard for the given key.
+func (rl *RateLimiter) shard(key ipPortKey) *rateShard {
+	h := fnv.New32a()
+	h.Write([]byte(key.ip))
+	h.Write([]byte(key.port))
+	return &rl.shards[h.Sum32()&(rateShards-1)]
+}
+
+// rateGC periodically sweeps stale rate entries that have gone idle.
+// Without this, one-off scanner IPs would leak rateState forever.
+func (rl *RateLimiter) rateGC() {
+	for {
+		time.Sleep(rateGCInterval)
+		cutoff := time.Now().Add(-rateGCMaxAge)
+		for i := range rl.shards {
+			sh := &rl.shards[i]
+			sh.mu.Lock()
+			for k, st := range sh.rates {
+				if len(st.timestamps) == 0 || st.timestamps[len(st.timestamps)-1].Before(cutoff) {
+					delete(sh.rates, k)
+				}
+			}
+			sh.mu.Unlock()
+		}
+	}
 }
 
 // SetDB wires the DB reference so the limiter can persist/expire bans.
@@ -73,7 +112,6 @@ func (rl *RateLimiter) SetDB(db *eventDB) {
 }
 
 // SetOnChange registers a callback invoked whenever the ban set changes.
-// Used to push fresh ban state to WebSocket clients.
 func (rl *RateLimiter) SetOnChange(fn func()) {
 	rl.onChange = fn
 }
@@ -90,14 +128,12 @@ func (rl *RateLimiter) LoadBans(db *eventDB) {
 	rl.banMu.Lock()
 	for _, e := range entries {
 		if e.ExpiresAt.Before(now) {
-			// Already expired — clean it up asynchronously
 			go db.expireBan(e.IP, e.Port)
 			continue
 		}
 		key := ipPortKey{e.IP, e.Port}
-		cp := e // copy
+		cp := e
 		rl.bans[key] = &cp
-		// Schedule expiry in memory
 		remaining := time.Until(e.ExpiresAt)
 		go rl.scheduleUnban(key, remaining)
 	}
@@ -117,14 +153,10 @@ func (rl *RateLimiter) IsBanned(ip, port string) bool {
 // Record records an event for ip:port and triggers a ban if the sustained-rate
 // threshold is breached.  Returns false if the IP is already banned (caller
 // should drop the connection).
-//
-// The ban check uses banMu (read lock, non-contending).
-// The rate tracking uses rateMu (write lock, separate from banMu so ban checks
-// on other goroutines are never blocked by rate bookkeeping).
 func (rl *RateLimiter) Record(ip, port string) bool {
 	key := ipPortKey{ip, port}
 
-	// Fast ban check — read lock only, does not block other readers.
+	// Fast ban check — read lock, non-contending.
 	rl.banMu.RLock()
 	_, banned := rl.bans[key]
 	rl.banMu.RUnlock()
@@ -132,17 +164,17 @@ func (rl *RateLimiter) Record(ip, port string) bool {
 		return false
 	}
 
-	// Rate tracking — write lock on the rate map only.
-	rl.rateMu.Lock()
+	// Rate tracking — only locks this key's shard.
+	sh := rl.shard(key)
+	sh.mu.Lock()
 
 	now := time.Now()
-	st := rl.rates[key]
+	st := sh.rates[key]
 	if st == nil {
 		st = &rateState{}
-		rl.rates[key] = st
+		sh.rates[key] = st
 	}
 
-	// Append current time and evict entries older than 1 second.
 	st.timestamps = append(st.timestamps, now)
 	cutoff := now.Add(-time.Second)
 	i := 0
@@ -151,7 +183,7 @@ func (rl *RateLimiter) Record(ip, port string) bool {
 	}
 	st.timestamps = st.timestamps[i:]
 
-	currentRate := len(st.timestamps) // events in the last second
+	currentRate := len(st.timestamps)
 	shouldBan := false
 
 	if currentRate > rateThreshold {
@@ -160,13 +192,13 @@ func (rl *RateLimiter) Record(ip, port string) bool {
 		}
 		if time.Since(st.highSince) >= rateSustainWindow {
 			shouldBan = true
-			delete(rl.rates, key) // clear rate state before releasing lock
+			delete(sh.rates, key)
 		}
 	} else {
 		st.highSince = time.Time{}
 	}
 
-	rl.rateMu.Unlock()
+	sh.mu.Unlock()
 
 	if shouldBan {
 		rl.ban(ip, port)
@@ -189,7 +221,6 @@ func (rl *RateLimiter) ban(ip, port string) {
 	}
 
 	rl.banMu.Lock()
-	// Double-check: another goroutine may have banned this IP already.
 	if _, exists := rl.bans[key]; exists {
 		rl.banMu.Unlock()
 		return
@@ -200,7 +231,6 @@ func (rl *RateLimiter) ban(ip, port string) {
 	log.Printf("ratelimit: BANNED %s on port %s (%s) until %s",
 		ip, port, entry.Service, entry.ExpiresAt.UTC().Format(time.RFC3339))
 
-	// Persist to DB (non-blocking).
 	if rl.db != nil {
 		go func() {
 			if err := rl.db.persistBan(entry); err != nil {
@@ -209,12 +239,10 @@ func (rl *RateLimiter) ban(ip, port string) {
 		}()
 	}
 
-	// Notify listeners (e.g. WebSocket hub).
 	if rl.onChange != nil {
 		go rl.onChange()
 	}
 
-	// Schedule automatic unban.
 	go rl.scheduleUnban(key, banCooldown)
 }
 
@@ -255,7 +283,6 @@ func (rl *RateLimiter) ActiveBans() []BanEntry {
 	for _, e := range rl.bans {
 		out = append(out, *e)
 	}
-	// Sort most-recent first.
 	for i := 1; i < len(out); i++ {
 		for j := i; j > 0 && out[j].BannedAt.After(out[j-1].BannedAt); j-- {
 			out[j], out[j-1] = out[j-1], out[j]
@@ -264,8 +291,7 @@ func (rl *RateLimiter) ActiveBans() []BanEntry {
 	return out
 }
 
-// ManualBan immediately bans ip:port for the standard banCooldown duration,
-// using the same path as an automatic abuse-triggered ban.
+// ManualBan immediately bans ip:port for the standard banCooldown duration.
 // Returns false if the IP+port is already banned.
 func (rl *RateLimiter) ManualBan(ip, port string) bool {
 	rl.banMu.RLock()
@@ -292,10 +318,11 @@ func (rl *RateLimiter) ManualUnban(ip, port string) bool {
 	delete(rl.bans, key)
 	rl.banMu.Unlock()
 
-	// Also clear any residual rate state so the clock resets cleanly.
-	rl.rateMu.Lock()
-	delete(rl.rates, key)
-	rl.rateMu.Unlock()
+	// Clear residual rate state.
+	sh := rl.shard(key)
+	sh.mu.Lock()
+	delete(sh.rates, key)
+	sh.mu.Unlock()
 
 	log.Printf("ratelimit: UNBANNED (manual) %s on port %s", key.ip, key.port)
 
