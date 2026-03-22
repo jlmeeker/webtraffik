@@ -116,10 +116,10 @@ func (rl *RateLimiter) Record(ip, port string) bool {
 	key := ipPortKey{ip, port}
 
 	rl.mu.Lock()
-	defer rl.mu.Unlock()
 
 	// Fast path: already banned.
 	if _, banned := rl.bans[key]; banned {
+		rl.mu.Unlock()
 		return false
 	}
 
@@ -147,10 +147,9 @@ func (rl *RateLimiter) Record(ip, port string) bool {
 			st.highSince = now
 		}
 		if time.Since(st.highSince) >= rateSustainWindow {
-			// Sustained abuse — ban this IP+port.
+			// Sustained abuse — release lock before calling ban (which locks internally).
 			rl.mu.Unlock()
 			rl.ban(ip, port)
-			rl.mu.Lock()
 			return false
 		}
 	} else {
@@ -158,6 +157,7 @@ func (rl *RateLimiter) Record(ip, port string) bool {
 		st.highSince = time.Time{}
 	}
 
+	rl.mu.Unlock()
 	return true
 }
 
