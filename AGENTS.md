@@ -37,8 +37,14 @@ handleCapture(srcIP, dstPort)
   |     - fans out to all open WebSocket subscriber channels (non-blocking select)
   |
   +-> appDB.insert(ev)
-        - fire-and-forget INSERT into SQLite events table
-        - errors logged, never fatal, never blocks the capture path
+  |     - fire-and-forget INSERT into SQLite events table
+  |     - errors logged, never fatal, never blocks the capture path
+  |
+  +-> appMetrics.Record(ev)
+        - increments in-memory hourly-bucketed counters
+        - tracks connections per port/protocol/service/country
+        - tracks unique IPs per hour
+        - dirty counters flushed to SQLite every 5 seconds
 ```
 
 ### The hub (`main.go`)
@@ -63,12 +69,10 @@ handleCapture(srcIP, dstPort)
 - Animated arcs: great-circle paths via `d3.geoInterpolate`, 20-point sampling with `curveNatural` (optimized from 60-point CatmullRom), animated with `stroke-dashoffset`
 - Persistent dots: remain after arc animation completes; store `[lon, lat]` as D3 datum for reprojection on resize (no DOM attributes)
 - Tooltips: `#dot-tooltip` div, shown on `mouseover` of `.src-dot` elements via D3 event handlers, displays "City, CC" or just IP if geo unavailable
-- Four corner overlay panels positioned absolutely on the map (no separate sidebars):
-  - `#panel-port` (top-left): Traffic by Port — top 10 ports sorted by hit count, color swatch + port number + count
-  - `#panel-service` (top-right): Top Services — top 10 services with bar charts showing relative traffic
-  - `#panel-country` (bottom-left): Traffic by Country — top 10 countries by connection count
-  - `#panel-ip` (bottom-right): Traffic by IP — top 10 source IPs by connection count
-- Sidebar rendering decoupled from event processing: uses `requestIdleCallback` on a 2-second timer with dirty flags; only re-renders when data changes
+- Two corner overlay panels positioned absolutely on the map:
+  - `#panel-service` (top-left): Top Services — top 10 services with bar charts showing relative traffic
+  - `#panel-banned` (top-right): Banned IPs — list of currently banned source IPs
+- Panel rendering decoupled from event processing: uses `requestIdleCallback` on a 2-second timer with dirty flags; only re-renders when data changes
 - Log panel (`#log-panel`): scrolling list, capped at 200 entries, shows time/IP/city/CC/port; uses rAF-based rendering via `scheduleLogRender()` for low latency
 - Arc lifecycle: gradient pooling (reuses SVG gradients by color pair instead of per-arc gradients), no glow filters on dots (only on self-dot), arc count capped at 150, dot count capped at 1000
 - Arc animation lifespan: ~2.6 seconds (800ms draw + 1200ms hold + 600ms fade)
@@ -80,9 +84,10 @@ handleCapture(srcIP, dstPort)
 | File | Owns |
 |------|------|
 | `main.go` | `ConnectionEvent` struct, `hub` (ring buffer + fan-out), HTTP capture listeners, dashboard server, `/ws` handler, `/api/self` endpoint, `capturePorts` var (HTTP-only ports) |
-| `services.go` | TCP service port emulation (`tcpServices` with banners for FTP, SSH, Telnet, SMTP, etc.) and UDP port capture (`udpServicePorts`) |
+| `services.go` | TCP service port emulation (`tcpServices` with banners for FTP, SSH, Teltel, SMTP, etc.) and UDP port capture (`udpServicePorts`) |
 | `SERVICES.md` | Detailed reference of all emulated TCP/UDP services and their protocol banners; must be kept in sync with `services.go` |
-| `db.go` | SQLite open/close, schema creation, `insert()`, `loadHistory()` |
+| `db.go` | SQLite open/close, schema creation, `insert()`, `loadHistory()`, metrics table schema, `upsertMetrics()`, `queryMetrics()`, `backfillMetrics()` |
+| `metrics.go` | `metricsCache` struct, in-memory hourly-bucketed metrics aggregation, `Record()`, `RecordBan()`, `flushLoop()` (5-second interval), `/api/metrics` and `/metrics` (Prometheus) handlers |
 | `geo.go` | `GeoLocator` (GeoLite2 reader + rgeo fallback), `Lookup()`, `Location` struct |
 | `geodb.go` | `ensureGeoDB()` — auto-download of `GeoLite2-City.mmdb` from GitHub mirror |
 | `iputil.go` | `discoverPublicIP()` — queries external APIs to find the server's public IP |
@@ -219,6 +224,122 @@ CREATE INDEX IF NOT EXISTS events_id_desc ON events(id DESC);
 - `flushBatch()` (`db.go:137`): writes a slice of events to SQLite in a single transaction. All errors are logged; failures do not crash the app.
 - `loadHistory(limit int)` (`db.go:179`): subquery selects the `limit` most-recent rows by `id DESC`, then re-orders them `ASC` for oldest-first replay. Called twice: once at startup (to seed the ring buffer) and once per new WebSocket connection.
 - `close()` (`db.go:210`): closes the insert queue channel (signaling `writeLoop` to flush and exit), waits for the writer goroutine to finish, then releases the database connection.
+
+### Metrics table
+
+The `metrics` table stores hourly-aggregated statistics:
+
+```sql
+CREATE TABLE IF NOT EXISTS metrics (
+    name   TEXT NOT NULL,
+    labels TEXT NOT NULL DEFAULT '',
+    bucket TEXT NOT NULL,
+    value  REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (name, labels, bucket)
+);
+CREATE INDEX IF NOT EXISTS idx_metrics_bucket ON metrics(bucket);
+```
+
+**Schema details:**
+- `name` — metric name: `connections`, `unique_ips`, or `bans`
+- `labels` — comma-separated key-value pairs (e.g., `port=80,protocol=http,service=HTTP,cc=US`) for `connections`; `type=auto` or `type=manual` for `bans`; empty for `unique_ips`
+- `bucket` — ISO 8601 hour timestamp (`2026-03-22T14:00:00Z`); all metrics within the hour are aggregated into this bucket
+- `value` — aggregated value (counter total for `connections` and `bans`, unique IP count for `unique_ips`)
+
+**Key behaviors:**
+- `upsertMetrics()` (`db.go`): uses `INSERT ... ON CONFLICT DO UPDATE` to add deltas to existing counters or insert new rows
+- `queryMetrics()` (`db.go`): queries metrics within a time range and aggregates them by metric name/labels
+- `backfillMetrics()` (`db.go`): on first run with an empty metrics table, aggregates all existing events into hourly buckets; re-run safe (idempotent)
+
+---
+
+## Metrics System
+
+webTraffik maintains an in-memory hourly-bucketed metrics cache with SQLite persistence. This provides fast aggregation for dashboards and historical analysis without blocking the capture path.
+
+### Architecture
+
+**In-memory cache** (`metrics.go`):
+- `metricsCache` struct: map of `(name, labels, hourBucket)` → counter value
+- Tracks three metric types:
+  - `connections` — labeled by `port`, `protocol`, `service`, `cc` (country code)
+  - `unique_ips` — per-hour unique source IP count (approximate across hour boundaries)
+  - `bans` — labeled by `type` (`auto` or `manual`)
+- Dirty counters tracked separately; only modified counters are flushed to SQLite
+- Per-hour IP sets stored in memory for `unique_ips` calculation; released after flush
+- Mutex-protected for concurrent access from capture handlers and flush loop
+
+**Flush loop** (`metrics.go:flushLoop()`):
+- Runs every 5 seconds in a dedicated goroutine
+- Snapshots dirty counters under lock
+- Writes to SQLite via `upsertMetrics()` (non-blocking; never stalls capture path)
+- Uses `value = value + delta` for counters, `MAX(value, new)` for `unique_ips` (prevents overcounting on restarts)
+- Final flush on graceful shutdown (loss: 0 events); on hard crash, up to 5 seconds of data may be lost
+
+**Backfill** (`metrics.go:backfillMetrics()`):
+- On first run (empty metrics table), aggregates existing events from the `events` table into hourly buckets
+- Idempotent: safe to re-run; uses `INSERT ... ON CONFLICT DO UPDATE` to merge with existing metrics
+- Called automatically on startup if metrics table is empty
+
+**Integration points:**
+- `handleCapture()` (`main.go`) → calls `appMetrics.Record(ev)` for every connection event
+- `autoBanHandler()` (`ratelimit.go`) → calls `appMetrics.RecordBan("auto")` when auto-banning an IP
+- `ManualBan()` (`ratelimit.go`) → calls `appMetrics.RecordBan("manual")` for manual bans
+
+### API Endpoints
+
+Both endpoints are served on the dashboard port (8999) and are accessible only from the subnet.
+
+**1. `/api/metrics?from=...&to=...` (JSON)**
+
+Returns aggregated metrics for the specified time range:
+
+```json
+{
+  "from": "2026-03-22T00:00:00Z",
+  "to": "2026-03-22T23:59:59Z",
+  "connections": 12543,
+  "bans": 142,
+  "unique_ips": 3891,
+  "time_buckets": [
+    {"bucket": "2026-03-22T00:00:00Z", "connections": 523, "bans": 5, "unique_ips": 187},
+    {"bucket": "2026-03-22T01:00:00Z", "connections": 601, "bans": 8, "unique_ips": 203},
+    ...
+  ],
+  "port_timeline": {
+    "80": [{"bucket": "2026-03-22T00:00:00Z", "value": 123}, ...],
+    "443": [...],
+    ...
+  },
+  "country_timeline": {
+    "US": [{"bucket": "2026-03-22T00:00:00Z", "value": 89}, ...],
+    "CN": [...],
+    ...
+  }
+}
+```
+
+**2. `/metrics?from=...&to=...` (Prometheus)**
+
+Returns metrics in Prometheus exposition format (text/plain):
+
+```
+# HELP webtraffik_connections_total Total number of connections
+# TYPE webtraffik_connections_total counter
+webtraffik_connections_total{port="80",protocol="http",service="HTTP",cc="US"} 523
+
+# HELP webtraffik_unique_ips Unique source IPs per hour
+# TYPE webtraffik_unique_ips gauge
+webtraffik_unique_ips 187
+
+# HELP webtraffik_bans_total Total number of bans
+# TYPE webtraffik_bans_total counter
+webtraffik_bans_total{type="auto"} 12
+```
+
+Query parameters:
+- `from` — ISO 8601 timestamp (default: 24 hours ago)
+- `to` — ISO 8601 timestamp (default: now)
 
 ---
 
@@ -444,6 +565,51 @@ make remote-install IP=x.x.x.x
 
 Do not change one file without the other.
 
+### 6. Adding a new metric
+
+Edit **`metrics.go`** to add a new metric type:
+
+**In `metricsCache.Record()` or create a new record method:**
+```go
+func (mc *metricsCache) RecordNewMetric(labels map[string]string, value float64) {
+    bucket := time.Now().UTC().Truncate(time.Hour).Format(time.RFC3339)
+    labelStr := formatLabels(labels)
+    key := cacheKey{name: "new_metric_name", labels: labelStr, bucket: bucket}
+    
+    mc.mu.Lock()
+    mc.counters[key] += value
+    mc.dirty[key] = true
+    mc.mu.Unlock()
+}
+```
+
+**In the `/api/metrics` handler:**
+Add aggregation logic to include the new metric in the JSON response:
+```go
+// Query the new metric
+newMetricData := appMetrics.queryMetrics("new_metric_name", from, to)
+// Add to response struct
+```
+
+**In the `/metrics` Prometheus handler:**
+Add exposition format output for the new metric:
+```go
+fmt.Fprintf(&buf, "# HELP webtraffik_new_metric_name Description\n")
+fmt.Fprintf(&buf, "# TYPE webtraffik_new_metric_name counter\n")
+// Add data lines
+```
+
+**Call the new record method** from the appropriate location:
+- For connection-related metrics: add to `handleCapture()` in `main.go`
+- For ban-related metrics: add to ban handlers in `ratelimit.go`
+- For custom events: call from wherever the event occurs
+
+The metrics system will automatically:
+- Flush dirty counters to SQLite every 5 seconds
+- Persist metrics across restarts
+- Aggregate into hourly buckets
+- Include in backfill operations
+
 ---
 
 ## Notes for Agents
@@ -456,3 +622,4 @@ Do not change one file without the other.
 - The `tcpServices` slice in `services.go` owns all non-HTTP TCP emulation. Each entry has a `Banner()` func that returns the bytes sent immediately after accepting the connection. The `udpServicePorts` slice owns all UDP capture ports. Neither uses `net/http` — they use raw `net.Listener` / `net.ListenPacket`.
 - When adding or removing services in `services.go`, update `SERVICES.md` to reflect the change. This file is the human-readable reference for all emulated services.
 - When adding or removing services in `services.go`, also update the `PORT_SERVICE_NAMES` map in `static/index.html` to add or remove the corresponding port→name entry. This keeps the frontend log and panel labels in sync with the backend.
+- The metrics system (`metrics.go`) maintains in-memory hourly-bucketed counters that are flushed to SQLite every 5 seconds. The flush loop is non-blocking — it snapshots dirty counters under lock, then writes to the database without holding the lock. Metrics survive restarts via SQLite persistence, and `backfillMetrics()` is called automatically on first run to aggregate existing events. Never add blocking operations to `Record()` methods — they are called from the capture path and must be fast.
