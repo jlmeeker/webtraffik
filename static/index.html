@@ -847,11 +847,49 @@
       .center([0, 0])
       .translate([0, 0]);
 
-    const topLeft = magProjection([lonMin, latMax]);
-    const bottomRight = magProjection([lonMax, latMin]);
+    let topLeft = magProjection([lonMin, latMax]);
+    let bottomRight = magProjection([lonMax, latMin]);
 
-    const projW = Math.abs(bottomRight[0] - topLeft[0]);
-    const projH = Math.abs(bottomRight[1] - topLeft[1]);
+    let projW = Math.abs(bottomRight[0] - topLeft[0]);
+    let projH = Math.abs(bottomRight[1] - topLeft[1]);
+
+    // Mercator inflates high-latitude regions vertically. If the projected
+    // aspect ratio is far from the magnifier's aspect ratio, the arc gets
+    // squished into a narrow band and appears vertical when it should be
+    // horizontal (or vice versa). Fix by expanding the bbox in the
+    // deficient dimension so the projected shape roughly matches the
+    // magnifier's aspect ratio.
+    const magAspect = MAG_W / MAG_H; // ~1.4
+    const projAspect = projH > 0 ? projW / projH : magAspect;
+    let bboxAdjusted = false;
+    if (projAspect < magAspect * 0.5) {
+      // Too tall/narrow — widen the longitude bbox
+      const targetProjW = projH * magAspect;
+      const lonCenter = (lonMin + lonMax) / 2;
+      // Mercator x is linear in lon, so ratio works directly
+      const factor = targetProjW / projW;
+      const halfSpan = ((lonMax - lonMin) * factor) / 2;
+      lonMin = Math.max(-180, lonCenter - halfSpan);
+      lonMax = Math.min(180, lonCenter + halfSpan);
+      bboxAdjusted = true;
+    } else if (projAspect > magAspect * 2) {
+      // Too wide/short — heighten the latitude bbox
+      const targetProjH = projW / magAspect;
+      const latCenter = (latMin + latMax) / 2;
+      // Mercator y is non-linear in lat, so use iterative widening
+      const factor = targetProjH / projH;
+      const halfSpan = ((latMax - latMin) * factor) / 2;
+      latMin = Math.max(-85, latCenter - halfSpan);
+      latMax = Math.min(85, latCenter + halfSpan);
+      bboxAdjusted = true;
+    }
+    if (bboxAdjusted) {
+      // Re-project with adjusted bbox
+      topLeft = magProjection([lonMin, latMax]);
+      bottomRight = magProjection([lonMax, latMin]);
+      projW = Math.abs(bottomRight[0] - topLeft[0]);
+      projH = Math.abs(bottomRight[1] - topLeft[1]);
+    }
 
     // Scale to fit the inset with some margin
     const margin = 0.85; // use 85% of inset area
