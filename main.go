@@ -254,6 +254,11 @@ func main() {
 		go startLightningListener()
 	}
 
+	// Start VNC (RFB) clean handshake emulator
+	if !disabledPorts[vncPort] {
+		go startVNCListener()
+	}
+
 	// Start dashboard server on 8999
 	go startDashboardServer()
 

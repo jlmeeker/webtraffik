@@ -498,14 +498,9 @@ var tcpServices = []serviceEntry{
 			return append(hdr, bsonDoc...)
 		},
 	},
-	{
-		Port: 5900, // VNC
-		Banner: func() []byte {
-			// RFB (Remote Framebuffer) protocol version handshake.
-			// Server announces highest supported version; most VNC servers send 3.8.
-			return []byte("RFB 003.008\n")
-		},
-	},
+	// Port 5900 (VNC) is handled by startVNCListener() — it completes the
+	// full RFB version + security handshake so clients get a clean refusal
+	// instead of retrying endlessly after a mid-handshake disconnect.
 	{
 		Port: 8443, // HTTPS alt
 		Banner: func() []byte {
@@ -836,6 +831,74 @@ func extractConnIP(addr net.Addr) string {
 		}
 		return host
 	}
+}
+
+// ── VNC (RFB) clean handshake emulator ───────────────────────────────────────
+//
+// Without completing the RFB handshake, clients see a mid-handshake disconnect
+// after the version exchange and retry aggressively. This listener completes
+// the minimal handshake so the client gets a clean "access denied":
+//
+//   1. Server → Client: "RFB 003.008\n"       (protocol version)
+//   2. Client → Server: "RFB 003.0xx\n"       (client version — captured)
+//   3. Server → Client: \x01\x01              (1 security type: None)
+//   4. Server → Client: \x00\x00\x00\x01     (SecurityResult: failed)
+//
+// The client receives a proper rejection and does not retry.
+
+const vncPort = 5900
+
+func startVNCListener() {
+	portStr := fmt.Sprintf("%d", vncPort)
+	addr := fmt.Sprintf(":%d", vncPort)
+
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Printf("VNC listener on %s failed: %v", addr, err)
+		return
+	}
+	log.Printf("VNC listener on %s", addr)
+
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			log.Printf("VNC accept on %s: %v", addr, err)
+			time.Sleep(time.Second)
+			continue
+		}
+		go func(c net.Conn) {
+			defer c.Close()
+			srcIP := extractConnIP(c.RemoteAddr())
+			if appLimiter.IsBanned(srcIP, portStr) {
+				return
+			}
+			clientData := handleVNCConn(c)
+			go handleCapture(srcIP, portStr, "tcp", clientData)
+		}(conn)
+	}
+}
+
+func handleVNCConn(c net.Conn) []byte {
+	c.SetDeadline(time.Now().Add(5 * time.Second))
+
+	// Step 1: Server sends protocol version
+	if _, err := c.Write([]byte("RFB 003.008\n")); err != nil {
+		return nil
+	}
+
+	// Step 2: Read client version (12 bytes)
+	clientVersion := make([]byte, 12)
+	if _, err := io.ReadFull(c, clientVersion); err != nil {
+		return nil
+	}
+
+	// Step 3: Offer security type "None" (type 1)
+	c.Write([]byte{1, 1}) //nolint:errcheck
+
+	// Step 4: Send SecurityResult — failed
+	c.Write([]byte{0x00, 0x00, 0x00, 0x01}) //nolint:errcheck
+
+	return clientVersion
 }
 
 // ── Lightning Network P2P (BOLT #8) emulator ─────────────────────────────────

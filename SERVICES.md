@@ -407,11 +407,20 @@ Port 5555 is the network ADB port (vs. USB ADB) and is one of the most dangerous
 
 #### Port 5900 — VNC (Virtual Network Computing)
 
-**Banner**: `RFB 003.008\n`
+**Protocol Flow**: Complete RFB handshake with clean rejection (dedicated listener, like Lightning and Minecraft)
 
-**Purpose**: RFB (Remote Framebuffer) protocol version handshake for VNC 3.8.
+VNC now implements a full minimal RFB protocol handshake sequence instead of just a banner:
 
-**Why it's convincing**: All VNC servers start by announcing their RFB protocol version. This is the standard greeting for VNC 3.8 (the most widely supported version). Scanners will recognize this as a real VNC server.
+1. **Server → Client**: Protocol version — `RFB 003.008\n` (VNC 3.8)
+2. **Client → Server**: Client version string (12 bytes) — **captured as client data**
+3. **Server → Client**: Security types — `\x01\x01` (1 type: "None"/type 1)
+4. **Server → Client**: SecurityResult — `\x00\x00\x00\x01` (failed/access denied)
+
+**Purpose**: Completes the VNC authentication handshake far enough to give the client a proper "access denied" rejection instead of dropping the connection mid-handshake.
+
+**Why it's convincing**: All VNC servers start by announcing their RFB protocol version (3.8 is the most widely supported). The security negotiation sequence exactly matches real VNC server behavior — offering "None" authentication and then immediately failing with SecurityResult:1 (failed) is the standard way VNC servers reject unauthorized connections. Scanners and VNC clients will recognize this as a real VNC server with access control enabled.
+
+**Why this changed**: Previously VNC was a simple banner service that sent `RFB 003.008\n` and immediately closed the connection after reading the client's response. This caused VNC clients to retry aggressively because the connection dropped mid-handshake (after version exchange but before security negotiation). By completing the security negotiation phase and sending a proper "access denied" response, clients now receive a clean protocol-level rejection and stop retrying.
 
 ---
 
