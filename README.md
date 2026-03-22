@@ -12,13 +12,13 @@ A real-time network traffic sensor and visualization tool that captures incoming
 - **Multi-Protocol Support**: Captures HTTP traffic (17 common ports), TCP service emulation (14 services including SSH, FTP, databases), and UDP traffic (DNS)
 - **Automatic Geolocation**: MaxMind GeoLite2 City database with `rgeo` fallback for enhanced city-level accuracy
 - **Dark-Themed D3.js Map**: Beautiful Natural Earth projection with optimized arc animations
-- **Corner Overlay Panels**: Four transparent panels showing Traffic by Port, Top Services, Traffic by Country, and Traffic by IP — overlaid on the map for an unobstructed view
+- **Corner Overlay Panels**: Two transparent panels showing Top Services and Banned IPs — overlaid on the map for an unobstructed view
 - **Historical Replay**: New dashboard connections receive the last 1000 events as faded static dots
 - **History Page**: Query and chart all stored connection events by any combination of country, IP, port, service, and date range — with 7 interactive Chart.js charts (timeline, per-port/country timelines, top ports, top countries, top services doughnut, top source IPs)
 - **SQLite Persistence**: Events survive service restarts; stored in `/var/lib/webtraffik/events.db`
 - **Port-Based Color Coding**: Each monitored port gets a unique color in the legend and arc animations
 - **Map Dot Tooltips**: Hovering over any source dot shows "City, CC" for that connection
-- **Performance Optimized**: Gradient pooling, reduced path sampling, arc lifecycle capping, decoupled sidebar rendering with requestIdleCallback
+- **Performance Optimized**: Gradient pooling, reduced path sampling, arc lifecycle capping, decoupled panel rendering with requestIdleCallback
 - **Selective Port Disabling**: Skip individual ports at startup with `-disable-ports=22,80,443` to avoid conflicting with existing services on the host
 - **Automated nftables Firewall**: Auto-configured on install — restricts management ports (SSH, dashboard) to your subnet while exposing capture ports to the internet
 - **Zero Configuration**: Auto-downloads GeoLite2 database from GitHub mirror on first run (no license key needed)
@@ -51,11 +51,9 @@ The dashboard shows:
 - A full-width world map with your server location marked in cyan
 - Animated arcs from visitor IPs to your server (optimized with gradient pooling and 20-point path sampling)
 - Persistent dots with mouseover tooltips showing "City, CC"
-- Four corner overlay panels on the map:
-  - **Top-left**: Traffic by Port (live port statistics sorted by count)
-  - **Top-right**: Top Services (service names with bar charts showing relative traffic)
-  - **Bottom-left**: Traffic by Country (top 10 countries by connection count)
-  - **Bottom-right**: Traffic by IP (top 10 source IPs by connection count)
+- Two corner overlay panels on the map:
+  - **Top-left**: Top Services (service names with bar charts showing relative traffic)
+  - **Top-right**: Banned IPs (currently banned source IPs)
 - A scrolling log panel at the bottom showing all connections with timestamps, geolocation details, and service names (e.g., `:22 SSH`, `:3306 MySQL`); click any entry to replay its arc on the map
 
 ## History Page
@@ -296,7 +294,7 @@ Dashboard receives event:
 - **Arcs**: Great-circle paths using `d3.geoInterpolate` with 20-point sampling (optimized from 60), animated with `stroke-dashoffset`
 - **Dots**: Animated circles; persistent after arc completes; no glow filters on dots (only on self-dot)
 - **Tooltips**: Mouseover on any source dot shows "City, CC" (or just CC if city is unavailable)
-- **Corner Panels**: Four transparent overlay panels with top-10 statistics, rendered via `requestIdleCallback` on a 2-second interval (decoupled from event processing)
+- **Corner Panels**: Two transparent overlay panels (Top Services and Banned IPs), rendered via `requestIdleCallback` on a 2-second interval (decoupled from event processing)
 - **Log Panel**: Scrolling panel showing timestamp, source IP, city, country, port with service name (e.g., `:22 SSH`, `:3306 MySQL`), and protocol; capped at 200 entries; click any entry to replay its arc on the map
 - **Performance**: Gradient pooling (reuses SVG gradients by color pair), arc count capped at 150, dot count capped at 1000, adaptive flood control (batches events above 10/sec)
 
