@@ -372,7 +372,7 @@
   }
 
   function applyFilters() {
-    let filtered = rawEvents;
+    let filtered = rawEvents.filter(ev => ev.client_data);
     const svc = serviceSel.value;
     if (svc && servicePortMap[svc]) {
       const ports = servicePortMap[svc];
