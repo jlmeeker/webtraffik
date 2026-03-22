@@ -6,57 +6,12 @@
   <title>webTraffik — History</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+  <link rel="stylesheet" href="/theme.css" />
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-
-    body {
-      background: #0a0e1a;
-      color: #c8d8f0;
-      font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-    }
-
-    header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 8px 18px;
-      background: rgba(12, 20, 40, 0.95);
-      border-bottom: 1px solid #1e3a5f;
-      flex-shrink: 0;
-      z-index: 10;
-    }
-
-    header h1 {
-      font-size: 1.05rem;
-      font-weight: 600;
-      color: #4fc3f7;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-    }
-
-    nav a {
-      color: #78909c;
-      text-decoration: none;
-      font-size: 0.75rem;
-      margin-left: 16px;
-      letter-spacing: 0.05em;
-      transition: color 0.2s;
-    }
-    nav a:hover, nav a.active { color: #4fc3f7; }
-
-    #self-info {
-      font-size: 0.72rem;
-      color: #78909c;
-    }
-    #self-info span { color: #80cbc4; }
-
     /* ── Filter panel ── */
     #filter-panel {
-      background: rgba(8, 15, 30, 0.9);
-      border-bottom: 1px solid #1e3a5f;
+      background: rgba(14, 24, 46, 0.92);
+      border-bottom: 1px solid #2a4a70;
       padding: 14px 20px;
     }
 
@@ -64,7 +19,7 @@
       font-size: 0.7rem;
       text-transform: uppercase;
       letter-spacing: 0.1em;
-      color: #546e7a;
+      color: #6a8aaa;
       margin-bottom: 12px;
     }
 
@@ -83,17 +38,17 @@
 
     .filter-group label {
       font-size: 0.65rem;
-      color: #546e7a;
+      color: #6a8aaa;
       text-transform: uppercase;
       letter-spacing: 0.08em;
     }
 
     .filter-group input,
     .filter-group select {
-      background: #0d1a2e;
-      border: 1px solid #1e3a5f;
+      background: #0f1e35;
+      border: 1px solid #2a4a70;
       border-radius: 4px;
-      color: #c8d8f0;
+      color: #dce8f8;
       font-family: inherit;
       font-size: 0.78rem;
       padding: 5px 9px;
@@ -107,10 +62,10 @@
       border-color: #4fc3f7;
     }
 
-    .filter-group input::placeholder { color: #37526a; }
+    .filter-group input::placeholder { color: #3d6080; }
 
     .filter-group select option {
-      background: #0d1a2e;
+      background: #0f1e35;
     }
 
     #btn-query {
@@ -128,13 +83,13 @@
       align-self: flex-end;
     }
     #btn-query:hover { background: #1976d2; }
-    #btn-query:disabled { background: #1e3a5f; color: #546e7a; cursor: default; }
+    #btn-query:disabled { background: #2a4a70; color: #6a8aaa; cursor: default; }
 
     #btn-clear {
       background: transparent;
-      border: 1px solid #1e3a5f;
+      border: 1px solid #2a4a70;
       border-radius: 4px;
-      color: #546e7a;
+      color: #6a8aaa;
       cursor: pointer;
       font-family: inherit;
       font-size: 0.78rem;
@@ -142,7 +97,7 @@
       transition: all 0.2s;
       align-self: flex-end;
     }
-    #btn-clear:hover { border-color: #37526a; color: #78909c; }
+    #btn-clear:hover { border-color: #3d6080; color: #8eaac4; }
 
     /* ── Status bar ── */
     #status-bar {
@@ -150,10 +105,10 @@
       align-items: center;
       gap: 16px;
       padding: 8px 20px;
-      background: rgba(6, 12, 24, 0.7);
-      border-bottom: 1px solid #12243a;
+      background: rgba(14, 22, 42, 0.80);
+      border-bottom: 1px solid #1e3550;
       font-size: 0.7rem;
-      color: #546e7a;
+      color: #6a8aaa;
       min-height: 34px;
     }
 
@@ -167,12 +122,9 @@
 
     .spinner {
       width: 12px; height: 12px;
-      border: 2px solid #1e3a5f;
+      border: 2px solid #2a4a70;
       border-top-color: #4fc3f7;
-      border-radius: 50%;
-      animation: spin 0.7s linear infinite;
     }
-    @keyframes spin { to { transform: rotate(360deg); } }
 
     /* ── Main content ── */
     #content {
@@ -188,7 +140,7 @@
       align-items: center;
       justify-content: center;
       height: 300px;
-      color: #2a4060;
+      color: #3a5878;
       font-size: 0.85rem;
       letter-spacing: 0.04em;
     }
@@ -217,8 +169,8 @@
     }
 
     .chart-card {
-      background: rgba(8, 15, 30, 0.85);
-      border: 1px solid #1e3a5f;
+      background: rgba(14, 24, 46, 0.88);
+      border: 1px solid #2a4a70;
       border-radius: 6px;
       padding: 14px 16px;
     }
@@ -227,9 +179,9 @@
       font-size: 0.65rem;
       text-transform: uppercase;
       letter-spacing: 0.1em;
-      color: #546e7a;
+      color: #6a8aaa;
       margin-bottom: 12px;
-      border-bottom: 1px solid #122030;
+      border-bottom: 1px solid #1a2f48;
       padding-bottom: 8px;
     }
 
@@ -247,7 +199,7 @@
       font-size: 0.65rem;
       text-transform: uppercase;
       letter-spacing: 0.1em;
-      color: #546e7a;
+      color: #6a8aaa;
       margin-bottom: 10px;
     }
 
@@ -260,8 +212,8 @@
     .summary-table th {
       text-align: left;
       padding: 5px 10px;
-      border-bottom: 1px solid #1e3a5f;
-      color: #546e7a;
+      border-bottom: 1px solid #2a4a70;
+      color: #6a8aaa;
       font-weight: normal;
       text-transform: uppercase;
       letter-spacing: 0.06em;
@@ -270,13 +222,13 @@
 
     .summary-table td {
       padding: 4px 10px;
-      border-bottom: 1px solid #0d1a2e;
-      color: #90a4ae;
+      border-bottom: 1px solid #0f1e35;
+      color: #a0bcd8;
     }
 
-    .summary-table td.highlight { color: #e0e0e0; }
+    .summary-table td.highlight { color: #dce8f8; }
     .summary-table td.num { color: #ffb74d; text-align: right; }
-    .summary-table tr:hover td { background: rgba(30, 58, 95, 0.2); }
+    .summary-table tr:hover td { background: rgba(42, 74, 112, 0.2); }
   </style>
 </head>
 <body>

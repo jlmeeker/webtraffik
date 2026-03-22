@@ -4,44 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>webTraffik</title>
+  <link rel="stylesheet" href="/theme.css" />
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-
+    /* index.html overrides body for full-viewport layout */
     body {
-      background: #111827;
-      color: #dce8f8;
-      font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
       height: 100vh;
       overflow: hidden;
-      display: flex;
-      flex-direction: column;
     }
-
-    header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 8px 18px;
-      background: rgba(18, 30, 58, 0.97);
-      border-bottom: 1px solid #2a4a70;
-      flex-shrink: 0;
-      z-index: 10;
-    }
-
-    header h1 {
-      font-size: 1.05rem;
-      font-weight: 600;
-      color: #4fc3f7;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-    }
-
-    #self-info {
-      font-size: 0.72rem;
-      color: #8eaac4;
-    }
-
-    #self-info span { color: #80cbc4; }
 
     #stats {
       font-size: 0.72rem;
@@ -152,7 +121,6 @@
     }
 
     .corner-panel::-webkit-scrollbar { width: 3px; }
-    .corner-panel::-webkit-scrollbar-thumb { background: #2a4a70; }
 
     .top-left     { top: 10px; left: 10px; }
     .top-right    { top: 10px; right: 10px; }
@@ -237,14 +205,8 @@
     }
 
     #log-panel::-webkit-scrollbar { width: 4px; }
-    #log-panel::-webkit-scrollbar-thumb { background: #2a4a70; }
 
     .log-entry {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      border-bottom: 1px solid rgba(42,74,112,0.4);
-      padding: 2px 0;
       animation: fadeIn 0.3s ease;
       cursor: pointer;
     }
@@ -286,14 +248,6 @@
       padding: 6px 10px;
       font-style: italic;
     }
-
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; } }
-
-    .log-time  { color: #6a8aaa; min-width: 80px; }
-    .log-src   { color: #ffb74d; flex: 1; }
-    .log-arrow { color: #5a7a9a; }
-    .log-port  { color: #4fc3f7; }
-    .log-proto { color: #8eaac4; font-size: 0.62rem; min-width: 28px; text-align: right; }
 
     #ws-status {
       width: 8px; height: 8px;
