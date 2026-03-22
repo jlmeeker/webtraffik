@@ -80,6 +80,32 @@
       align-items: center;
     }
 
+    #toolbar .filters {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    #toolbar .filters label {
+      font-size: 0.65rem;
+      color: #546e7a;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    #toolbar .filters select {
+      background: #0d1a2e;
+      border: 1px solid #1e3a5f;
+      border-radius: 4px;
+      color: #c8d8f0;
+      font-family: inherit;
+      font-size: 0.72rem;
+      padding: 4px 8px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    #toolbar .filters select:focus { border-color: #4fc3f7; }
+
     .btn {
       background: #1e3a5f;
       border: 1px solid #2a5080;
@@ -199,7 +225,18 @@
 
 <div id="toolbar">
   <div class="info">
-    Ring buffer: <span id="event-count">0</span> events (last ~1000)
+    Showing <span id="event-count">0</span> of <span id="total-count">0</span> events
+  </div>
+  <div class="filters">
+    <label>Service:</label>
+    <select id="filter-service"><option value="">All</option></select>
+    <label>Limit:</label>
+    <select id="filter-limit">
+      <option value="100">100</option>
+      <option value="250">250</option>
+      <option value="500">500</option>
+      <option value="1000" selected>1000</option>
+    </select>
   </div>
   <div class="actions">
     <button class="btn btn-expand" id="expand-all-btn">Expand All Data</button>
@@ -244,10 +281,15 @@
   const loadingEl = document.getElementById('loading');
   const emptyEl = document.getElementById('empty-state');
   const countEl = document.getElementById('event-count');
+  const totalEl = document.getElementById('total-count');
   const refreshBtn = document.getElementById('refresh-btn');
   const expandAllBtn = document.getElementById('expand-all-btn');
+  const serviceSel = document.getElementById('filter-service');
+  const limitSel = document.getElementById('filter-limit');
 
   let allExpanded = false;
+  let rawEvents = []; // full snapshot from /api/recent
+  let servicePortMap = {}; // service name -> Set of port strings
 
   // Decode hex string into hex+ASCII dump (plain text, safe for textContent)
   function hexPreview(hexStr) {
@@ -329,12 +371,31 @@
     return row;
   }
 
+  function applyFilters() {
+    let filtered = rawEvents;
+    const svc = serviceSel.value;
+    if (svc && servicePortMap[svc]) {
+      const ports = servicePortMap[svc];
+      filtered = filtered.filter(ev => ports.has(ev.dst_port));
+    }
+    const limit = parseInt(limitSel.value, 10) || 1000;
+    // Take the most recent N (events are oldest-first from API)
+    if (filtered.length > limit) {
+      filtered = filtered.slice(filtered.length - limit);
+    }
+    render(filtered);
+  }
+
   function render(events) {
     listEl.textContent = '';
     countEl.textContent = events.length;
+    totalEl.textContent = rawEvents.length;
 
     if (events.length === 0) {
       emptyEl.style.display = 'block';
+      emptyEl.textContent = rawEvents.length === 0
+        ? 'No events in the ring buffer yet.'
+        : 'No events match the current filter.';
       return;
     }
     emptyEl.style.display = 'none';
@@ -355,9 +416,10 @@
     try {
       const resp = await fetch('/api/recent');
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
-      const events = await resp.json();
-      render(events);
+      rawEvents = await resp.json();
+      applyFilters();
     } catch (err) {
+      rawEvents = [];
       listEl.textContent = '';
       emptyEl.textContent = 'Failed to load events: ' + err.message;
       emptyEl.style.display = 'block';
@@ -367,7 +429,26 @@
     }
   }
 
+  // Populate service dropdown from /api/services
+  async function loadServices() {
+    try {
+      const resp = await fetch('/api/services');
+      const svcs = await resp.json();
+      svcs.forEach(s => {
+        servicePortMap[s.name] = new Set(s.ports.map(String));
+        const opt = document.createElement('option');
+        opt.value = s.name;
+        opt.textContent = s.name;
+        serviceSel.appendChild(opt);
+      });
+    } catch (e) {
+      // dropdown stays with just "All"
+    }
+  }
+
   refreshBtn.addEventListener('click', fetchRecent);
+  serviceSel.addEventListener('change', applyFilters);
+  limitSel.addEventListener('change', applyFilters);
 
   expandAllBtn.addEventListener('click', () => {
     allExpanded = !allExpanded;
@@ -380,8 +461,8 @@
     });
   });
 
-  // Load on page open
-  fetchRecent();
+  // Load services then fetch events
+  loadServices().then(fetchRecent);
 })();
 </script>
 </body>
