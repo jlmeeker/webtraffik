@@ -175,10 +175,21 @@ func main() {
 		log.Fatalf("Failed to open event database: %v", err)
 	}
 	defer appDB.close()
+	defer func() {
+		if appMetrics != nil {
+			appMetrics.close()
+		}
+	}()
 
 	// Wire the rate-limiter to the DB so bans are persisted and survive restarts.
 	appLimiter.SetDB(appDB)
 	appLimiter.LoadBans(appDB)
+
+	// Initialize metrics: backfill from events if needed, then start cache.
+	if err := appDB.backfillMetrics(); err != nil {
+		log.Printf("Warning: metrics backfill failed: %v", err)
+	}
+	appMetrics = newMetricsCache(appDB)
 
 	// Seed the in-memory ring buffer from persisted history so new clients
 	// get replayed events immediately while the DB query on /ws is also live.
@@ -345,6 +356,7 @@ func handleCapture(srcIP, dstPort, protocol string, clientData []byte) {
 	}
 	appHub.broadcast(ev)
 	appDB.insert(ev)
+	appMetrics.Record(ev)
 
 	evJSON, _ := json.Marshal(ev)
 	log.Printf("Connection: %s", string(evJSON))
@@ -492,6 +504,10 @@ func startDashboardServer() {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(result)
 	})
+
+	// Metrics endpoints
+	mux.HandleFunc("/api/metrics", HandleMetrics)
+	mux.HandleFunc("/metrics", HandleMetricsPrometheus)
 
 	// WebSocket endpoint
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {

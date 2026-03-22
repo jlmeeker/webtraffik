@@ -2,8 +2,11 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -84,6 +87,15 @@ func createSchema(db *sql.DB) error {
 			expires_at TEXT NOT NULL,
 			PRIMARY KEY (ip, port)
 		);
+
+		CREATE TABLE IF NOT EXISTS metrics (
+			name   TEXT NOT NULL,
+			labels TEXT NOT NULL DEFAULT '',
+			bucket TEXT NOT NULL,
+			value  REAL NOT NULL DEFAULT 0,
+			PRIMARY KEY (name, labels, bucket)
+		);
+		CREATE INDEX IF NOT EXISTS idx_metrics_bucket ON metrics(bucket);
 	`)
 	if err != nil {
 		return err
@@ -402,4 +414,207 @@ func (e *eventDB) close() {
 	if err := e.db.Close(); err != nil {
 		log.Printf("DB close error: %v", err)
 	}
+}
+
+// ── Metrics persistence ─────────────────────────────────────────────────────
+
+// metricsRow is a single row to upsert into the metrics table.
+type metricsRow struct {
+	Name   string
+	Labels string
+	Bucket string
+	Delta  int64 // added to existing value (for counters)
+	Value  int64 // used by queryMetrics results
+	AbsMax bool  // if true, use MAX(value, ?) instead of value + ?
+}
+
+// upsertMetrics writes a batch of metric deltas to SQLite in a single transaction.
+// For normal counters it adds the delta to the existing value.
+// For AbsMax rows (unique_ips) it sets value = MAX(existing, new).
+func (e *eventDB) upsertMetrics(batch []metricsRow) error {
+	tx, err := e.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+
+	stmtAdd, err := tx.Prepare(`
+		INSERT INTO metrics (name, labels, bucket, value)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(name, labels, bucket) DO UPDATE SET value = value + excluded.value`)
+	if err != nil {
+		tx.Rollback()
+		return fmt.Errorf("prepare add stmt: %w", err)
+	}
+	defer stmtAdd.Close()
+
+	stmtMax, err := tx.Prepare(`
+		INSERT INTO metrics (name, labels, bucket, value)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(name, labels, bucket) DO UPDATE SET value = MAX(value, excluded.value)`)
+	if err != nil {
+		tx.Rollback()
+		return fmt.Errorf("prepare max stmt: %w", err)
+	}
+	defer stmtMax.Close()
+
+	for _, row := range batch {
+		if row.AbsMax {
+			if _, err := stmtMax.Exec(row.Name, row.Labels, row.Bucket, row.Delta); err != nil {
+				log.Printf("metrics upsert (max) error: %v", err)
+			}
+		} else {
+			if _, err := stmtAdd.Exec(row.Name, row.Labels, row.Bucket, row.Delta); err != nil {
+				log.Printf("metrics upsert (add) error: %v", err)
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	return nil
+}
+
+// queryMetrics returns raw metric rows, optionally filtered by time range.
+func (e *eventDB) queryMetrics(mq MetricsQuery) ([]metricsRow, error) {
+	where := []string{}
+	args := []interface{}{}
+
+	if mq.From != "" {
+		where = append(where, "bucket >= ?")
+		args = append(args, mq.From)
+	}
+	if mq.To != "" {
+		where = append(where, "bucket < ?")
+		args = append(args, mq.To)
+	}
+
+	query := `SELECT name, labels, bucket, value FROM metrics`
+	if len(where) > 0 {
+		query += " WHERE " + strings.Join(where, " AND ")
+	}
+	query += " ORDER BY bucket ASC"
+
+	rows, err := e.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []metricsRow
+	for rows.Next() {
+		var r metricsRow
+		if err := rows.Scan(&r.Name, &r.Labels, &r.Bucket, &r.Value); err != nil {
+			return nil, err
+		}
+		result = append(result, r)
+	}
+	return result, rows.Err()
+}
+
+// backfillMetrics generates metric rows from existing events data.
+// It aggregates events into hourly buckets for connections (by port/protocol/cc)
+// and unique IPs. This is idempotent — it only inserts if the metrics table is empty.
+func (e *eventDB) backfillMetrics() error {
+	// Check if metrics already have data
+	var count int
+	if err := e.db.QueryRow(`SELECT COUNT(*) FROM metrics`).Scan(&count); err != nil {
+		return fmt.Errorf("check metrics count: %w", err)
+	}
+	if count > 0 {
+		log.Printf("Metrics table has %d rows, skipping backfill", count)
+		return nil
+	}
+
+	log.Println("Backfilling metrics from events table...")
+	start := time.Now()
+
+	// 1. Backfill connections: GROUP BY hour bucket, port, protocol, country code
+	connRows, err := e.db.Query(`
+		SELECT
+			strftime('%Y-%m-%dT%H:00:00Z', time) AS bucket,
+			dst_port,
+			protocol,
+			CASE WHEN src_cc = '' THEN 'XX' ELSE src_cc END AS cc,
+			COUNT(*) AS cnt
+		FROM events
+		GROUP BY bucket, dst_port, protocol, cc`)
+	if err != nil {
+		return fmt.Errorf("backfill connections query: %w", err)
+	}
+
+	var batch []metricsRow
+	for connRows.Next() {
+		var bucket, port, protocol, cc string
+		var cnt int64
+		if err := connRows.Scan(&bucket, &port, &protocol, &cc, &cnt); err != nil {
+			connRows.Close()
+			return fmt.Errorf("backfill connections scan: %w", err)
+		}
+		service := portServiceName(port)
+		labels := canonLabels(
+			"cc="+cc,
+			"port="+port,
+			"protocol="+protocol,
+			"service="+service,
+		)
+		batch = append(batch, metricsRow{
+			Name:   metricConnections,
+			Labels: labels,
+			Bucket: bucket,
+			Delta:  cnt,
+		})
+	}
+	connRows.Close()
+
+	// 2. Backfill unique IPs per hour bucket
+	ipRows, err := e.db.Query(`
+		SELECT
+			strftime('%Y-%m-%dT%H:00:00Z', time) AS bucket,
+			COUNT(DISTINCT src_ip) AS uniq
+		FROM events
+		GROUP BY bucket`)
+	if err != nil {
+		return fmt.Errorf("backfill unique_ips query: %w", err)
+	}
+
+	for ipRows.Next() {
+		var bucket string
+		var uniq int64
+		if err := ipRows.Scan(&bucket, &uniq); err != nil {
+			ipRows.Close()
+			return fmt.Errorf("backfill unique_ips scan: %w", err)
+		}
+		batch = append(batch, metricsRow{
+			Name:   metricUniqueIPs,
+			Labels: "",
+			Bucket: bucket,
+			Delta:  uniq,
+			AbsMax: true,
+		})
+	}
+	ipRows.Close()
+
+	if len(batch) == 0 {
+		log.Println("No events to backfill metrics from")
+		return nil
+	}
+
+	// Sort batch for deterministic insert order
+	sort.Slice(batch, func(i, j int) bool {
+		if batch[i].Bucket != batch[j].Bucket {
+			return batch[i].Bucket < batch[j].Bucket
+		}
+		if batch[i].Name != batch[j].Name {
+			return batch[i].Name < batch[j].Name
+		}
+		return batch[i].Labels < batch[j].Labels
+	})
+
+	if err := e.upsertMetrics(batch); err != nil {
+		return fmt.Errorf("backfill upsert: %w", err)
+	}
+
+	log.Printf("Backfilled %d metric rows from events in %v", len(batch), time.Since(start).Round(time.Millisecond))
+	return nil
 }

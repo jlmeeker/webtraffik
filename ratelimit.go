@@ -202,6 +202,9 @@ func (rl *RateLimiter) Record(ip, port string) bool {
 
 	if shouldBan {
 		rl.ban(ip, port)
+		if appMetrics != nil {
+			appMetrics.RecordBan("auto")
+		}
 		return false
 	}
 	return true
@@ -299,6 +302,9 @@ func (rl *RateLimiter) ManualBan(ip, port string) bool {
 	rl.banMu.RUnlock()
 	if already {
 		return false
+	}
+	if appMetrics != nil {
+		appMetrics.RecordBan("manual")
 	}
 	rl.ban(ip, port)
 	return true
