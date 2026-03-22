@@ -45,12 +45,20 @@ type rateState struct {
 }
 
 // RateLimiter tracks per-IP/port event rates and maintains the active ban set.
+//
+// The ban map and rate map are protected by separate mutexes so that the
+// high-frequency ban check (IsBanned / fast path in Record) never contends
+// with the rate-tracking write lock, and vice versa.
 type RateLimiter struct {
-	mu       sync.RWMutex
-	rates    map[ipPortKey]*rateState
-	bans     map[ipPortKey]*BanEntry // active bans, keyed by ip+port
-	db       *eventDB                // for persistence; may be nil during early init
-	onChange func()                  // called when the ban set changes (notify WS clients)
+	banMu sync.RWMutex
+	bans  map[ipPortKey]*BanEntry // active bans, keyed by ip+port
+
+	rateMu sync.Mutex
+	rates  map[ipPortKey]*rateState
+
+	// db and onChange are written once at startup; reads need no lock.
+	db       *eventDB
+	onChange func()
 }
 
 var appLimiter = &RateLimiter{
@@ -61,17 +69,13 @@ var appLimiter = &RateLimiter{
 // SetDB wires the DB reference so the limiter can persist/expire bans.
 // Called once from main() after the DB is opened.
 func (rl *RateLimiter) SetDB(db *eventDB) {
-	rl.mu.Lock()
 	rl.db = db
-	rl.mu.Unlock()
 }
 
 // SetOnChange registers a callback invoked whenever the ban set changes.
 // Used to push fresh ban state to WebSocket clients.
 func (rl *RateLimiter) SetOnChange(fn func()) {
-	rl.mu.Lock()
 	rl.onChange = fn
-	rl.mu.Unlock()
 }
 
 // LoadBans seeds the in-memory ban set from the database.
@@ -83,7 +87,7 @@ func (rl *RateLimiter) LoadBans(db *eventDB) {
 		return
 	}
 	now := time.Now()
-	rl.mu.Lock()
+	rl.banMu.Lock()
 	for _, e := range entries {
 		if e.ExpiresAt.Before(now) {
 			// Already expired — clean it up asynchronously
@@ -97,31 +101,39 @@ func (rl *RateLimiter) LoadBans(db *eventDB) {
 		remaining := time.Until(e.ExpiresAt)
 		go rl.scheduleUnban(key, remaining)
 	}
-	rl.mu.Unlock()
+	rl.banMu.Unlock()
 	log.Printf("ratelimit: loaded %d active ban(s) from DB", len(entries))
 }
 
 // IsBanned returns true if the given IP is currently banned on the given port.
+// Hot path — only acquires a read lock on the ban map.
 func (rl *RateLimiter) IsBanned(ip, port string) bool {
-	rl.mu.RLock()
+	rl.banMu.RLock()
 	_, ok := rl.bans[ipPortKey{ip, port}]
-	rl.mu.RUnlock()
+	rl.banMu.RUnlock()
 	return ok
 }
 
 // Record records an event for ip:port and triggers a ban if the sustained-rate
 // threshold is breached.  Returns false if the IP is already banned (caller
-// should drop the connection/datagram).
+// should drop the connection).
+//
+// The ban check uses banMu (read lock, non-contending).
+// The rate tracking uses rateMu (write lock, separate from banMu so ban checks
+// on other goroutines are never blocked by rate bookkeeping).
 func (rl *RateLimiter) Record(ip, port string) bool {
 	key := ipPortKey{ip, port}
 
-	rl.mu.Lock()
-
-	// Fast path: already banned.
-	if _, banned := rl.bans[key]; banned {
-		rl.mu.Unlock()
+	// Fast ban check — read lock only, does not block other readers.
+	rl.banMu.RLock()
+	_, banned := rl.bans[key]
+	rl.banMu.RUnlock()
+	if banned {
 		return false
 	}
+
+	// Rate tracking — write lock on the rate map only.
+	rl.rateMu.Lock()
 
 	now := time.Now()
 	st := rl.rates[key]
@@ -140,29 +152,31 @@ func (rl *RateLimiter) Record(ip, port string) bool {
 	st.timestamps = st.timestamps[i:]
 
 	currentRate := len(st.timestamps) // events in the last second
+	shouldBan := false
 
 	if currentRate > rateThreshold {
-		// Rate is high — record or extend the "high since" marker.
 		if st.highSince.IsZero() {
 			st.highSince = now
 		}
 		if time.Since(st.highSince) >= rateSustainWindow {
-			// Sustained abuse — release lock before calling ban (which locks internally).
-			rl.mu.Unlock()
-			rl.ban(ip, port)
-			return false
+			shouldBan = true
+			delete(rl.rates, key) // clear rate state before releasing lock
 		}
 	} else {
-		// Rate is back below threshold — reset the sustained-high timer.
 		st.highSince = time.Time{}
 	}
 
-	rl.mu.Unlock()
+	rl.rateMu.Unlock()
+
+	if shouldBan {
+		rl.ban(ip, port)
+		return false
+	}
 	return true
 }
 
 // ban creates a BanEntry for ip:port, persists it to the DB, and schedules
-// automatic removal after banCooldown.  Must NOT be called with rl.mu held.
+// automatic removal after banCooldown.  Must NOT be called with any lock held.
 func (rl *RateLimiter) ban(ip, port string) {
 	key := ipPortKey{ip, port}
 	now := time.Now()
@@ -174,34 +188,30 @@ func (rl *RateLimiter) ban(ip, port string) {
 		ExpiresAt: now.Add(banCooldown),
 	}
 
-	rl.mu.Lock()
+	rl.banMu.Lock()
 	// Double-check: another goroutine may have banned this IP already.
 	if _, exists := rl.bans[key]; exists {
-		rl.mu.Unlock()
+		rl.banMu.Unlock()
 		return
 	}
 	rl.bans[key] = entry
-	// Clear rate state — no longer needed.
-	delete(rl.rates, key)
-	onChange := rl.onChange
-	db := rl.db
-	rl.mu.Unlock()
+	rl.banMu.Unlock()
 
 	log.Printf("ratelimit: BANNED %s on port %s (%s) until %s",
 		ip, port, entry.Service, entry.ExpiresAt.UTC().Format(time.RFC3339))
 
 	// Persist to DB (non-blocking).
-	if db != nil {
+	if rl.db != nil {
 		go func() {
-			if err := db.persistBan(entry); err != nil {
+			if err := rl.db.persistBan(entry); err != nil {
 				log.Printf("ratelimit: failed to persist ban for %s:%s: %v", ip, port, err)
 			}
 		}()
 	}
 
 	// Notify listeners (e.g. WebSocket hub).
-	if onChange != nil {
-		go onChange()
+	if rl.onChange != nil {
+		go rl.onChange()
 	}
 
 	// Schedule automatic unban.
@@ -212,37 +222,35 @@ func (rl *RateLimiter) ban(ip, port string) {
 func (rl *RateLimiter) scheduleUnban(key ipPortKey, after time.Duration) {
 	time.Sleep(after)
 
-	rl.mu.Lock()
+	rl.banMu.Lock()
 	entry, exists := rl.bans[key]
 	if !exists {
-		rl.mu.Unlock()
+		rl.banMu.Unlock()
 		return
 	}
 	delete(rl.bans, key)
-	onChange := rl.onChange
-	db := rl.db
-	rl.mu.Unlock()
+	rl.banMu.Unlock()
 
 	log.Printf("ratelimit: UNBANNED %s on port %s (cooldown elapsed)", key.ip, key.port)
 
-	if db != nil {
+	if rl.db != nil {
 		go func() {
-			if err := db.expireBan(entry.IP, entry.Port); err != nil {
+			if err := rl.db.expireBan(entry.IP, entry.Port); err != nil {
 				log.Printf("ratelimit: failed to expire ban for %s:%s: %v", entry.IP, entry.Port, err)
 			}
 		}()
 	}
 
-	if onChange != nil {
-		go onChange()
+	if rl.onChange != nil {
+		go rl.onChange()
 	}
 }
 
 // ActiveBans returns a snapshot of all currently active bans, sorted by
 // BannedAt descending (most-recent first).
 func (rl *RateLimiter) ActiveBans() []BanEntry {
-	rl.mu.RLock()
-	defer rl.mu.RUnlock()
+	rl.banMu.RLock()
+	defer rl.banMu.RUnlock()
 	out := make([]BanEntry, 0, len(rl.bans))
 	for _, e := range rl.bans {
 		out = append(out, *e)
@@ -260,9 +268,9 @@ func (rl *RateLimiter) ActiveBans() []BanEntry {
 // using the same path as an automatic abuse-triggered ban.
 // Returns false if the IP+port is already banned.
 func (rl *RateLimiter) ManualBan(ip, port string) bool {
-	rl.mu.RLock()
+	rl.banMu.RLock()
 	_, already := rl.bans[ipPortKey{ip, port}]
-	rl.mu.RUnlock()
+	rl.banMu.RUnlock()
 	if already {
 		return false
 	}
@@ -275,30 +283,31 @@ func (rl *RateLimiter) ManualBan(ip, port string) bool {
 func (rl *RateLimiter) ManualUnban(ip, port string) bool {
 	key := ipPortKey{ip, port}
 
-	rl.mu.Lock()
+	rl.banMu.Lock()
 	entry, exists := rl.bans[key]
 	if !exists {
-		rl.mu.Unlock()
+		rl.banMu.Unlock()
 		return false
 	}
 	delete(rl.bans, key)
+	rl.banMu.Unlock()
+
 	// Also clear any residual rate state so the clock resets cleanly.
+	rl.rateMu.Lock()
 	delete(rl.rates, key)
-	onChange := rl.onChange
-	db := rl.db
-	rl.mu.Unlock()
+	rl.rateMu.Unlock()
 
-	log.Printf("ratelimit: UNBANNED (manual) %s on port %s", ip, port)
+	log.Printf("ratelimit: UNBANNED (manual) %s on port %s", key.ip, key.port)
 
-	if db != nil {
+	if rl.db != nil {
 		go func() {
-			if err := db.expireBan(entry.IP, entry.Port); err != nil {
-				log.Printf("ratelimit: failed to remove manual unban for %s:%s: %v", ip, port, err)
+			if err := rl.db.expireBan(entry.IP, entry.Port); err != nil {
+				log.Printf("ratelimit: failed to remove manual unban for %s:%s: %v", key.ip, key.port, err)
 			}
 		}()
 	}
-	if onChange != nil {
-		go onChange()
+	if rl.onChange != nil {
+		go rl.onChange()
 	}
 	return true
 }
