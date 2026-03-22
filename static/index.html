@@ -1267,7 +1267,7 @@
   const arcRegistry = new Map();
   const ARC_TTL = 12000;         // ms — idle timeout before arc fades out
   const ARC_REST_OPACITY = 0.18; // resting opacity of persistent arcs
-  const PULSE_DURATION = 700;    // ms — pulse travel time src→dst
+  const PULSE_DURATION = 1200;   // ms — pulse travel time src→dst
   const MAX_PULSES = 80;         // cap concurrent pulse particles
   let activePulses = 0;
 
@@ -1511,24 +1511,12 @@
       totalLen += Math.sqrt(dx * dx + dy * dy);
     }
 
-    // Animate stroke-dash draw-on, then settle to resting opacity.
-    // Named transition 'draw' so a concurrent flashArc() ('flash' transition)
-    // on the same element does not interrupt this animation.
+    // Arc appears immediately at resting opacity — no draw-in flash.
+    // The pulse particle traveling along the arc is the primary visual cue.
     arcPath
-      .attr('stroke-dasharray', totalLen)
-      .attr('stroke-dashoffset', totalLen)
-      .attr('opacity', 1)
-      .transition('draw')
-        .duration(800)
-        .ease(d3.easeQuadInOut)
-        .attr('stroke-dashoffset', 0)
-      .transition('draw')
-        .delay(400)
-        .duration(600)
-        .attr('opacity', ARC_REST_OPACITY)
-      .on('end', function() {
-        d3.select(this).classed('resting', true);
-      });
+      .attr('stroke-dasharray', 'none')
+      .attr('opacity', ARC_REST_OPACITY)
+      .classed('resting', true);
 
     // Source dot — animates in bright, then settles as a persistent faded dot
     const dotR = Math.min(6, 3 + Math.log2(hitCount));
@@ -1568,6 +1556,9 @@
     resetArcTTL(key, entry);
     trackArc(key); // track by registry key, not DOM node
 
+    // Send initial pulse particle along the new arc
+    sendPulse(entry, hitCount);
+
     // Trigger magnifier for short arcs or arcs clipped by zoom
     if (shouldShowMagnifier(srcPt, dstPt)) {
       magShowArc(ev, srcPt, dstPt, c1, c2, hitCount);
@@ -1599,17 +1590,9 @@
     if (idx !== -1) arcRing.splice(idx, 1);
   }
 
-  // ── Flash arc brighter on repeat hit ────────────────────────────────────
+  // ── Update arc on repeat hit (no flash — pulse particle is the cue) ────
   function flashArc(entry) {
-    // Use a named transition ('flash') so it does not interrupt the 'draw'
-    // transition that may still be animating stroke-dashoffset on this element.
-    entry.arcPath
-      .interrupt('flash')
-      .attr('opacity', 0.85)
-      .transition('flash')
-        .duration(600)
-        .attr('opacity', ARC_REST_OPACITY);
-    // Thicken stroke based on cumulative hits
+    // Thicken stroke based on cumulative hits (no opacity flash)
     const sw = arcWidth(Math.min(entry.hitCount, 20));
     entry.arcPath.attr('stroke-width', sw);
   }
@@ -1622,17 +1605,17 @@
     const pts = entry.lineData;
     if (!pts || pts.length < 2) { activePulses--; return; }
 
-    const pulseR = Math.min(5, 2.5 + Math.log2(hitCount) * 0.5);
+    const pulseR = Math.min(8, 4 + Math.log2(hitCount) * 0.8);
     const pulse = pulseGroup.append('circle')
       .attr('class', 'arc-pulse')
       .attr('cx', pts[0][0])
       .attr('cy', pts[0][1])
       .attr('r', pulseR)
       .attr('fill', entry.c1)
-      .attr('opacity', 0.9)
+      .attr('opacity', 0.95)
       .attr('stroke', entry.c1)
-      .attr('stroke-width', pulseR * 0.6)
-      .attr('stroke-opacity', 0.4);
+      .attr('stroke-width', pulseR * 0.8)
+      .attr('stroke-opacity', 0.5);
 
     const duration = PULSE_DURATION;
     const lastIdx = pts.length - 1;
@@ -1650,9 +1633,9 @@
       const y = pts[i][1] + (pts[i2][1] - pts[i][1]) * f;
 
       pulse.attr('cx', x).attr('cy', y);
-      // Fade out over the last 30% of travel
-      if (t > 0.7) {
-        pulse.attr('opacity', 0.9 * (1 - (t - 0.7) / 0.3));
+      // Fade out over the last 20% of travel
+      if (t > 0.8) {
+        pulse.attr('opacity', 0.95 * (1 - (t - 0.8) / 0.2));
       }
 
       if (t >= 1) {
