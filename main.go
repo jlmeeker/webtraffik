@@ -265,6 +265,17 @@ func startCaptureListener(port int) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		srcIP := extractIP(r.RemoteAddr)
+		// Drop banned IPs immediately — hijack the underlying TCP connection
+		// and close it without writing a single byte.
+		if appLimiter.IsBanned(srcIP, portStr) {
+			if hj, ok := w.(http.Hijacker); ok {
+				conn, _, err := hj.Hijack()
+				if err == nil {
+					conn.Close()
+				}
+			}
+			return
+		}
 		// Return a convincing nginx-style 200 with a minimal HTML body.
 		w.Header().Set("Server", "nginx/1.24.0")
 		w.Header().Set("Content-Type", "text/html")
