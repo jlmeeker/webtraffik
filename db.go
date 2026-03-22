@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"log"
 	"path/filepath"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -74,6 +75,15 @@ func createSchema(db *sql.DB) error {
 			dst_cc   TEXT    NOT NULL DEFAULT ''
 		);
 		CREATE INDEX IF NOT EXISTS events_id_desc ON events(id DESC);
+
+		CREATE TABLE IF NOT EXISTS banned_ips (
+			ip         TEXT NOT NULL,
+			port       TEXT NOT NULL,
+			service    TEXT NOT NULL DEFAULT '',
+			banned_at  TEXT NOT NULL,
+			expires_at TEXT NOT NULL,
+			PRIMARY KEY (ip, port)
+		);
 	`)
 	if err != nil {
 		return err
@@ -81,6 +91,55 @@ func createSchema(db *sql.DB) error {
 	// Migrate existing databases that predate the protocol column.
 	_, _ = db.Exec(`ALTER TABLE events ADD COLUMN protocol TEXT NOT NULL DEFAULT 'tcp'`)
 	return nil
+}
+
+// persistBan inserts or replaces a BanEntry in the banned_ips table.
+func (e *eventDB) persistBan(b *BanEntry) error {
+	_, err := e.db.Exec(`
+		INSERT OR REPLACE INTO banned_ips (ip, port, service, banned_at, expires_at)
+		VALUES (?, ?, ?, ?, ?)`,
+		b.IP, b.Port, b.Service,
+		b.BannedAt.UTC().Format(time.RFC3339),
+		b.ExpiresAt.UTC().Format(time.RFC3339),
+	)
+	return err
+}
+
+// expireBan removes a ban record from the database once the cooldown has elapsed.
+func (e *eventDB) expireBan(ip, port string) error {
+	_, err := e.db.Exec(`DELETE FROM banned_ips WHERE ip = ? AND port = ?`, ip, port)
+	return err
+}
+
+// loadActiveBans returns all ban records whose expires_at is in the future.
+func (e *eventDB) loadActiveBans() ([]BanEntry, error) {
+	rows, err := e.db.Query(`
+		SELECT ip, port, service, banned_at, expires_at
+		FROM banned_ips
+		WHERE expires_at > ?`,
+		time.Now().UTC().Format(time.RFC3339),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var bans []BanEntry
+	for rows.Next() {
+		var b BanEntry
+		var bannedAt, expiresAt string
+		if err := rows.Scan(&b.IP, &b.Port, &b.Service, &bannedAt, &expiresAt); err != nil {
+			return nil, err
+		}
+		if t, err := time.Parse(time.RFC3339, bannedAt); err == nil {
+			b.BannedAt = t
+		}
+		if t, err := time.Parse(time.RFC3339, expiresAt); err == nil {
+			b.ExpiresAt = t
+		}
+		bans = append(bans, b)
+	}
+	return bans, rows.Err()
 }
 
 // insert queues a ConnectionEvent for async persistence. If the queue is full
