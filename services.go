@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -498,14 +499,9 @@ var tcpServices = []serviceEntry{
 			return append(hdr, bsonDoc...)
 		},
 	},
-	{
-		Port: 5900, // VNC
-		Banner: func() []byte {
-			// RFB (Remote Framebuffer) protocol version handshake.
-			// Server announces highest supported version; most VNC servers send 3.8.
-			return []byte("RFB 003.008\n")
-		},
-	},
+	// Port 5900 (VNC) is handled by startVNCListener() — it requires a
+	// multi-step RFB handshake to elicit an authentication attempt from
+	// the client, which doesn't fit the send-banner-and-close model.
 	{
 		Port: 8443, // HTTPS alt
 		Banner: func() []byte {
@@ -836,6 +832,117 @@ func extractConnIP(addr net.Addr) string {
 		}
 		return host
 	}
+}
+
+// ── VNC (RFB) authentication handshake emulator ──────────────────────────────
+//
+// Protocol reference: RFC 6143 — The Remote Framebuffer Protocol
+//
+// The RFB handshake proceeds as:
+//   1. Server → Client: ProtocolVersion  "RFB 003.008\n"  (12 bytes)
+//   2. Client → Server: ProtocolVersion  "RFB 003.0xx\n"  (12 bytes)
+//   3. Server → Client: SecurityTypes    [count] [type...]
+//   4. Client → Server: SecurityType     [1 byte — chosen type]
+//   5. Server → Client: VNC Auth Challenge (16 random bytes)
+//   6. Client → Server: VNC Auth Response  (16 bytes — DES-encrypted challenge)
+//   7. Server → Client: SecurityResult     (4 bytes — 0 = OK, 1 = failed)
+//
+// We complete through step 7 (always responding "failed") so that scanners
+// attempting password brute-force send their encrypted auth response, which
+// we capture as client data.
+
+const vncPort = 5900
+
+// startVNCListener binds to port 5900 and emulates the RFB protocol
+// handshake through VNC Authentication to capture auth attempts.
+func startVNCListener() {
+	portStr := fmt.Sprintf("%d", vncPort)
+	addr := fmt.Sprintf(":%d", vncPort)
+
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Printf("VNC listener on %s failed: %v", addr, err)
+		return
+	}
+	log.Printf("VNC listener on %s", addr)
+
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			log.Printf("VNC accept on %s: %v", addr, err)
+			time.Sleep(time.Second)
+			continue
+		}
+		go func(c net.Conn) {
+			defer c.Close()
+			srcIP := extractConnIP(c.RemoteAddr())
+			if appLimiter.IsBanned(srcIP, portStr) {
+				return
+			}
+			clientData := handleVNCConn(c)
+			go handleCapture(srcIP, portStr, "tcp", clientData)
+		}(conn)
+	}
+}
+
+// handleVNCConn processes a single VNC connection through the full RFB
+// authentication handshake. Returns the concatenated client data: the
+// version string + security type choice + auth response (up to 29 bytes).
+func handleVNCConn(c net.Conn) []byte {
+	c.SetDeadline(time.Now().Add(10 * time.Second))
+	var clientData []byte
+
+	// Step 1: Server sends protocol version
+	if _, err := c.Write([]byte("RFB 003.008\n")); err != nil {
+		return nil
+	}
+
+	// Step 2: Client sends protocol version (12 bytes)
+	clientVersion := make([]byte, 12)
+	if _, err := io.ReadFull(c, clientVersion); err != nil {
+		return nil
+	}
+	clientData = append(clientData, clientVersion...)
+
+	// Step 3: Server sends security types — offer VNC Authentication (type 2)
+	// Format: [number-of-types: 1 byte] [type1] [type2] ...
+	secTypes := []byte{1, 2} // 1 type offered: VNC Authentication (2)
+	if _, err := c.Write(secTypes); err != nil {
+		return clientData
+	}
+
+	// Step 4: Client selects a security type (1 byte)
+	secChoice := make([]byte, 1)
+	if _, err := io.ReadFull(c, secChoice); err != nil {
+		return clientData
+	}
+	clientData = append(clientData, secChoice...)
+
+	// If client didn't pick VNC Auth (2), we're done
+	if secChoice[0] != 2 {
+		return clientData
+	}
+
+	// Step 5: Server sends VNC Auth challenge (16 random bytes)
+	challenge := make([]byte, 16)
+	rand.Read(challenge)
+	if _, err := c.Write(challenge); err != nil {
+		return clientData
+	}
+
+	// Step 6: Client sends DES-encrypted response (16 bytes)
+	authResponse := make([]byte, 16)
+	if _, err := io.ReadFull(c, authResponse); err != nil {
+		return clientData
+	}
+	clientData = append(clientData, authResponse...)
+
+	// Step 7: Server sends SecurityResult — auth failed (non-zero u32)
+	// This encourages repeat attempts from brute-force scanners.
+	authFailed := []byte{0x00, 0x00, 0x00, 0x01}
+	c.Write(authFailed) //nolint:errcheck
+
+	return clientData
 }
 
 // ── Lightning Network P2P (BOLT #8) emulator ─────────────────────────────────
