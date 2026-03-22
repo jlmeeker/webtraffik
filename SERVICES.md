@@ -407,19 +407,25 @@ Port 5555 is the network ADB port (vs. USB ADB) and is one of the most dangerous
 
 #### Port 5900 — VNC (Virtual Network Computing)
 
-**Protocol Flow**: Partial RFB handshake with silent drop (anti-brute-force behavior)
+**Protocol Flow**: Partial RFB handshake with tarpit behavior (anti-brute-force behavior)
 
-VNC implements the initial RFB protocol version exchange and then silently closes the connection:
+VNC implements the initial RFB protocol version exchange and then applies a tarpit strategy to slow down repeat scanners:
 
 1. **Server → Client**: Protocol version — `RFB 003.008\n` (VNC 3.8)
 2. **Client → Server**: Client version string (12 bytes) — **captured as client data**
-3. **Server**: Closes connection silently (no further response)
+3. **Server behavior**:
+   - **First connection from an IP**: Close silently after version exchange
+   - **Repeat connections from the same IP within 60 seconds**: After version exchange, hold the connection open for a random 10–30 seconds before closing silently
 
-**Purpose**: Captures VNC reconnaissance traffic while discouraging brute-force attempts. The connection drops after the version exchange, mimicking a network error or firewall reset rather than an authentication failure.
+**Tarpit mechanism**: When a scanner connects repeatedly from the same source IP within a 60-second window, the connection is held open (after the version exchange is complete and captured) for a random 10–30 second duration. This ties up a thread or connection slot in the scanner's connection pool, significantly throttling their scan rate without signaling anything unusual to the scanner. The held connection appears to the scanner as a slow network or unresponsive endpoint rather than active defense, making it less likely to trigger evasion tactics or alert the attacker.
 
-**Why it's convincing**: All VNC servers start by announcing their RFB protocol version (3.8 is the most widely supported). The version exchange is enough to fingerprint as a real VNC server to reconnaissance scanners and initial connection attempts.
+**Per-IP tracking**: The service maintains a map of recently-seen source IPs. This map is automatically pruned every 5 minutes to prevent unbounded memory growth during sustained high-volume scans.
 
-**Why this behavior**: A silent drop after version exchange (before security negotiation) looks like a network error or firewall reset to automated scanners. This causes most brute-force bots to back off and move on, treating it as an infrastructure failure rather than a target to attack. By contrast, sending a proper SecurityResult:failed response (the old behavior) looks identical to a real VNC server rejecting a bad password, which signals brute-force bots that authentication is present and encourages them to retry indefinitely. The silent drop strategy reduces sustained hammering on the port while still capturing initial reconnaissance traffic.
+**Purpose**: Captures VNC reconnaissance traffic while actively slowing down brute-force and mass-scanning operations. The tarpit strategy punishes repeat offenders by consuming their scanning resources without alerting them to defensive behavior.
+
+**Why it's convincing**: All VNC servers start by announcing their RFB protocol version (3.8 is the most widely supported). The version exchange is enough to fingerprint as a real VNC server to reconnaissance scanners and initial connection attempts. The silent close (first connection) or slow response (repeat connections) mimics network latency or an overloaded VNC server rather than active filtering, keeping the deception intact.
+
+**Why this behavior**: A silent drop after version exchange (before security negotiation) looks like a network error or firewall reset to automated scanners, causing most brute-force bots to back off. For persistent scanners that retry, the tarpit delay consumes their connection pool slots and dramatically slows their scan rate across the entire internet, protecting not just this host but reducing their overall threat capacity. By contrast, sending a proper SecurityResult:failed response (the old behavior) looks identical to a real VNC server rejecting a bad password, which signals brute-force bots that authentication is present and encourages them to retry indefinitely.
 
 ---
 
