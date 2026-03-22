@@ -451,6 +451,16 @@ func startDashboardServer() {
 		}
 	})
 
+	// Recent events endpoint — returns the in-memory ring buffer snapshot (includes ephemeral client_data)
+	mux.HandleFunc("/api/recent", func(w http.ResponseWriter, r *http.Request) {
+		events := appHub.snapshot()
+		if events == nil {
+			events = []ConnectionEvent{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(events)
+	})
+
 	// Services list endpoint — returns all known service names for the filter dropdown
 	mux.HandleFunc("/api/services", func(w http.ResponseWriter, r *http.Request) {
 		type svcEntry struct {
