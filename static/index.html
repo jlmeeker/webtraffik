@@ -153,6 +153,7 @@
     .corner-panel::-webkit-scrollbar-thumb { background: #1e3a5f; }
 
     .top-left     { top: 10px; left: 10px; }
+    .top-right    { top: 10px; right: 10px; }
 
     .corner-panel h2 {
       font-size: 0.65rem;
@@ -247,6 +248,42 @@
     .log-entry:hover { background: rgba(79,195,247,0.08); }
     .log-entry.arc-flash { background: rgba(79,195,247,0.22); transition: background 0.15s; }
 
+    /* ── Banned IPs panel ── */
+    .ban-row {
+      display: flex;
+      flex-direction: column;
+      padding: 4px 10px;
+      gap: 1px;
+      border-bottom: 1px solid rgba(239,83,80,0.12);
+      animation: fadeIn 0.3s ease;
+    }
+    .ban-row:last-child { border-bottom: none; }
+    .ban-ip {
+      font-size: 0.68rem;
+      color: #ef5350;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .ban-meta {
+      font-size: 0.62rem;
+      color: #546e7a;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .ban-expire {
+      font-size: 0.60rem;
+      color: #37474f;
+    }
+    #panel-banned h2 { color: #ef5350; border-bottom-color: rgba(239,83,80,0.25); }
+    #panel-banned .ban-empty {
+      font-size: 0.65rem;
+      color: #37474f;
+      padding: 6px 10px;
+      font-style: italic;
+    }
+
     @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; } }
 
     .log-time  { color: #546e7a; min-width: 80px; }
@@ -312,19 +349,63 @@
       filter: url(#mag-glow-blue);
     }
 
-    /* ── Dot tooltip ── */
+    /* ── Banned dot styling ── */
+    .src-dot.banned {
+      stroke: #ef5350;
+      stroke-width: 2px;
+      stroke-opacity: 0.9;
+      fill: #ef5350 !important;
+      animation: banned-pulse 1.4s ease-in-out infinite;
+    }
+    @keyframes banned-pulse {
+      0%, 100% { stroke-opacity: 0.9; stroke-width: 2px; }
+      50%       { stroke-opacity: 0.3; stroke-width: 5px; }
+    }
+
+    /* ── Dot hover card (tooltip + ban button) ── */
     #dot-tooltip {
       position: fixed;
-      pointer-events: none;
-      background: rgba(8, 15, 30, 0.92);
+      pointer-events: auto;
+      background: rgba(8, 15, 30, 0.95);
       border: 1px solid #1e3a5f;
       color: #c8d8f0;
       font-size: 0.72rem;
-      padding: 4px 9px;
-      border-radius: 4px;
-      white-space: nowrap;
+      border-radius: 5px;
       display: none;
       z-index: 100;
+      min-width: 130px;
+      box-shadow: 0 3px 14px rgba(0,0,0,0.5);
+      overflow: hidden;
+    }
+    #dot-tooltip .tip-label {
+      padding: 5px 10px 4px;
+      white-space: nowrap;
+    }
+    #dot-tooltip .tip-ban {
+      display: block;
+      width: 100%;
+      padding: 4px 10px 5px;
+      font-size: 0.65rem;
+      letter-spacing: 0.05em;
+      text-align: left;
+      background: none;
+      border: none;
+      border-top: 1px solid #1e3a5f;
+      cursor: pointer;
+      font-family: inherit;
+      color: #ef9a9a;
+      transition: background 0.15s, color 0.15s;
+    }
+    #dot-tooltip .tip-ban:hover {
+      background: rgba(239,83,80,0.18);
+      color: #ef5350;
+    }
+    #dot-tooltip .tip-ban.tip-unban {
+      color: #80cbc4;
+    }
+    #dot-tooltip .tip-ban.tip-unban:hover {
+      background: rgba(128,203,196,0.15);
+      color: #4db6ac;
     }
   </style>
 </head>
@@ -345,7 +426,10 @@
   </div>
 </header>
 
-<div id="dot-tooltip"></div>
+<div id="dot-tooltip">
+  <div class="tip-label" id="tip-label-text"></div>
+  <button class="tip-ban" id="tip-ban-btn"></button>
+</div>
 
 <div id="map-container">
   <svg id="map"></svg>
@@ -355,6 +439,10 @@
   <div id="panel-service" class="corner-panel top-left">
     <h2>Top Services</h2>
     <div id="service-rows"></div>
+  </div>
+  <div id="panel-banned" class="corner-panel top-right">
+    <h2>Banned IPs</h2>
+    <div id="banned-rows"></div>
   </div>
   <!-- Magnifier inset -->
   <div id="magnifier">
@@ -975,6 +1063,53 @@
     renderServiceStats();
   }
 
+  // ── Banned IPs panel ─────────────────────────────────────────────────────
+  const bannedRowsEl = document.getElementById('banned-rows');
+
+  function formatTimeRemaining(expiresAt) {
+    const ms = new Date(expiresAt) - Date.now();
+    if (ms <= 0) return 'expiring';
+    const totalSec = Math.floor(ms / 1000);
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    if (h > 0) return `${h}h ${m}m`;
+    if (m > 0) return `${m}m ${s}s`;
+    return `${s}s`;
+  }
+
+  function renderBannedPanel(bans) {
+    bannedRowsEl.innerHTML = '';
+    if (!bans || bans.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'ban-empty';
+      empty.textContent = 'none';
+      bannedRowsEl.appendChild(empty);
+      return;
+    }
+    bans.forEach(b => {
+      const row = document.createElement('div');
+      row.className = 'ban-row';
+      const remaining = formatTimeRemaining(b.expires_at);
+      row.innerHTML =
+        `<div class="ban-ip">${b.ip}</div>` +
+        `<div class="ban-meta">port ${b.port} &mdash; ${b.service || 'unknown'}</div>` +
+        `<div class="ban-expire">expires in ${remaining}</div>`;
+      bannedRowsEl.appendChild(row);
+    });
+  }
+
+  function fetchBanned() {
+    fetch('/api/banned')
+      .then(r => r.json())
+      .then(bans => { renderBannedPanel(bans); syncBannedSet(bans); })
+      .catch(() => {});
+  }
+
+  // Poll every 10 seconds to refresh ban list and countdown labels.
+  fetchBanned();
+  setInterval(fetchBanned, 10000);
+
   // ── Log/arc rendering stays on rAF for low-latency display ──
   function scheduleLogRender() {
     if (logRafScheduled) return;
@@ -1258,8 +1393,8 @@
       flashArc(existing);
       sendPulse(existing, hitCount);
       pulseDot(existing, hitCount);
-      // Update tooltip with new hit count
-      attachTooltip(existing.dotEl, tooltipLabel(existing.ev, existing.hitCount));
+      // Update tooltip with new hit count (pass ev so ban button stays correct)
+      attachTooltip(existing.dotEl, tooltipLabel(existing.ev, existing.hitCount), existing.ev);
       // Trigger magnifier for short arcs or arcs clipped by zoom
       if (shouldShowMagnifier(existing.srcPt, existing.dstPt)) {
         magShowArc(ev, existing.srcPt, existing.dstPt, existing.c1, existing.c2, existing.hitCount);
@@ -1362,7 +1497,13 @@
       .style('cursor', 'crosshair')
       .datum(srcPt); // store [lon, lat] for reprojection on resize
 
-    attachTooltip(srcDot, tooltipLabel(ev, hitCount));
+    attachTooltip(srcDot, tooltipLabel(ev, hitCount), ev);
+    tagDotWithEvent(srcDot, ev);
+
+    // Apply banned styling immediately if this IP is already in the ban set.
+    if (bannedSet.has(banKey(ev.src_ip, ev.dst_port))) {
+      srcDot.classed('banned', true).attr('fill', '#ef5350').attr('opacity', 0.9);
+    }
 
     srcDot.transition().duration(300).attr('r', dotR + 1)
       .transition().delay(2500).duration(600)
@@ -1651,7 +1792,32 @@
     logPanel.innerHTML = '';
     logDirty = false;
   }
-  const dotTooltip = document.getElementById('dot-tooltip');
+  // ── Ban toggle / hover card state ────────────────────────────────────────
+  // bannedSet: tracks IPs currently banned, keyed by "ip|port".
+  // Populated on load from /api/banned and kept in sync after each ban/unban.
+  const bannedSet = new Set();
+
+  function banKey(ip, port) { return `${ip}|${port}`; }
+
+  // Sync bannedSet from the latest /api/banned response and update all dots.
+  function syncBannedSet(bans) {
+    bannedSet.clear();
+    (bans || []).forEach(b => bannedSet.add(banKey(b.ip, b.port)));
+    // Reflect ban state on every live dot that has ev data attached.
+    dotGroup.selectAll('.src-dot').each(function() {
+      const d3el = d3.select(this);
+      const ev = this.__wtEv;
+      if (!ev) return;
+      const isBanned = bannedSet.has(banKey(ev.src_ip, ev.dst_port));
+      d3el.classed('banned', isBanned);
+      if (isBanned) d3el.attr('fill', '#ef5350').attr('opacity', 0.9);
+    });
+  }
+
+  // Attach ev to the DOM node so the hover card can read it later.
+  function tagDotWithEvent(dotEl, ev) {
+    dotEl.node().__wtEv = ev;
+  }
 
   function tooltipLabel(ev, hitCount = 1) {
     const city = ev.src_city || '';
@@ -1660,20 +1826,73 @@
     return hitCount > 1 ? `${loc} ×${hitCount}` : loc;
   }
 
-  function attachTooltip(sel, label) {
+  // ── Hover card wiring ─────────────────────────────────────────────────────
+  const dotTooltip  = document.getElementById('dot-tooltip');
+  const tipLabelEl  = document.getElementById('tip-label-text');
+  const tipBanBtn   = document.getElementById('tip-ban-btn');
+  let tipHideTimer  = null;
+  let tipCurrentEv  = null;
+
+  function showTip(event, label, ev) {
+    clearTimeout(tipHideTimer);
+    tipCurrentEv = ev;
+    tipLabelEl.textContent = label || ev.src_ip;
+
+    const isBanned = ev && bannedSet.has(banKey(ev.src_ip, ev.dst_port));
+    tipBanBtn.textContent = isBanned ? 'Unban' : 'Ban';
+    tipBanBtn.className   = 'tip-ban' + (isBanned ? ' tip-unban' : '');
+    tipBanBtn.style.display = ev ? 'block' : 'none';
+
+    positionTip(event.clientX, event.clientY);
+    dotTooltip.style.display = 'block';
+  }
+
+  function moveTip(x, y) {
+    positionTip(x, y);
+  }
+
+  function positionTip(cx, cy) {
+    const w = dotTooltip.offsetWidth  || 140;
+    const h = dotTooltip.offsetHeight || 56;
+    const x = Math.min(cx + 14, window.innerWidth  - w - 6);
+    const y = Math.min(cy - 10, window.innerHeight - h - 6);
+    dotTooltip.style.left = x + 'px';
+    dotTooltip.style.top  = y + 'px';
+  }
+
+  function scheduleTipHide() {
+    tipHideTimer = setTimeout(() => {
+      dotTooltip.style.display = 'none';
+      tipCurrentEv = null;
+    }, 120);  // short delay — enough to move cursor from dot onto card
+  }
+
+  // Hovering on the card itself cancels the hide timer.
+  dotTooltip.addEventListener('mouseenter', () => clearTimeout(tipHideTimer));
+  dotTooltip.addEventListener('mouseleave', () => scheduleTipHide());
+
+  tipBanBtn.addEventListener('click', () => {
+    const ev = tipCurrentEv;
+    dotTooltip.style.display = 'none';
+    tipCurrentEv = null;
+    if (!ev) return;
+    const isBanned = bannedSet.has(banKey(ev.src_ip, ev.dst_port));
+    const url = isBanned ? '/api/unban' : '/api/ban';
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ip: ev.src_ip, port: ev.dst_port }),
+    })
+      .then(r => r.json())
+      .then(() => fetchBanned())
+      .catch(() => {});
+  });
+
+  function attachTooltip(sel, label, ev) {
     sel
-      .on('mouseover', function(event) {
-        if (!label) return;
-        dotTooltip.textContent = label;
-        dotTooltip.style.display = 'block';
-      })
-      .on('mousemove', function(event) {
-        dotTooltip.style.left = (event.clientX + 12) + 'px';
-        dotTooltip.style.top  = (event.clientY - 28) + 'px';
-      })
-      .on('mouseout', function() {
-        dotTooltip.style.display = 'none';
-      });
+      .on('mouseover', function(event) { showTip(event, label, ev); })
+      .on('mousemove', function(event) { moveTip(event.clientX, event.clientY); })
+      .on('mouseout',  function()      { scheduleTipHide(); });
   }
 
   // Draw a faded static dot for historical events (no arc animation)
@@ -1689,7 +1908,11 @@
       .attr('opacity', 0.35)
       .style('cursor', 'crosshair')
       .datum(srcPt); // store [lon, lat] for reprojection on resize
-    attachTooltip(dot, tooltipLabel(ev));
+    attachTooltip(dot, tooltipLabel(ev), ev);
+    tagDotWithEvent(dot, ev);
+    if (bannedSet.has(banKey(ev.src_ip, ev.dst_port))) {
+      dot.classed('banned', true).attr('fill', '#ef5350').attr('opacity', 0.9);
+    }
     trackDot(dot.node());
   }
 

@@ -774,6 +774,10 @@ func startTCPServiceListener(svc serviceEntry) {
 		go func(c net.Conn) {
 			defer c.Close()
 			srcIP := extractConnIP(c.RemoteAddr())
+			// Drop banned IPs before sending the banner.
+			if appLimiter.IsBanned(srcIP, portStr) {
+				return
+			}
 			go handleCapture(srcIP, portStr, "tcp")
 			banner := svc.Banner()
 			if len(banner) > 0 {
@@ -1007,6 +1011,11 @@ func startMinecraftListener() {
 		}
 		go func(c net.Conn) {
 			srcIP := extractConnIP(c.RemoteAddr())
+			// Drop banned IPs before running the Minecraft handshake.
+			if appLimiter.IsBanned(srcIP, portStr) {
+				c.Close()
+				return
+			}
 			go handleCapture(srcIP, portStr, "tcp")
 			handleMinecraftConn(c)
 		}(conn)

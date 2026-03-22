@@ -174,6 +174,10 @@ func main() {
 	}
 	defer appDB.close()
 
+	// Wire the rate-limiter to the DB so bans are persisted and survive restarts.
+	appLimiter.SetDB(appDB)
+	appLimiter.LoadBans(appDB)
+
 	// Seed the in-memory ring buffer from persisted history so new clients
 	// get replayed events immediately while the DB query on /ws is also live.
 	if history, err := appDB.loadHistory(historySize); err == nil {
@@ -261,6 +265,17 @@ func startCaptureListener(port int) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		srcIP := extractIP(r.RemoteAddr)
+		// Drop banned IPs immediately — hijack the underlying TCP connection
+		// and close it without writing a single byte.
+		if appLimiter.IsBanned(srcIP, portStr) {
+			if hj, ok := w.(http.Hijacker); ok {
+				conn, _, err := hj.Hijack()
+				if err == nil {
+					conn.Close()
+				}
+			}
+			return
+		}
 		// Return a convincing nginx-style 200 with a minimal HTML body.
 		w.Header().Set("Server", "nginx/1.24.0")
 		w.Header().Set("Content-Type", "text/html")
@@ -276,6 +291,12 @@ func startCaptureListener(port int) {
 }
 
 func handleCapture(srcIP, dstPort, protocol string) {
+	// Rate-limit check: only meaningful for TCP — UDP is stateless/fire-and-forget
+	// so there is nothing to terminate and no cost to absorb per-packet.
+	if protocol != "udp" && !appLimiter.Record(srcIP, dstPort) {
+		return
+	}
+
 	var srcLat, srcLon float64
 	var srcCity, srcCC string
 
@@ -355,6 +376,66 @@ func startDashboardServer() {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(events)
+	})
+
+	// Banned IPs endpoint — returns the current active ban list
+	mux.HandleFunc("/api/banned", func(w http.ResponseWriter, r *http.Request) {
+		bans := appLimiter.ActiveBans()
+		if bans == nil {
+			bans = []BanEntry{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(bans)
+	})
+
+	// Manual ban endpoint — POST { "ip": "1.2.3.4", "port": "22" }
+	mux.HandleFunc("/api/ban", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			IP   string `json:"ip"`
+			Port string `json:"port"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IP == "" || req.Port == "" {
+			http.Error(w, "invalid request: ip and port required", http.StatusBadRequest)
+			return
+		}
+		ok := appLimiter.ManualBan(req.IP, req.Port)
+		w.Header().Set("Content-Type", "application/json")
+		if ok {
+			log.Printf("Manual ban: %s on port %s", req.IP, req.Port)
+			json.NewEncoder(w).Encode(map[string]string{"status": "banned"})
+		} else {
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]string{"status": "already_banned"})
+		}
+	})
+
+	// Manual unban endpoint — POST { "ip": "1.2.3.4", "port": "22" }
+	mux.HandleFunc("/api/unban", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			IP   string `json:"ip"`
+			Port string `json:"port"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IP == "" || req.Port == "" {
+			http.Error(w, "invalid request: ip and port required", http.StatusBadRequest)
+			return
+		}
+		ok := appLimiter.ManualUnban(req.IP, req.Port)
+		w.Header().Set("Content-Type", "application/json")
+		if ok {
+			log.Printf("Manual unban: %s on port %s", req.IP, req.Port)
+			json.NewEncoder(w).Encode(map[string]string{"status": "unbanned"})
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]string{"status": "not_banned"})
+		}
 	})
 
 	// Services list endpoint — returns all known service names for the filter dropdown
