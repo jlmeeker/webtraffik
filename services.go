@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -833,24 +835,56 @@ func extractConnIP(addr net.Addr) string {
 	}
 }
 
-// ── VNC (RFB) version exchange ────────────────────────────────────────────────
+// ── VNC (RFB) version exchange with tarpit ────────────────────────────────────
 //
-// Handshake sequence:
+// First connection from an IP:
 //   1. Server → Client: "RFB 003.008\n"   (protocol version)
 //   2. Client → Server: "RFB 003.0xx\n"   (client version — captured)
 //   3. Connection closed silently
 //
-// We do not send a SecurityResult. Sending SecurityResult failed looks
-// identical to a real VNC server rejecting a bad password, which signals
-// brute-force bots to retry immediately and indefinitely. A silent drop
-// after the version exchange looks like a network error or firewall reset,
-// causing most scanners to back off or move on rather than hammer the port.
+// Repeat connections from the same IP within vncTarpitWindow:
+//   Steps 1–2 as above (still captured), then the connection is held open
+//   for a random 10–30 second delay before closing. This ties up a thread
+//   in the scanner's connection pool, throttling their scan rate without
+//   revealing that anything unusual is happening.
 
 const vncPort = 5900
+const vncTarpitWindow = 60 * time.Second // window to consider an IP "repeat"
+const vncTarpitMin = 10 * time.Second
+const vncTarpitMax = 30 * time.Second
+
+var (
+	vncSeenMu  sync.Mutex
+	vncSeenIPs = make(map[string]time.Time) // IP → last seen time
+)
+
+func vncIsRepeat(ip string) bool {
+	vncSeenMu.Lock()
+	defer vncSeenMu.Unlock()
+	last, ok := vncSeenIPs[ip]
+	now := time.Now()
+	vncSeenIPs[ip] = now
+	return ok && now.Sub(last) < vncTarpitWindow
+}
 
 func startVNCListener() {
 	portStr := fmt.Sprintf("%d", vncPort)
 	addr := fmt.Sprintf(":%d", vncPort)
+
+	// Periodically prune stale entries from the seen-IP map so it doesn't
+	// grow unbounded on a long-running server.
+	go func() {
+		for range time.Tick(5 * time.Minute) {
+			vncSeenMu.Lock()
+			cutoff := time.Now().Add(-vncTarpitWindow)
+			for ip, t := range vncSeenIPs {
+				if t.Before(cutoff) {
+					delete(vncSeenIPs, ip)
+				}
+			}
+			vncSeenMu.Unlock()
+		}
+	}()
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -872,13 +906,14 @@ func startVNCListener() {
 			if appLimiter.IsBanned(srcIP, portStr) {
 				return
 			}
-			clientData := handleVNCConn(c)
+			repeat := vncIsRepeat(srcIP)
+			clientData := handleVNCConn(c, repeat)
 			go handleCapture(srcIP, portStr, "tcp", clientData)
 		}(conn)
 	}
 }
 
-func handleVNCConn(c net.Conn) []byte {
+func handleVNCConn(c net.Conn, tarpit bool) []byte {
 	c.SetDeadline(time.Now().Add(5 * time.Second))
 
 	// Step 1: Server sends protocol version
@@ -886,15 +921,21 @@ func handleVNCConn(c net.Conn) []byte {
 		return nil
 	}
 
-	// Step 2: Read client version (12 bytes) — this is the captured payload
+	// Step 2: Read client version (12 bytes) — captured payload
 	clientVersion := make([]byte, 12)
 	if _, err := io.ReadFull(c, clientVersion); err != nil {
 		return nil
 	}
 
-	// Close silently — no SecurityResult sent. A SecurityResult failed
-	// response triggers immediate retries from brute-force bots; a silent
-	// drop looks like a network error and causes scanners to back off.
+	if tarpit {
+		// Hold the connection open for a random 10–30s before closing.
+		// This ties up a slot in the scanner's connection pool, throttling
+		// their rate without signalling anything unusual.
+		hold := vncTarpitMin + time.Duration(rand.Int63n(int64(vncTarpitMax-vncTarpitMin)))
+		c.SetDeadline(time.Now().Add(hold + 5*time.Second))
+		time.Sleep(hold)
+	}
+
 	return clientVersion
 }
 
