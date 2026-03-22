@@ -776,12 +776,18 @@ func startTCPServiceListener(svc serviceEntry) {
 			if appLimiter.IsBanned(srcIP, portStr) {
 				return
 			}
-			go handleCapture(srcIP, portStr, "tcp")
 			banner := svc.Banner()
 			if len(banner) > 0 {
 				c.SetWriteDeadline(time.Now().Add(5 * time.Second))
 				c.Write(banner) //nolint:errcheck
 			}
+			// Read up to 256 bytes of client data after the banner.
+			// This captures what the scanner/client sends (auth attempts,
+			// protocol negotiation, exploit payloads, etc.).
+			c.SetReadDeadline(time.Now().Add(2 * time.Second))
+			clientBuf := make([]byte, 256)
+			n, _ := c.Read(clientBuf)
+			go handleCapture(srcIP, portStr, "tcp", clientBuf[:n])
 		}(conn)
 	}
 }
@@ -801,14 +807,18 @@ func startUDPServiceListener(port int) {
 
 	buf := make([]byte, 4096)
 	for {
-		_, src, err := pc.ReadFrom(buf)
+		n, src, err := pc.ReadFrom(buf)
 		if err != nil {
 			log.Printf("UDP read on %s: %v", addr, err)
 			time.Sleep(time.Second)
 			continue
 		}
 		srcIP := extractConnIP(src)
-		go handleCapture(srcIP, portStr, "udp")
+		// Copy the datagram payload (up to 256 bytes) before the next ReadFrom
+		// overwrites the buffer.
+		clientData := make([]byte, min(n, 256))
+		copy(clientData, buf[:min(n, 256)])
+		go handleCapture(srcIP, portStr, "udp", clientData)
 	}
 }
 
@@ -869,22 +879,22 @@ func startLightningListener() {
 			if appLimiter.IsBanned(srcIP, portStr) {
 				return
 			}
-			go handleCapture(srcIP, portStr, "tcp")
-			handleLightningConn(c)
+			clientData := handleLightningConn(c)
+			go handleCapture(srcIP, portStr, "tcp", clientData)
 		}(conn)
 	}
 }
 
 // handleLightningConn processes a single Lightning Network connection:
 // reads the 50-byte Act One from the initiator, then sends a 50-byte
-// Act Two response, then closes.
-func handleLightningConn(c net.Conn) {
+// Act Two response, then closes. Returns the Act One bytes as client data.
+func handleLightningConn(c net.Conn) []byte {
 	c.SetDeadline(time.Now().Add(5 * time.Second))
 
 	// Read Act One: 1 byte version + 33 bytes ephemeral pubkey + 16 bytes tag = 50 bytes
 	actOne := make([]byte, 50)
 	if _, err := io.ReadFull(c, actOne); err != nil {
-		return
+		return nil
 	}
 
 	// Send Act Two: 1 byte version + 33 bytes ephemeral pubkey + 16 bytes tag = 50 bytes
@@ -896,6 +906,7 @@ func handleLightningConn(c net.Conn) {
 		actTwo[i] = byte((i * 37) ^ 0xAB)
 	}
 	c.Write(actTwo) //nolint:errcheck
+	return actOne
 }
 
 // ── Minecraft Java Edition server-list-ping emulator ─────────────────────────
@@ -999,8 +1010,8 @@ func mcStatusJSON() string {
 
 // handleMinecraftConn processes a single Minecraft client connection:
 // reads the handshake + status request, sends a status response, optionally
-// echoes the ping, then closes.
-func handleMinecraftConn(c net.Conn) {
+// echoes the ping, then closes. Returns the raw handshake packet as client data.
+func handleMinecraftConn(c net.Conn) []byte {
 	defer c.Close()
 	c.SetDeadline(time.Now().Add(10 * time.Second))
 
@@ -1008,53 +1019,58 @@ func handleMinecraftConn(c net.Conn) {
 	// Read framing length
 	pktLen, err := mcReadVarInt(c)
 	if err != nil || pktLen <= 0 || pktLen > 512 {
-		return
+		return nil
 	}
 	pktData := make([]byte, pktLen)
 	if _, err := io.ReadFull(c, pktData); err != nil {
-		return
+		return nil
 	}
 	// We don't need to parse the handshake contents; just verify packet ID = 0x00.
 	if len(pktData) == 0 || pktData[0] != 0x00 {
-		return
+		return pktData // return whatever they sent even if unexpected
 	}
+
+	// Capture the handshake packet for client data (contains protocol version,
+	// server address, port, and next state).
+	clientData := pktData
 
 	// ── Packet 2: Status Request ───────────────────────────────────────────
 	pktLen2, err := mcReadVarInt(c)
 	if err != nil || pktLen2 < 1 {
-		return
+		return clientData
 	}
 	pktData2 := make([]byte, pktLen2)
 	if _, err := io.ReadFull(c, pktData2); err != nil {
-		return
+		return clientData
 	}
 	if len(pktData2) == 0 || pktData2[0] != 0x00 {
-		return
+		return clientData
 	}
 
 	// ── Packet 3: Status Response ──────────────────────────────────────────
 	statusJSON := mcStatusJSON()
 	respPayload := mcWriteString(statusJSON)
 	if _, err := c.Write(mcPacket(0x00, respPayload)); err != nil {
-		return
+		return clientData
 	}
 
 	// ── Packet 4+5: Ping / Pong (optional — many scanners skip this) ──────
 	pingLen, err := mcReadVarInt(c)
 	if err != nil || pingLen != 9 { // ping packet is always 9 bytes (1 VarInt ID + 8 bytes payload)
-		return
+		return clientData
 	}
 	pingData := make([]byte, pingLen)
 	if _, err := io.ReadFull(c, pingData); err != nil {
-		return
+		return clientData
 	}
 	if pingData[0] != 0x01 {
-		return
+		return clientData
 	}
 	// Echo the 8-byte payload back as a pong
 	pongPayload := pingData[1:]                 // 8 bytes
 	_ = binary.LittleEndian.Uint64(pongPayload) // validate it's 8 bytes
 	c.Write(mcPacket(0x01, pongPayload))        //nolint:errcheck
+	return clientData
 }
 
 // startMinecraftListener binds to the Minecraft default port (25565) and
@@ -1084,8 +1100,8 @@ func startMinecraftListener() {
 				c.Close()
 				return
 			}
-			go handleCapture(srcIP, portStr, "tcp")
-			handleMinecraftConn(c)
+			clientData := handleMinecraftConn(c)
+			go handleCapture(srcIP, portStr, "tcp", clientData)
 		}(conn)
 	}
 }
