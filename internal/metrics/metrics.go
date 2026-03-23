@@ -1,4 +1,4 @@
-package main
+package metrics
 
 import (
 	"encoding/json"
@@ -9,18 +9,14 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"webtraffik/internal/db"
+	"webtraffik/internal/event"
 )
 
 // ── Metrics configuration ───────────────────────────────────────────────────
 const (
 	metricsFlushInterval = 5 * time.Second // how often dirty counters are flushed to SQLite
-)
-
-// ── Metric names ────────────────────────────────────────────────────────────
-const (
-	metricConnections = "connections" // labels: port, protocol, service, cc
-	metricBans        = "bans"        // labels: type (auto/manual)
-	metricUniqueIPs   = "unique_ips"  // no labels, per-hour unique IP count
 )
 
 // metricKey identifies a single counter: (name, canonical label string, hour bucket).
@@ -30,26 +26,27 @@ type metricKey struct {
 	bucket string // ISO hour: "2026-03-22T14:00:00Z"
 }
 
-// metricsCache holds in-memory counters that are periodically flushed to SQLite.
-type metricsCache struct {
+// Cache holds in-memory counters that are periodically flushed to SQLite.
+type Cache struct {
 	mu       sync.Mutex
 	counters map[metricKey]int64            // accumulated deltas since last flush
 	ipSets   map[string]map[string]struct{} // bucket -> set of IPs (for unique_ips)
 	dirty    bool
 
-	db   *eventDB
-	done chan struct{}
+	db              *db.EventDB
+	portServiceName func(string) string // injected to avoid import cycle
+	done            chan struct{}
 }
 
-var appMetrics *metricsCache
-
-// newMetricsCache creates the cache and starts the flush loop.
-func newMetricsCache(db *eventDB) *metricsCache {
-	mc := &metricsCache{
-		counters: make(map[metricKey]int64),
-		ipSets:   make(map[string]map[string]struct{}),
-		db:       db,
-		done:     make(chan struct{}),
+// NewCache creates the cache and starts the flush loop.
+// portServiceName is a function to resolve port string → display name.
+func NewCache(edb *db.EventDB, portServiceName func(string) string) *Cache {
+	mc := &Cache{
+		counters:        make(map[metricKey]int64),
+		ipSets:          make(map[string]map[string]struct{}),
+		db:              edb,
+		portServiceName: portServiceName,
+		done:            make(chan struct{}),
 	}
 	go mc.flushLoop()
 	return mc
@@ -60,31 +57,19 @@ func currentBucket() string {
 	return time.Now().UTC().Truncate(time.Hour).Format(time.RFC3339)
 }
 
-// canonLabels builds a canonical, sorted label string from key=value pairs.
-func canonLabels(pairs ...string) string {
-	if len(pairs) == 0 {
-		return ""
-	}
-	// pairs are already key=value strings; sort them for canonical order
-	sorted := make([]string, len(pairs))
-	copy(sorted, pairs)
-	sort.Strings(sorted)
-	return strings.Join(sorted, ",")
-}
-
 // Record records a connection event into the metrics cache.
 // Called from handleCapture() — must be fast and non-blocking.
-func (mc *metricsCache) Record(ev ConnectionEvent) {
+func (mc *Cache) Record(ev event.ConnectionEvent) {
 	bucket := currentBucket()
 	port := ev.DstPort
 	protocol := ev.Protocol
-	service := portServiceName(port)
+	service := mc.portServiceName(port)
 	cc := ev.SrcCC
 	if cc == "" {
 		cc = "XX" // unknown country
 	}
 
-	labels := canonLabels(
+	labels := db.CanonLabels(
 		"cc="+cc,
 		"port="+port,
 		"protocol="+protocol,
@@ -92,7 +77,7 @@ func (mc *metricsCache) Record(ev ConnectionEvent) {
 	)
 
 	mc.mu.Lock()
-	mc.counters[metricKey{metricConnections, labels, bucket}]++
+	mc.counters[metricKey{db.MetricConnections, labels, bucket}]++
 
 	// Track unique IPs per bucket
 	if mc.ipSets[bucket] == nil {
@@ -105,18 +90,18 @@ func (mc *metricsCache) Record(ev ConnectionEvent) {
 }
 
 // RecordBan records a ban event (type = "auto" or "manual").
-func (mc *metricsCache) RecordBan(banType string) {
+func (mc *Cache) RecordBan(banType string) {
 	bucket := currentBucket()
-	labels := canonLabels("type=" + banType)
+	labels := db.CanonLabels("type=" + banType)
 
 	mc.mu.Lock()
-	mc.counters[metricKey{metricBans, labels, bucket}]++
+	mc.counters[metricKey{db.MetricBans, labels, bucket}]++
 	mc.dirty = true
 	mc.mu.Unlock()
 }
 
 // flushLoop periodically writes dirty counters to SQLite.
-func (mc *metricsCache) flushLoop() {
+func (mc *Cache) flushLoop() {
 	defer close(mc.done)
 	ticker := time.NewTicker(metricsFlushInterval)
 	defer ticker.Stop()
@@ -127,7 +112,7 @@ func (mc *metricsCache) flushLoop() {
 }
 
 // flush snapshots and clears dirty counters, then upserts them into the DB.
-func (mc *metricsCache) flush() {
+func (mc *Cache) flush() {
 	mc.mu.Lock()
 	if !mc.dirty {
 		mc.mu.Unlock()
@@ -139,8 +124,6 @@ func (mc *metricsCache) flush() {
 	mc.counters = make(map[metricKey]int64, len(snap))
 
 	// Snapshot unique IP counts per bucket and clear old buckets.
-	// We keep the current bucket's IP set alive (it's still accumulating)
-	// and flush counts for all buckets.
 	cur := currentBucket()
 	ipCounts := make(map[string]int64) // bucket -> unique IP count
 	for bucket, ips := range mc.ipSets {
@@ -154,9 +137,9 @@ func (mc *metricsCache) flush() {
 	mc.mu.Unlock()
 
 	// Build the batch for DB upsert
-	var batch []metricsRow
+	var batch []db.MetricsRow
 	for key, delta := range snap {
-		batch = append(batch, metricsRow{
+		batch = append(batch, db.MetricsRow{
 			Name:   key.name,
 			Labels: key.labels,
 			Bucket: key.bucket,
@@ -168,8 +151,8 @@ func (mc *metricsCache) flush() {
 	// because the count can only grow within an hour. We use a special
 	// upsert that sets value = MAX(value, ?) instead of value = value + ?.
 	for bucket, count := range ipCounts {
-		batch = append(batch, metricsRow{
-			Name:   metricUniqueIPs,
+		batch = append(batch, db.MetricsRow{
+			Name:   db.MetricUniqueIPs,
 			Labels: "",
 			Bucket: bucket,
 			Delta:  count,
@@ -178,24 +161,18 @@ func (mc *metricsCache) flush() {
 	}
 
 	if len(batch) > 0 {
-		if err := mc.db.upsertMetrics(batch); err != nil {
+		if err := mc.db.UpsertMetrics(batch); err != nil {
 			log.Printf("metrics: flush error: %v", err)
 		}
 	}
 }
 
-// close stops the flush loop and performs a final flush.
-func (mc *metricsCache) close() {
+// Close stops the flush loop and performs a final flush.
+func (mc *Cache) Close() {
 	mc.flush() // final flush
 }
 
 // ── API types ───────────────────────────────────────────────────────────────
-
-// MetricsQuery holds the optional time range for /api/metrics.
-type MetricsQuery struct {
-	From string // ISO8601 lower bound (inclusive), truncated to hour
-	To   string // ISO8601 upper bound (inclusive), truncated to hour
-}
 
 // MetricSeries is one metric name with all its label/value pairs.
 type MetricSeries struct {
@@ -208,17 +185,17 @@ type MetricsResponse struct {
 	Connections     []MetricSeries          `json:"connections"`
 	Bans            []MetricSeries          `json:"bans"`
 	UniqueIPs       int64                   `json:"unique_ips"`
-	TimeBuckets     []TimeBucket            `json:"time_buckets,omitempty"`     // hourly connection totals for timeline
-	PortTimeline    map[string][]TimeBucket `json:"port_timeline,omitempty"`    // port -> hourly buckets
-	CountryTimeline map[string][]TimeBucket `json:"country_timeline,omitempty"` // cc -> hourly buckets
+	TimeBuckets     []TimeBucket            `json:"time_buckets,omitempty"`
+	PortTimeline    map[string][]TimeBucket `json:"port_timeline,omitempty"`
+	CountryTimeline map[string][]TimeBucket `json:"country_timeline,omitempty"`
 }
 
 // TimeBucket is a single hour's aggregated counts.
 type TimeBucket struct {
 	Bucket    string `json:"bucket"`
-	Value     int64  `json:"value"`                // connections
-	UniqueIPs int64  `json:"unique_ips,omitempty"` // unique source IPs this hour
-	Bans      int64  `json:"bans,omitempty"`       // total bans this hour
+	Value     int64  `json:"value"`
+	UniqueIPs int64  `json:"unique_ips,omitempty"`
+	Bans      int64  `json:"bans,omitempty"`
 }
 
 // parseLabels converts "cc=CN,port=22,protocol=tcp,service=SSH" into a map.
@@ -237,9 +214,9 @@ func parseLabels(s string) map[string]string {
 }
 
 // HandleMetrics serves GET /api/metrics?from=...&to=...
-func HandleMetrics(w http.ResponseWriter, r *http.Request) {
+func (mc *Cache) HandleMetrics(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	mq := MetricsQuery{
+	mq := db.MetricsQuery{
 		From: q.Get("from"),
 		To:   q.Get("to"),
 	}
@@ -257,7 +234,7 @@ func HandleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	rows, err := appMetrics.db.queryMetrics(mq)
+	rows, err := mc.db.QueryMetrics(mq)
 	if err != nil {
 		http.Error(w, "metrics query error: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -266,16 +243,16 @@ func HandleMetrics(w http.ResponseWriter, r *http.Request) {
 	// Aggregate rows by (name, labels) summing values across buckets
 	type aggKey struct{ name, labels string }
 	agg := make(map[aggKey]int64)
-	timeBuckets := make(map[string]int64)               // bucket -> total connections
-	ipBuckets := make(map[string]int64)                 // bucket -> unique IPs
-	banBuckets := make(map[string]int64)                // bucket -> total bans
-	portBuckets := make(map[string]map[string]int64)    // port -> bucket -> count
-	countryBuckets := make(map[string]map[string]int64) // cc -> bucket -> count
+	timeBuckets := make(map[string]int64)
+	ipBuckets := make(map[string]int64)
+	banBuckets := make(map[string]int64)
+	portBuckets := make(map[string]map[string]int64)
+	countryBuckets := make(map[string]map[string]int64)
 
 	for _, row := range rows {
 		agg[aggKey{row.Name, row.Labels}] += row.Value
 		switch row.Name {
-		case metricConnections:
+		case db.MetricConnections:
 			timeBuckets[row.Bucket] += row.Value
 
 			lbls := parseLabels(row.Labels)
@@ -291,9 +268,9 @@ func HandleMetrics(w http.ResponseWriter, r *http.Request) {
 				}
 				countryBuckets[cc][row.Bucket] += row.Value
 			}
-		case metricUniqueIPs:
+		case db.MetricUniqueIPs:
 			ipBuckets[row.Bucket] += row.Value
-		case metricBans:
+		case db.MetricBans:
 			banBuckets[row.Bucket] += row.Value
 		}
 	}
@@ -306,13 +283,11 @@ func HandleMetrics(w http.ResponseWriter, r *http.Request) {
 			Value:  val,
 		}
 		switch key.name {
-		case metricConnections:
+		case db.MetricConnections:
 			resp.Connections = append(resp.Connections, series)
-		case metricBans:
+		case db.MetricBans:
 			resp.Bans = append(resp.Bans, series)
-		case metricUniqueIPs:
-			// Sum across hour buckets — this is an approximation (overcounts)
-			// but is the best we can do without raw event data
+		case db.MetricUniqueIPs:
 			resp.UniqueIPs += val
 		}
 	}
@@ -326,7 +301,6 @@ func HandleMetrics(w http.ResponseWriter, r *http.Request) {
 	})
 
 	// Build sorted time buckets for timeline chart.
-	// Collect all bucket keys from connections, unique IPs, and bans.
 	allBuckets := make(map[string]struct{})
 	for b := range timeBuckets {
 		allBuckets[b] = struct{}{}
@@ -376,9 +350,9 @@ func HandleMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleMetricsPrometheus serves GET /metrics in Prometheus exposition format.
-func HandleMetricsPrometheus(w http.ResponseWriter, r *http.Request) {
+func (mc *Cache) HandleMetricsPrometheus(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	mq := MetricsQuery{
+	mq := db.MetricsQuery{
 		From: q.Get("from"),
 		To:   q.Get("to"),
 	}
@@ -394,7 +368,7 @@ func HandleMetricsPrometheus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	rows, err := appMetrics.db.queryMetrics(mq)
+	rows, err := mc.db.QueryMetrics(mq)
 	if err != nil {
 		http.Error(w, "metrics query error: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -425,7 +399,7 @@ func HandleMetricsPrometheus(w http.ResponseWriter, r *http.Request) {
 	for name, entries := range byName {
 		promName := "webtraffik_" + name
 		metricType := "counter"
-		if name == metricUniqueIPs {
+		if name == db.MetricUniqueIPs {
 			metricType = "gauge"
 		}
 		fmt.Fprintf(w, "# HELP %s webTraffik metric\n", promName)
@@ -434,7 +408,6 @@ func HandleMetricsPrometheus(w http.ResponseWriter, r *http.Request) {
 			if e.labels == "" {
 				fmt.Fprintf(w, "%s %d\n", promName, e.value)
 			} else {
-				// Convert "cc=CN,port=22" to {cc="CN",port="22"}
 				promLabels := labelsToPrometheus(e.labels)
 				fmt.Fprintf(w, "%s{%s} %d\n", promName, promLabels, e.value)
 			}

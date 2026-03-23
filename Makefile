@@ -1,6 +1,7 @@
 BINARY  := webtraffik
 GOFLAGS := -ldflags="-s -w"
 OUTDIR  := dist
+MAIN    := ./cmd/webtraffik
 
 PLATFORMS := \
 	linux/amd64 \
@@ -14,7 +15,7 @@ PLATFORMS := \
 
 # Build for the current host OS/arch
 build:
-	go build $(GOFLAGS) -o $(BINARY) .
+	go build $(GOFLAGS) -o $(BINARY) $(MAIN)
 
 # Cross-compile for all platforms into dist/
 dist: $(PLATFORMS) linux/armv6 linux/armv7
@@ -26,19 +27,19 @@ $(PLATFORMS):
 	$(eval OUT  := $(OUTDIR)/$(BINARY)_$(OS)_$(ARCH)$(EXT))
 	@mkdir -p $(OUTDIR)
 	@echo "  building $(OUT)"
-	@GOOS=$(OS) GOARCH=$(ARCH) go build $(GOFLAGS) -o $(OUT) .
+	@GOOS=$(OS) GOARCH=$(ARCH) go build $(GOFLAGS) -o $(OUT) $(MAIN)
 
 # Pi Zero / Pi 1 (ARMv6, hard-float)
 linux/armv6:
 	@mkdir -p $(OUTDIR)
 	@echo "  building $(OUTDIR)/$(BINARY)_linux_armv6  (Pi Zero / Pi 1)"
-	@GOOS=linux GOARCH=arm GOARM=6 go build $(GOFLAGS) -o $(OUTDIR)/$(BINARY)_linux_armv6 .
+	@GOOS=linux GOARCH=arm GOARM=6 go build $(GOFLAGS) -o $(OUTDIR)/$(BINARY)_linux_armv6 $(MAIN)
 
 # Pi 2 / Pi 3 / Pi Zero 2 W 32-bit (ARMv7)
 linux/armv7:
 	@mkdir -p $(OUTDIR)
 	@echo "  building $(OUTDIR)/$(BINARY)_linux_armv7  (Pi 2 / Pi 3 / Pi Zero 2 W 32-bit)"
-	@GOOS=linux GOARCH=arm GOARM=7 go build $(GOFLAGS) -o $(OUTDIR)/$(BINARY)_linux_armv7 .
+	@GOOS=linux GOARCH=arm GOARM=7 go build $(GOFLAGS) -o $(OUTDIR)/$(BINARY)_linux_armv7 $(MAIN)
 
 run: build
 	./$(BINARY)
