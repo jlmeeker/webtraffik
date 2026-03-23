@@ -125,6 +125,20 @@
     .top-left     { top: 10px; left: 10px; }
     .top-right    { top: 10px; right: 10px; }
 
+    /* Stack for right-side panels — banned stacks above scanners */
+    #right-panels {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      z-index: 5;
+    }
+    #right-panels .corner-panel {
+      position: static; /* override absolute; parent handles positioning */
+    }
+
     .corner-panel h2 {
       font-size: 0.65rem;
       text-transform: uppercase;
@@ -243,6 +257,42 @@
     }
     #panel-banned h2 { color: #ef5350; border-bottom-color: rgba(239,83,80,0.25); }
     #panel-banned .ban-empty {
+      font-size: 0.65rem;
+      color: #4a6a88;
+      padding: 6px 10px;
+      font-style: italic;
+    }
+
+    /* ── Port Scanners panel ── */
+    .scan-row {
+      display: flex;
+      flex-direction: column;
+      padding: 4px 10px;
+      gap: 1px;
+      border-bottom: 1px solid rgba(255,183,77,0.12);
+      animation: fadeIn 0.3s ease;
+    }
+    .scan-row:last-child { border-bottom: none; }
+    .scan-ip {
+      font-size: 0.68rem;
+      color: #ffb74d;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .scan-meta {
+      font-size: 0.62rem;
+      color: #6a8aaa;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .scan-expire {
+      font-size: 0.60rem;
+      color: #4a6a88;
+    }
+    #panel-scanners h2 { color: #ffb74d; border-bottom-color: rgba(255,183,77,0.25); }
+    #panel-scanners .scan-empty {
       font-size: 0.65rem;
       color: #4a6a88;
       padding: 6px 10px;
@@ -398,9 +448,15 @@
     <h2>Top Services</h2>
     <div id="service-rows"></div>
   </div>
-  <div id="panel-banned" class="corner-panel top-right">
-    <h2>Banned IPs</h2>
-    <div id="banned-rows"></div>
+  <div id="right-panels">
+    <div id="panel-banned" class="corner-panel">
+      <h2>Banned IPs</h2>
+      <div id="banned-rows"></div>
+    </div>
+    <div id="panel-scanners" class="corner-panel">
+      <h2>Port Scanners</h2>
+      <div id="scanner-rows"></div>
+    </div>
   </div>
   <!-- Magnifier inset -->
   <div id="magnifier">

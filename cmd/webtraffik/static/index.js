@@ -694,6 +694,54 @@
   fetchBanned();
   setInterval(fetchBanned, 10000);
 
+  // ── Port Scanners panel ───────────────────────────────────────────────────
+  const scannerRowsEl = document.getElementById('scanner-rows');
+
+  function renderScannerPanel(scanners) {
+    scannerRowsEl.innerHTML = '';
+    if (!scanners || scanners.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'scan-empty';
+      empty.textContent = 'none';
+      scannerRowsEl.appendChild(empty);
+      return;
+    }
+    scanners.forEach(s => {
+      const row = document.createElement('div');
+      row.className = 'scan-row';
+      const remaining = formatTimeRemaining(s.expires_at);
+      const ago = formatTimeAgo(s.detected_at);
+      row.innerHTML =
+        `<div class="scan-ip">${s.ip}</div>` +
+        `<div class="scan-meta">${s.port_count} ports &mdash; detected ${ago}</div>` +
+        `<div class="scan-expire">clears in ${remaining}</div>`;
+      scannerRowsEl.appendChild(row);
+    });
+  }
+
+  function formatTimeAgo(isoStr) {
+    const ms = Date.now() - new Date(isoStr);
+    if (ms < 0) return 'just now';
+    const totalSec = Math.floor(ms / 1000);
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    if (h > 0) return `${h}h ${m}m ago`;
+    if (m > 0) return `${m}m ${s}s ago`;
+    return `${s}s ago`;
+  }
+
+  function fetchScanners() {
+    fetch('/api/scanners')
+      .then(r => r.json())
+      .then(scanners => renderScannerPanel(scanners))
+      .catch(() => {});
+  }
+
+  // Poll every 10 seconds, same cadence as banned panel.
+  fetchScanners();
+  setInterval(fetchScanners, 10000);
+
   // ── Log/arc rendering stays on rAF for low-latency display ──
   function scheduleLogRender() {
     if (logRafScheduled) return;

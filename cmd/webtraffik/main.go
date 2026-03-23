@@ -420,6 +420,16 @@ func startDashboardServer() {
 		json.NewEncoder(w).Encode(bans)
 	})
 
+	// Port scanners endpoint — returns IPs currently classified as scanners.
+	mux.HandleFunc("/api/scanners", func(w http.ResponseWriter, r *http.Request) {
+		scanners := appLimiter.ActiveScanners()
+		if scanners == nil {
+			scanners = []ratelimit.ScannerEntry{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(scanners)
+	})
+
 	// Manual ban endpoint — POST { "ip": "1.2.3.4", "port": "22" }
 	mux.HandleFunc("/api/ban", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
