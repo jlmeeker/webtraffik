@@ -590,6 +590,224 @@ Content-Type: application/json; charset=UTF-8
 	},
 }
 
+// ── Industrial / SCADA services ───────────────────────────────────────────────
+// These are appended separately for clarity; StartTCPServiceListeners ranges
+// over the single tcpServices slice which includes all entries below.
+func init() {
+	tcpServices = append(tcpServices,
+		// ── Industrial / SCADA ────────────────────────────────────────────────
+		serviceEntry{
+			Port: 102, // Siemens S7comm (ISO-TSAP) — PLCs, HMIs
+			Banner: func() []byte {
+				// ISO-TSAP Connection Confirm (CC) TPDU — the response a real
+				// Siemens S7-300/400 PLC sends after a client COTP connect request.
+				// Scanners (and Shodan's "siemens" filter) fingerprint this exact
+				// 22-byte CC packet.
+				return []byte{
+					0x03, 0x00, // TPKT version 3
+					0x00, 0x16, // TPKT length = 22
+					0x11,       // COTP length = 17
+					0xd0,       // COTP PDU type: CC (Connection Confirm)
+					0x00, 0x01, // dst reference
+					0x00, 0x01, // src reference
+					0x00, // class / options
+					// COTP parameters: tpdu-size(0xc0), calling/called TSAP
+					0xc0, 0x01, 0x0a, // tpdu-size = 1024
+					0xc1, 0x02, 0x01, 0x00, // calling TSAP
+					0xc2, 0x02, 0x01, 0x02, // called TSAP (rack 0, slot 2 — S7-300 default)
+				}
+			},
+		},
+		serviceEntry{
+			Port: 502, // Modbus/TCP — industrial control, completely unauthenticated
+			Banner: func() []byte {
+				// Modbus Exception Response to an implicit Read Holding Registers
+				// request (function code 0x03). Real Modbus devices that receive
+				// a malformed or unsolicited connection often reply with an
+				// exception frame. This is the fingerprint Shodan's "modbus" search uses.
+				// Frame: transaction ID 0x0001, protocol 0x0000, length 0x0003,
+				// unit ID 0x01, exception function 0x83, exception code 0x01 (illegal fn).
+				return []byte{
+					0x00, 0x01, // transaction identifier
+					0x00, 0x00, // protocol identifier (0 = Modbus)
+					0x00, 0x03, // length = 3 bytes follow
+					0x01, // unit identifier
+					0x83, // function code 0x03 | 0x80 (exception flag)
+					0x01, // exception code: Illegal Function
+				}
+			},
+		},
+		serviceEntry{
+			Port: 20000, // DNP3 (Distributed Network Protocol) — power/water SCADA
+			Banner: func() []byte {
+				// DNP3 Unsolicited Response frame — the "I'm alive" beacon that
+				// real outstations (RTUs) send on new TCP connections.
+				// Start bytes 0x0564, length, ctrl, dst 0xFFFF (broadcast),
+				// src 0x0001, function 0x82 (Unsolicited Response), IIN bytes.
+				return []byte{
+					0x05, 0x64, // DNP3 start bytes
+					0x14,       // length = 20
+					0x44,       // control: DIR=0, PRM=1, FCB=0, FCV=0, FC=4 (Unsolicited Response)
+					0xff, 0xff, // destination address (master broadcast)
+					0x01, 0x00, // source address = 1
+					0x00, 0x00, // CRC placeholder (real devices compute this)
+					// Application layer
+					0xc0,       // app control: FIR=1, FIN=1, CON=0, UNS=1, seq=0
+					0x82,       // function code: Unsolicited Response
+					0x80, 0x00, // IIN1=0x80 (device restart), IIN2=0x00
+					0x00, 0x00, // CRC placeholder
+				}
+			},
+		},
+		serviceEntry{
+			Port: 44818, // EtherNet/IP (CIP) — Rockwell/Allen-Bradley PLCs
+			Banner: func() []byte {
+				// EtherNet/IP List Identity reply — the response to a broadcast
+				// "Who's there?" query. Rockwell scanners and Shodan's "ethernetip"
+				// filter look for this exact 65-byte structure.
+				// Command 0x0063, length 0x0035, session 0, status 0.
+				return []byte{
+					0x63, 0x00, // command: List Identity (0x0063) LE
+					0x35, 0x00, // length = 53 bytes of data follow
+					0x00, 0x00, 0x00, 0x00, // session handle
+					0x00, 0x00, 0x00, 0x00, // status = success
+					0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // sender context
+					0x00, 0x00, 0x00, 0x00, // options
+					// CPF item: Identity Object
+					0x01, 0x00, // item count = 1
+					0x0c, 0x00, // item type: Identity Object (0x000c) LE
+					0x2d, 0x00, // item length = 45
+					0x01, 0x00, // encapsulation protocol version
+					// socket address (sin_family=AF_INET, port=44818, addr=0)
+					0x00, 0x02, 0xaf, 0x12, 0x00, 0x00, 0x00, 0x00,
+					0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+					0x01, 0x00, // vendor ID: Rockwell Automation (1)
+					0x02, 0x00, // device type: Communications Adapter (2)
+					0x89, 0x00, // product code: 1756-ENBT (137)
+					0x03, 0x05, // revision: 3.5
+					0x30, 0x00, // status
+					0x01, 0x02, 0x03, 0x04, // serial number
+					// product name: "1756-ENBT/A" (len-prefixed)
+					0x0b, '1', '7', '5', '6', '-', 'E', 'N', 'B', 'T', '/', 'A',
+					0x03, // state: Operational
+				}
+			},
+		},
+
+		// ── Network Infrastructure ────────────────────────────────────────────
+		serviceEntry{
+			Port: 631, // IPP — Internet Printing Protocol (CUPS)
+			Banner: func() []byte {
+				// CUPS/IPP responds to any TCP connection with an HTTP 426 if it
+				// receives non-HTTP, or a proper HTTP response to GET /.
+				// We return a realistic CUPS server-info page header that scanners
+				// see when probing for exposed print servers.
+				body := `<!DOCTYPE HTML><html><head><title>Home - CUPS 2.4.2</title></head><body><h1>CUPS 2.4.2</h1></body></html>`
+				return []byte(fmt.Sprintf("HTTP/1.1 200 OK\r\n"+
+					"Content-Type: text/html; charset=utf-8\r\n"+
+					"Content-Length: %d\r\n"+
+					"Server: CUPS/2.4 IPP/2.1\r\n"+
+					"X-Frame-Options: DENY\r\n"+
+					"\r\n"+
+					"%s", len(body), body))
+			},
+		},
+		serviceEntry{
+			Port: 2082, // cPanel HTTP (unencrypted)
+			Banner: func() []byte {
+				body := `<html><head><title>cPanel Login</title></head><body><h1>cPanel</h1></body></html>`
+				return []byte(fmt.Sprintf("HTTP/1.1 200 OK\r\n"+
+					"Content-Type: text/html; charset=UTF-8\r\n"+
+					"Content-Length: %d\r\n"+
+					"Server: cpsrvd/11.112\r\n"+
+					"X-CPanel-Version: 11.112\r\n"+
+					"\r\n"+
+					"%s", len(body), body))
+			},
+		},
+		serviceEntry{
+			Port: 2083, // cPanel HTTPS (TLS — we return TLS alert, same pattern as 443)
+			Banner: func() []byte {
+				return []byte{0x15, 0x03, 0x01, 0x00, 0x02, 0x02, 0x28}
+			},
+		},
+		serviceEntry{
+			Port: 3283, // Apple Remote Desktop (ARD) / Net Assistant
+			Banner: func() []byte {
+				// ARD sends a 2-byte capability word immediately on connect.
+				// 0x00 0x02 = "server supports authentication".
+				// Scanners checking for exposed ARD look for this exact 2-byte response.
+				return []byte{0x00, 0x02}
+			},
+		},
+		serviceEntry{
+			Port: 4899, // Radmin (Remote Administrator) — popular in Eastern Europe
+			Banner: func() []byte {
+				// Radmin v3 sends a 9-byte handshake: magic 0x52 0x46 0x42 ("RFB"
+				// prefix used by Radmin), protocol version string.
+				// Scanners look for this to find unpatched Radmin 2.x (auth bypass).
+				return []byte("RFB 003.006\n")
+			},
+		},
+		serviceEntry{
+			Port: 5985, // WinRM HTTP (Windows Remote Management)
+			Banner: func() []byte {
+				// WinRM over HTTP returns a 401 with NTLM/Negotiate challenge
+				// on the /wsman endpoint. This is what scanners expect to see.
+				body := `<html><head><title>404 - Not Found</title></head><body>Not Found</body></html>`
+				return []byte(fmt.Sprintf("HTTP/1.1 404 Not Found\r\n"+
+					"Content-Type: text/html; charset=UTF-8\r\n"+
+					"Content-Length: %d\r\n"+
+					"Server: Microsoft-HTTPAPI/2.0\r\n"+
+					"\r\n"+
+					"%s", len(body), body))
+			},
+		},
+		serviceEntry{
+			Port: 5986, // WinRM HTTPS
+			Banner: func() []byte {
+				return []byte{0x15, 0x03, 0x01, 0x00, 0x02, 0x02, 0x28}
+			},
+		},
+		serviceEntry{
+			Port: 8291, // MikroTik Winbox
+			Banner: func() []byte {
+				// Winbox protocol: client sends a probe, server responds with
+				// a 4-byte length-prefixed packet. The magic first byte 0x01
+				// followed by 0x00 0x00 0x00 is the Winbox "null session" banner
+				// that all Winbox port scanners (and the VPNFilter malware) look for.
+				return []byte{0x01, 0x00, 0x00, 0x00}
+			},
+		},
+		serviceEntry{
+			Port: 8728, // MikroTik RouterOS API (plaintext)
+			Banner: func() []byte {
+				// RouterOS API uses a length-prefixed sentence protocol.
+				// On connect, the router sends its version sentence:
+				// !done followed by =ret=<version>.
+				// Each word is length-prefixed with a 1-byte length.
+				// This is the exact greeting a real RouterOS 6.x/7.x device sends.
+				sentence := func(words ...string) []byte {
+					var b []byte
+					for _, w := range words {
+						b = append(b, byte(len(w)))
+						b = append(b, []byte(w)...)
+					}
+					b = append(b, 0x00) // end of sentence
+					return b
+				}
+				return sentence("!done", "=ret=ROS_7.14")
+			},
+		},
+		serviceEntry{
+			Port: 8729, // MikroTik RouterOS API-SSL
+			Banner: func() []byte {
+				return []byte{0x15, 0x03, 0x01, 0x00, 0x02, 0x02, 0x28}
+			},
+		},
+	)
+}
+
 // udpServicePorts are the UDP ports webTraffik captures.
 var udpServicePorts = []int{
 	53,    // DNS
@@ -599,4 +817,5 @@ var udpServicePorts = []int{
 	1900,  // SSDP/UPnP
 	5060,  // SIP
 	30303, // Ethereum P2P (devp2p discovery)
+	47808, // BACnet (building automation)
 }
