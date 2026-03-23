@@ -700,23 +700,57 @@
   }
 
   function renderBannedPanel(bans) {
-    bannedRowsEl.innerHTML = '';
-    if (!bans || bans.length === 0) {
-      const empty = document.createElement('div');
-      empty.className = 'ban-empty';
-      empty.textContent = 'none';
-      bannedRowsEl.appendChild(empty);
+    // Diff against current DOM rows instead of wiping and rebuilding, so the
+    // panel doesn't visibly flash on every 10-second poll.
+    const incoming = bans || [];
+
+    // Remove stale "none" placeholder if real rows are coming in
+    const emptyEl = bannedRowsEl.querySelector('.ban-empty');
+    if (emptyEl && incoming.length > 0) emptyEl.remove();
+
+    if (incoming.length === 0) {
+      if (!bannedRowsEl.querySelector('.ban-empty')) {
+        bannedRowsEl.innerHTML = '';
+        const empty = document.createElement('div');
+        empty.className = 'ban-empty';
+        empty.textContent = 'none';
+        bannedRowsEl.appendChild(empty);
+      }
       return;
     }
-    bans.forEach(b => {
-      const row = document.createElement('div');
-      row.className = 'ban-row';
+
+    // Index existing rows by key
+    const existingRows = new Map();
+    bannedRowsEl.querySelectorAll('.ban-row[data-key]').forEach(el => {
+      existingRows.set(el.dataset.key, el);
+    });
+
+    const seenKeys = new Set();
+    incoming.forEach(b => {
+      const key = `${b.ip}|${b.port}`;
+      seenKeys.add(key);
       const remaining = formatTimeRemaining(b.expires_at);
-      row.innerHTML =
-        `<div class="ban-ip">${b.ip}</div>` +
-        `<div class="ban-meta">port ${b.port} &mdash; ${b.service || 'unknown'}</div>` +
-        `<div class="ban-expire">expires in ${remaining}</div>`;
-      bannedRowsEl.appendChild(row);
+      if (existingRows.has(key)) {
+        // Update only the expiry countdown — IP/port/service never change
+        const row = existingRows.get(key);
+        const expireEl = row.querySelector('.ban-expire');
+        if (expireEl) expireEl.textContent = `expires in ${remaining}`;
+      } else {
+        // New row
+        const row = document.createElement('div');
+        row.className = 'ban-row';
+        row.dataset.key = key;
+        row.innerHTML =
+          `<div class="ban-ip">${b.ip}</div>` +
+          `<div class="ban-meta">port ${b.port} &mdash; ${b.service || 'unknown'}</div>` +
+          `<div class="ban-expire">expires in ${remaining}</div>`;
+        bannedRowsEl.appendChild(row);
+      }
+    });
+
+    // Remove rows no longer in the list
+    existingRows.forEach((el, key) => {
+      if (!seenKeys.has(key)) el.remove();
     });
   }
 
@@ -735,24 +769,55 @@
   const scannerRowsEl = document.getElementById('scanner-rows');
 
   function renderScannerPanel(scanners) {
-    scannerRowsEl.innerHTML = '';
-    if (!scanners || scanners.length === 0) {
-      const empty = document.createElement('div');
-      empty.className = 'scan-empty';
-      empty.textContent = 'none';
-      scannerRowsEl.appendChild(empty);
+    // Diff against current DOM rows — same approach as renderBannedPanel.
+    const incoming = scanners || [];
+
+    const emptyEl = scannerRowsEl.querySelector('.scan-empty');
+    if (emptyEl && incoming.length > 0) emptyEl.remove();
+
+    if (incoming.length === 0) {
+      if (!scannerRowsEl.querySelector('.scan-empty')) {
+        scannerRowsEl.innerHTML = '';
+        const empty = document.createElement('div');
+        empty.className = 'scan-empty';
+        empty.textContent = 'none';
+        scannerRowsEl.appendChild(empty);
+      }
       return;
     }
-    scanners.forEach(s => {
-      const row = document.createElement('div');
-      row.className = 'scan-row';
+
+    const existingRows = new Map();
+    scannerRowsEl.querySelectorAll('.scan-row[data-key]').forEach(el => {
+      existingRows.set(el.dataset.key, el);
+    });
+
+    const seenKeys = new Set();
+    incoming.forEach(s => {
+      const key = s.ip;
+      seenKeys.add(key);
       const remaining = formatTimeRemaining(s.expires_at);
       const ago = formatTimeAgo(s.detected_at);
-      row.innerHTML =
-        `<div class="scan-ip">${s.ip}</div>` +
-        `<div class="scan-meta">${s.port_count} ports &mdash; detected ${ago}</div>` +
-        `<div class="scan-expire">clears in ${remaining}</div>`;
-      scannerRowsEl.appendChild(row);
+      if (existingRows.has(key)) {
+        // Update mutable fields in-place
+        const row = existingRows.get(key);
+        const metaEl = row.querySelector('.scan-meta');
+        const expireEl = row.querySelector('.scan-expire');
+        if (metaEl) metaEl.textContent = `${s.port_count} ports \u2014 detected ${ago}`;
+        if (expireEl) expireEl.textContent = `clears in ${remaining}`;
+      } else {
+        const row = document.createElement('div');
+        row.className = 'scan-row';
+        row.dataset.key = key;
+        row.innerHTML =
+          `<div class="scan-ip">${s.ip}</div>` +
+          `<div class="scan-meta">${s.port_count} ports &mdash; detected ${ago}</div>` +
+          `<div class="scan-expire">clears in ${remaining}</div>`;
+        scannerRowsEl.appendChild(row);
+      }
+    });
+
+    existingRows.forEach((el, key) => {
+      if (!seenKeys.has(key)) el.remove();
     });
   }
 
