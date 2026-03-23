@@ -886,6 +886,7 @@
       if (!entry) {
         const row = document.createElement('div');
         row.className = 'stat-row';
+        row.dataset.key = p;
         row.style.flexDirection = 'column';
         row.style.alignItems = 'stretch';
         row.style.gap = '2px';
@@ -910,10 +911,7 @@
     });
 
     // Reorder only if current DOM order differs from sorted order
-    const currentKeys = [...serviceRowsEl.children].map(r => {
-      const label = r.querySelector('.stat-label');
-      return label ? label.textContent.split(' ')[0].replace(':', '') : '';
-    });
+    const currentKeys = [...serviceRowsEl.children].map(r => r.dataset.key || '');
     const sortedKeys = top.map(([p]) => p);
     const orderChanged = sortedKeys.length !== currentKeys.length || sortedKeys.some((k, i) => k !== currentKeys[i]);
     if (orderChanged) {
