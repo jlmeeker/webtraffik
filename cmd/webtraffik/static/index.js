@@ -1206,14 +1206,24 @@
     tagDotWithEvent(srcDot, ev);
 
     // Apply banned styling immediately if this IP is already in the ban set.
-    if (bannedSet.has(banKey(ev.src_ip, ev.dst_port))) {
+    const isAlreadyBanned = bannedSet.has(banKey(ev.src_ip, ev.dst_port));
+    if (isAlreadyBanned) {
       srcDot.classed('banned', true).attr('fill', '#ef5350').attr('opacity', 0.9);
     }
 
-    srcDot.transition().duration(300).attr('r', dotR + 1)
-      .transition().delay(2500).duration(600)
-        .attr('r', dotR)
-        .attr('opacity', 0.35);
+    // Fade the dot in, then settle to resting opacity.
+    // Banned dots stay at full opacity — don't let the fade transition
+    // overwrite the red styling.
+    if (isAlreadyBanned) {
+      srcDot.transition().duration(300).attr('r', dotR + 1)
+        .transition().duration(300).attr('r', dotR);
+      // opacity stays at 0.9 — no fade
+    } else {
+      srcDot.transition().duration(300).attr('r', dotR + 1)
+        .transition().delay(2500).duration(600)
+          .attr('r', dotR)
+          .attr('opacity', 0.35);
+    }
 
     trackDot(srcDot.node());
 
@@ -1561,7 +1571,8 @@
       const wasBanned = d3el.classed('banned');
       d3el.classed('banned', isBanned);
       if (isBanned) {
-        d3el.attr('fill', '#ef5350').attr('opacity', 0.9);
+        // Interrupt any in-flight fade transition so it can't overwrite opacity.
+        d3el.interrupt().attr('fill', '#ef5350').attr('opacity', 0.9);
         // Only flash on the transition unbanned → banned, not on every poll.
         if (!wasBanned) flashBanned(d3el);
       }
