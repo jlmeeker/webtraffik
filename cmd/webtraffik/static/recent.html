@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>webTraffik — Recent Events</title>
+  <link rel="stylesheet" href="/theme.css" />
+  <style>
+    /* ── Toolbar ── */
+    #toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 18px;
+      background: rgba(14, 24, 46, 0.92);
+      border-bottom: 1px solid #2a4a70;
+      flex-shrink: 0;
+    }
+
+    #toolbar .info {
+      font-size: 0.7rem;
+      color: #6a8aaa;
+    }
+
+    #toolbar .info span { color: #4fc3f7; }
+
+    #toolbar .actions {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    #toolbar .filters {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    #toolbar .filters label {
+      font-size: 0.65rem;
+      color: #6a8aaa;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    #toolbar .filters select {
+      background: #0f1e35;
+      border: 1px solid #2a4a70;
+      border-radius: 4px;
+      color: #dce8f8;
+      font-family: inherit;
+      font-size: 0.72rem;
+      padding: 4px 8px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    #toolbar .filters select:focus { border-color: #4fc3f7; }
+
+    .btn {
+      background: #2a4a70;
+      border: 1px solid #3a6090;
+      border-radius: 4px;
+      color: #dce8f8;
+      font-family: inherit;
+      font-size: 0.72rem;
+      padding: 5px 14px;
+      cursor: pointer;
+      transition: background 0.2s, border-color 0.2s;
+    }
+    .btn:hover { background: #3a6090; border-color: #4fc3f7; }
+    .btn:active { background: #4fc3f7; color: #111827; }
+    .btn:disabled { opacity: 0.4; cursor: default; }
+
+    .btn-expand {
+      font-size: 0.65rem;
+      padding: 3px 10px;
+    }
+
+    /* ── Log list ── */
+    #event-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 4px 12px;
+      font-size: 0.68rem;
+      line-height: 1.6;
+    }
+
+    #event-list::-webkit-scrollbar { width: 4px; }
+
+    .log-data-hint {
+      color: #6a8aaa;
+      font-size: 0.58rem;
+      cursor: pointer;
+      margin-left: 6px;
+      user-select: none;
+    }
+    .log-data-hint:hover { color: #80cbc4; }
+
+    .log-client-data {
+      display: none;
+      width: 100%;
+      font-family: 'Fira Code', 'Consolas', monospace;
+      font-size: 0.62rem;
+      color: #80cbc4;
+      background: rgba(0,0,0,0.25);
+      border-radius: 3px;
+      padding: 3px 6px;
+      margin-top: 2px;
+      white-space: pre;
+      overflow-x: auto;
+      max-width: 100%;
+      line-height: 1.3;
+    }
+
+    .log-entry.expanded .log-client-data { display: block; }
+
+    /* ── Loading state ── */
+    #loading {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 40px;
+      color: #6a8aaa;
+      font-size: 0.75rem;
+    }
+
+    .spinner {
+      width: 14px;
+      height: 14px;
+      border: 2px solid #2a4a70;
+      border-top-color: #4fc3f7;
+      margin-right: 10px;
+    }
+
+    /* ── Empty state ── */
+    #empty-state {
+      display: none;
+      text-align: center;
+      padding: 60px 20px;
+      color: #4a6a88;
+      font-size: 0.8rem;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>webTraffik</h1>
+  <div id="self-info">My IP: <span id="my-ip">&mdash;</span> &nbsp;|&nbsp; <span id="my-loc">&mdash;</span></div>
+  <nav>
+    <a href="/">Live Map</a>
+    <a href="/history.html">History</a>
+    <a href="/recent.html" class="active">Recent</a>
+  </nav>
+</header>
+
+<div id="toolbar">
+  <div class="info">
+    Showing <span id="event-count">0</span> of <span id="total-count">0</span> events
+  </div>
+  <div class="filters">
+    <label>Service:</label>
+    <select id="filter-service"><option value="">All</option></select>
+    <label>Limit:</label>
+    <select id="filter-limit">
+      <option value="100">100</option>
+      <option value="250">250</option>
+      <option value="500">500</option>
+      <option value="1000" selected>1000</option>
+    </select>
+  </div>
+  <div class="actions">
+    <button class="btn btn-expand" id="expand-all-btn">Expand All Data</button>
+    <button class="btn" id="refresh-btn">Refresh</button>
+  </div>
+</div>
+
+<div id="loading"><div class="spinner"></div>Loading recent events...</div>
+<div id="empty-state">No events in the ring buffer yet.</div>
+<div id="event-list"></div>
+
+<script>
+(() => {
+  // ── Self info ──
+  fetch('/api/self')
+    .then(r => r.json())
+    .then(data => {
+      document.getElementById('my-ip').textContent = data.ip || '\u2014';
+      document.getElementById('my-loc').textContent =
+        [data.city, data.cc].filter(Boolean).join(', ') || '\u2014';
+    })
+    .catch(() => {});
+
+  const PORT_SERVICE_NAMES = {
+    '21': 'FTP', '22': 'SSH', '23': 'Telnet', '25': 'SMTP',
+    '53': 'DNS', '80': 'HTTP', '110': 'POP3', '123': 'NTP',
+    '135': 'RPC', '139': 'NetBIOS', '143': 'IMAP', '161': 'SNMP', '443': 'HTTPS', '445': 'SMB',
+    '993': 'IMAPS', '995': 'POP3S', '1433': 'MSSQL', '1434': 'MSSQL Browser', '1521': 'Oracle', '1723': 'PPTP', '1900': 'SSDP', '3000': 'Node/Express',
+    '3001': 'Node alt', '3128': 'Squid', '3306': 'MySQL', '3389': 'RDP',
+    '4000': 'Phoenix', '4200': 'Angular', '4444': 'Metasploit', '5000': 'Flask', '5001': 'Flask alt',
+    '5060': 'SIP', '5432': 'PostgreSQL', '5555': 'ADB', '5900': 'VNC', '6379': 'Redis', '6667': 'IRC',
+    '8000': 'HTTP alt', '8008': 'HTTP alt', '8080': 'HTTP proxy', '8081': 'HTTP proxy',
+    '8088': 'HTTP alt', '8090': 'Confluence', '8443': 'HTTPS alt', '8888': 'Jupyter',
+    '9000': 'SonarQube', '9090': 'Prometheus', '9100': 'Printer', '9200': 'Elasticsearch',
+    '11211': 'Memcached', '18789': 'OpenClaw', '25565': 'Minecraft', '27017': 'MongoDB',
+    '3333': 'Stratum', '8333': 'Bitcoin P2P', '8545': 'Ethereum RPC', '8546': 'Ethereum WS',
+    '9735': 'Lightning', '10009': 'Lightning gRPC', '18080': 'Monero P2P', '18081': 'Monero RPC',
+    '30303': 'Ethereum P2P',
+  };
+
+  const listEl = document.getElementById('event-list');
+  const loadingEl = document.getElementById('loading');
+  const emptyEl = document.getElementById('empty-state');
+  const countEl = document.getElementById('event-count');
+  const totalEl = document.getElementById('total-count');
+  const refreshBtn = document.getElementById('refresh-btn');
+  const expandAllBtn = document.getElementById('expand-all-btn');
+  const serviceSel = document.getElementById('filter-service');
+  const limitSel = document.getElementById('filter-limit');
+
+  let allExpanded = false;
+  let rawEvents = []; // full snapshot from /api/recent
+  let servicePortMap = {}; // service name -> Set of port strings
+
+  // Decode hex string into hex+ASCII dump (plain text, safe for textContent)
+  function hexPreview(hexStr) {
+    if (!hexStr) return '';
+    const bytes = [];
+    for (let i = 0; i < hexStr.length; i += 2) {
+      bytes.push(parseInt(hexStr.substr(i, 2), 16));
+    }
+    const lines = [];
+    for (let off = 0; off < bytes.length; off += 16) {
+      const chunk = bytes.slice(off, off + 16);
+      const hexPart = chunk.map(b => b.toString(16).padStart(2, '0')).join(' ');
+      const ascPart = chunk.map(b => (b >= 0x20 && b <= 0x7e) ? String.fromCharCode(b) : '.').join('');
+      const addr = off.toString(16).padStart(4, '0');
+      lines.push(addr + '  ' + hexPart.padEnd(48) + '  ' + ascPart);
+    }
+    return lines.join('\n');
+  }
+
+  function buildRow(ev) {
+    const t = new Date(ev.time);
+    const ts = t.toLocaleTimeString('en-US', { hour12: false });
+    const date = t.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const srcLabel = [ev.src_ip, ev.src_city, ev.src_cc].filter(Boolean).join(' / ');
+    const portNum = ev.dst_port && ev.dst_port !== 'unknown' ? ev.dst_port : '';
+    const svcName = portNum ? (PORT_SERVICE_NAMES[portNum] || '') : '';
+    const portLabel = portNum ? (':' + portNum + (svcName ? ' ' + svcName : '')) : '';
+    const protoLabel = ev.protocol ? ev.protocol.toUpperCase() : '';
+
+    const row = document.createElement('div');
+    row.className = 'log-entry';
+
+    const timeSpan = document.createElement('span');
+    timeSpan.className = 'log-time';
+    timeSpan.textContent = date + ' ' + ts;
+    row.appendChild(timeSpan);
+
+    const srcSpan = document.createElement('span');
+    srcSpan.className = 'log-src';
+    srcSpan.textContent = srcLabel;
+    row.appendChild(srcSpan);
+
+    if (portLabel) {
+      const arrowSpan = document.createElement('span');
+      arrowSpan.className = 'log-arrow';
+      arrowSpan.textContent = '\u2192';
+      row.appendChild(arrowSpan);
+      const portSpan = document.createElement('span');
+      portSpan.className = 'log-port';
+      portSpan.textContent = portLabel;
+      row.appendChild(portSpan);
+    }
+
+    if (protoLabel) {
+      const protoSpan = document.createElement('span');
+      protoSpan.className = 'log-proto';
+      protoSpan.textContent = protoLabel;
+      row.appendChild(protoSpan);
+    }
+
+    if (ev.client_data) {
+      const hint = document.createElement('span');
+      hint.className = 'log-data-hint';
+      hint.textContent = '[data]';
+      hint.addEventListener('click', e => {
+        e.stopPropagation();
+        row.classList.toggle('expanded');
+      });
+      row.appendChild(hint);
+
+      const dataBlock = document.createElement('pre');
+      dataBlock.className = 'log-client-data';
+      dataBlock.textContent = hexPreview(ev.client_data);
+      row.appendChild(dataBlock);
+
+      if (allExpanded) row.classList.add('expanded');
+    }
+
+    return row;
+  }
+
+  function applyFilters() {
+    let filtered = rawEvents.filter(ev => ev.client_data);
+    const svc = serviceSel.value;
+    if (svc && servicePortMap[svc]) {
+      const ports = servicePortMap[svc];
+      filtered = filtered.filter(ev => ports.has(ev.dst_port));
+    }
+    const limit = parseInt(limitSel.value, 10) || 1000;
+    // Take the most recent N (events are oldest-first from API)
+    if (filtered.length > limit) {
+      filtered = filtered.slice(filtered.length - limit);
+    }
+    render(filtered);
+  }
+
+  function render(events) {
+    listEl.textContent = '';
+    countEl.textContent = events.length;
+    totalEl.textContent = rawEvents.length;
+
+    if (events.length === 0) {
+      emptyEl.style.display = 'block';
+      emptyEl.textContent = rawEvents.length === 0
+        ? 'No events in the ring buffer yet.'
+        : 'No events match the current filter.';
+      return;
+    }
+    emptyEl.style.display = 'none';
+
+    // Newest first
+    const frag = document.createDocumentFragment();
+    for (let i = events.length - 1; i >= 0; i--) {
+      frag.appendChild(buildRow(events[i]));
+    }
+    listEl.appendChild(frag);
+  }
+
+  async function fetchRecent() {
+    loadingEl.style.display = 'flex';
+    emptyEl.style.display = 'none';
+    listEl.textContent = '';
+    refreshBtn.disabled = true;
+    try {
+      const resp = await fetch('/api/recent');
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      rawEvents = await resp.json();
+      applyFilters();
+    } catch (err) {
+      rawEvents = [];
+      listEl.textContent = '';
+      emptyEl.textContent = 'Failed to load events: ' + err.message;
+      emptyEl.style.display = 'block';
+    } finally {
+      loadingEl.style.display = 'none';
+      refreshBtn.disabled = false;
+    }
+  }
+
+  // Populate service dropdown from /api/services
+  async function loadServices() {
+    try {
+      const resp = await fetch('/api/services');
+      const svcs = await resp.json();
+      svcs.forEach(s => {
+        servicePortMap[s.name] = new Set(s.ports.map(String));
+        const opt = document.createElement('option');
+        opt.value = s.name;
+        opt.textContent = s.name;
+        serviceSel.appendChild(opt);
+      });
+    } catch (e) {
+      // dropdown stays with just "All"
+    }
+  }
+
+  refreshBtn.addEventListener('click', fetchRecent);
+  serviceSel.addEventListener('change', applyFilters);
+  limitSel.addEventListener('change', applyFilters);
+
+  expandAllBtn.addEventListener('click', () => {
+    allExpanded = !allExpanded;
+    expandAllBtn.textContent = allExpanded ? 'Collapse All Data' : 'Expand All Data';
+    const entries = listEl.querySelectorAll('.log-entry');
+    entries.forEach(row => {
+      if (row.querySelector('.log-client-data')) {
+        row.classList.toggle('expanded', allExpanded);
+      }
+    });
+  });
+
+  // Load services then fetch events
+  loadServices().then(fetchRecent);
+})();
+</script>
+</body>
+</html>
