@@ -841,6 +841,7 @@
   const PULSE_DURATION = 1200;   // ms — pulse travel time src→dst
   const MAX_PULSES = 80;         // cap concurrent pulse particles
   let activePulses = 0;
+  const pulseTimers = new Set(); // tracks live d3.timers so resetState() can stop them
 
   // ── Audio engine — Web Audio API tones per event ──────────────────────
   // Plays a short sine-wave tone for each live event. Duration is
@@ -1191,30 +1192,51 @@
     const duration = PULSE_DURATION;
     const lastIdx = pts.length - 1;
 
-    d3.timer(function(elapsed) {
-      const t = Math.min(1, elapsed / duration);
-      // Ease for smooth acceleration/deceleration
-      const et = d3.easeQuadInOut(t);
-      // Interpolate along the pre-computed point array
-      const rawIdx = et * lastIdx;
-      const i = Math.floor(rawIdx);
-      const f = rawIdx - i;
-      const i2 = Math.min(i + 1, lastIdx);
-      const x = pts[i][0] + (pts[i2][0] - pts[i][0]) * f;
-      const y = pts[i][1] + (pts[i2][1] - pts[i][1]) * f;
-
-      pulse.attr('cx', x).attr('cy', y);
-      // Fade out over the last 20% of travel
-      if (t > 0.8) {
-        pulse.attr('opacity', 0.95 * (1 - (t - 0.8) / 0.2));
-      }
-
-      if (t >= 1) {
+    // Validate all points are finite before starting the timer — a single
+    // NaN coordinate would cause t >= 1 to never be true, leaking the timer
+    // at 60fps forever.
+    for (let pi = 0; pi < pts.length; pi++) {
+      if (!isFinite(pts[pi][0]) || !isFinite(pts[pi][1])) {
         pulse.remove();
         activePulses--;
+        return;
+      }
+    }
+
+    const timer = d3.timer(function(elapsed) {
+      try {
+        const t = Math.min(1, elapsed / duration);
+        // Ease for smooth acceleration/deceleration
+        const et = d3.easeQuadInOut(t);
+        // Interpolate along the pre-computed point array
+        const rawIdx = et * lastIdx;
+        const i = Math.floor(rawIdx);
+        const f = rawIdx - i;
+        const i2 = Math.min(i + 1, lastIdx);
+        const x = pts[i][0] + (pts[i2][0] - pts[i][0]) * f;
+        const y = pts[i][1] + (pts[i2][1] - pts[i][1]) * f;
+
+        pulse.attr('cx', x).attr('cy', y);
+        // Fade out over the last 20% of travel
+        if (t > 0.8) {
+          pulse.attr('opacity', 0.95 * (1 - (t - 0.8) / 0.2));
+        }
+
+        if (t >= 1) {
+          pulse.remove();
+          activePulses--;
+          pulseTimers.delete(timer);
+          return true; // stop timer
+        }
+      } catch (e) {
+        // Guard against any unexpected error leaving the timer spinning forever
+        pulse.remove();
+        activePulses--;
+        pulseTimers.delete(timer);
         return true; // stop timer
       }
     });
+    pulseTimers.add(timer);
   }
 
   // ── Pulse the existing dot on repeat hit ────────────────────────────────
@@ -1388,6 +1410,9 @@
     arcRegistry.clear();
     arcRing.length = 0;
     arcGroup.selectAll('path').remove();
+    // Stop all in-flight pulse timers so they don't keep spinning at 60fps
+    pulseTimers.forEach(t => t.stop());
+    pulseTimers.clear();
     activePulses = 0;
 
     // Clear arc flood buffer
