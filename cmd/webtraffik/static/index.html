@@ -362,7 +362,10 @@
       stroke-width: 2px;
       stroke-opacity: 0.9;
       fill: #ef5350 !important;
-      animation: banned-pulse 1.4s ease-in-out infinite;
+    }
+    /* Pulse 3 times when a ban is first applied, then stop. */
+    .src-dot.banned-flash {
+      animation: banned-pulse 1.4s ease-in-out 3;
     }
     @keyframes banned-pulse {
       0%, 100% { stroke-opacity: 0.9; stroke-width: 2px; }

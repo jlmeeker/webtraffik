@@ -1433,6 +1433,17 @@
   function banKey(ip, port) { return `${ip}|${port}`; }
 
   // Sync bannedSet from the latest /api/banned response and update all dots.
+  // Flash a dot with the banned-pulse animation (3 iterations) then stop.
+  // Only called when a dot transitions from unbanned → banned so we don't
+  // burn CPU animating hundreds of historical dots at idle.
+  function flashBanned(dotEl) {
+    dotEl.classed('banned-flash', true);
+    dotEl.node().addEventListener('animationend', function onEnd() {
+      dotEl.node().removeEventListener('animationend', onEnd);
+      dotEl.classed('banned-flash', false);
+    });
+  }
+
   function syncBannedSet(bans) {
     bannedSet.clear();
     (bans || []).forEach(b => bannedSet.add(banKey(b.ip, b.port)));
@@ -1442,8 +1453,13 @@
       const ev = this.__wtEv;
       if (!ev) return;
       const isBanned = bannedSet.has(banKey(ev.src_ip, ev.dst_port));
+      const wasBanned = d3el.classed('banned');
       d3el.classed('banned', isBanned);
-      if (isBanned) d3el.attr('fill', '#ef5350').attr('opacity', 0.9);
+      if (isBanned) {
+        d3el.attr('fill', '#ef5350').attr('opacity', 0.9);
+        // Only flash on the transition unbanned → banned, not on every poll.
+        if (!wasBanned) flashBanned(d3el);
+      }
     });
   }
 
