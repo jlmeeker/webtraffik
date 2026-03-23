@@ -1,4 +1,4 @@
-package main
+package geo
 
 import (
 	"fmt"
@@ -17,9 +17,9 @@ const (
 	dbFilename = "GeoLite2-City.mmdb"
 )
 
-// ensureGeoDB returns the path to the GeoLite2 City database,
+// EnsureGeoDB returns the path to the GeoLite2 City database,
 // downloading it if it doesn't already exist.
-func ensureGeoDB() (string, error) {
+func EnsureGeoDB() (string, error) {
 	// Check current directory first, then the user's config dir
 	localPath := dbFilename
 	if _, err := os.Stat(localPath); err == nil {

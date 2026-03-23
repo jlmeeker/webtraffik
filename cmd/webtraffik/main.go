@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -18,82 +17,73 @@ import (
 
 	"nhooyr.io/websocket"
 	"nhooyr.io/websocket/wsjson"
+
+	"webtraffik/internal/db"
+	"webtraffik/internal/event"
+	"webtraffik/internal/geo"
+	"webtraffik/internal/iputil"
+	"webtraffik/internal/metrics"
+	"webtraffik/internal/ratelimit"
+	"webtraffik/internal/services"
 )
 
-// ConnectionEvent is sent to the browser over WebSocket
-type ConnectionEvent struct {
-	Time       string  `json:"time"`
-	SrcIP      string  `json:"src_ip"`
-	DstIP      string  `json:"dst_ip"`
-	DstPort    string  `json:"dst_port"`
-	Protocol   string  `json:"protocol"` // "tcp" or "udp"
-	SrcLat     float64 `json:"src_lat"`
-	SrcLon     float64 `json:"src_lon"`
-	DstLat     float64 `json:"dst_lat"`
-	DstLon     float64 `json:"dst_lon"`
-	SrcCity    string  `json:"src_city"`
-	DstCity    string  `json:"dst_city"`
-	SrcCC      string  `json:"src_cc"`
-	DstCC      string  `json:"dst_cc"`
-	Replay     bool    `json:"replay,omitempty"`      // true when replayed from history
-	ClientData string  `json:"client_data,omitempty"` // hex-encoded first bytes from client (ephemeral, not persisted)
-}
+// ── hub ──────────────────────────────────────────────────────────────────────
 
 const historySize = 1000
 
-// hub manages WebSocket subscribers and a rolling history buffer
+// hub manages WebSocket subscribers and a rolling history buffer.
 type hub struct {
 	mu          sync.Mutex
-	subscribers map[chan ConnectionEvent]struct{}
-	history     []ConnectionEvent // ring buffer, capped at historySize
+	subscribers map[chan event.ConnectionEvent]struct{}
+	history     []event.ConnectionEvent // ring buffer, capped at historySize
 }
 
 func newHub() *hub {
 	return &hub{
-		subscribers: make(map[chan ConnectionEvent]struct{}),
-		history:     make([]ConnectionEvent, 0, historySize),
+		subscribers: make(map[chan event.ConnectionEvent]struct{}),
+		history:     make([]event.ConnectionEvent, 0, historySize),
 	}
 }
 
-func (h *hub) subscribe() chan ConnectionEvent {
-	ch := make(chan ConnectionEvent, 256)
+func (h *hub) subscribe() chan event.ConnectionEvent {
+	ch := make(chan event.ConnectionEvent, 256)
 	h.mu.Lock()
 	h.subscribers[ch] = struct{}{}
 	h.mu.Unlock()
 	return ch
 }
 
-func (h *hub) unsubscribe(ch chan ConnectionEvent) {
+func (h *hub) unsubscribe(ch chan event.ConnectionEvent) {
 	h.mu.Lock()
 	delete(h.subscribers, ch)
 	h.mu.Unlock()
 }
 
 // snapshot returns a copy of the current history slice, oldest-first.
-func (h *hub) snapshot() []ConnectionEvent {
+func (h *hub) snapshot() []event.ConnectionEvent {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	out := make([]ConnectionEvent, len(h.history))
+	out := make([]event.ConnectionEvent, len(h.history))
 	copy(out, h.history)
 	return out
 }
 
-func (h *hub) broadcast(ev ConnectionEvent) {
+func (h *hub) broadcast(ev event.ConnectionEvent) {
 	h.mu.Lock()
-	// Append to history, evict oldest when full
+	// Append to history, evict oldest when full.
 	if len(h.history) >= historySize {
 		h.history = append(h.history[1:], ev)
 	} else {
 		h.history = append(h.history, ev)
 	}
-	// Snapshot subscriber channels under lock, then release before sending
-	subs := make([]chan ConnectionEvent, 0, len(h.subscribers))
+	// Snapshot subscriber channels under lock, then release before sending.
+	subs := make([]chan event.ConnectionEvent, 0, len(h.subscribers))
 	for ch := range h.subscribers {
 		subs = append(subs, ch)
 	}
 	h.mu.Unlock()
 
-	// Fan-out without holding the lock — subscribe/unsubscribe are not blocked
+	// Fan-out without holding the lock — subscribe/unsubscribe are not blocked.
 	for _, ch := range subs {
 		select {
 		case ch <- ev:
@@ -102,15 +92,19 @@ func (h *hub) broadcast(ev ConnectionEvent) {
 	}
 }
 
+// ── application globals ───────────────────────────────────────────────────────
+
 var (
-	appHub   = newHub()
-	appDB    *eventDB
-	geo      *GeoLocator
-	selfIP   string
-	selfLat  float64
-	selfLon  float64
-	selfCity string
-	selfCC   string
+	appHub     = newHub()
+	appDB      *db.EventDB
+	appGeo     *geo.GeoLocator
+	appMetrics *metrics.Cache
+	appLimiter *ratelimit.Limiter
+	selfIP     string
+	selfLat    float64
+	selfLon    float64
+	selfCity   string
+	selfCC     string
 )
 
 // capturePorts are the common non-TLS HTTP ports the app listens on directly.
@@ -135,16 +129,18 @@ var capturePorts = []int{
 	9090, // Prometheus, Cockpit
 }
 
+// ── main ──────────────────────────────────────────────────────────────────────
+
 func main() {
 	log.Println("webTraffik starting...")
 
-	// Parse CLI flags
+	// Parse CLI flags.
 	disablePortsFlag := flag.String("disable-ports", "",
 		"Comma-separated list of ports to skip binding (e.g. 22,80,443). "+
 			"These ports will not be listened on. Update your firewall rules accordingly.")
 	flag.Parse()
 
-	// Build a set of disabled ports from the flag value
+	// Build a set of disabled ports from the flag value.
 	disabledPorts := make(map[int]bool)
 	if *disablePortsFlag != "" {
 		for _, tok := range strings.Split(*disablePortsFlag, ",") {
@@ -170,30 +166,39 @@ func main() {
 	}
 
 	// Open (or create) the SQLite event database.
-	appDB, err = openEventDB(workDir)
+	appDB, err = db.OpenEventDB(workDir)
 	if err != nil {
 		log.Fatalf("Failed to open event database: %v", err)
 	}
-	defer appDB.close()
-	defer func() {
-		if appMetrics != nil {
-			appMetrics.close()
-		}
-	}()
+	defer appDB.Close()
 
-	// Wire the rate-limiter to the DB so bans are persisted and survive restarts.
+	// Create the rate-limiter, injecting the portServiceName callback and a
+	// metrics-recording onBan callback (metrics cache created below).
+	// The onBan closure captures appMetrics by pointer — safe because appMetrics
+	// is set before any connection handler can fire.
+	appLimiter = ratelimit.New(
+		services.PortServiceName,
+		func(banType string) {
+			if appMetrics != nil {
+				appMetrics.RecordBan(banType)
+			}
+		},
+	)
 	appLimiter.SetDB(appDB)
-	appLimiter.LoadBans(appDB)
+	appLimiter.LoadBans()
 
-	// Initialize metrics: backfill from events if needed, then start cache.
-	if err := appDB.backfillMetrics(); err != nil {
+	// Backfill metrics from events table (idempotent — skipped if table is not empty).
+	if err := appDB.BackfillMetrics(services.PortServiceName); err != nil {
 		log.Printf("Warning: metrics backfill failed: %v", err)
 	}
-	appMetrics = newMetricsCache(appDB)
+
+	// Start the in-memory metrics cache with flush loop.
+	appMetrics = metrics.NewCache(appDB, services.PortServiceName)
+	defer appMetrics.Close()
 
 	// Seed the in-memory ring buffer from persisted history so new clients
 	// get replayed events immediately while the DB query on /ws is also live.
-	if history, err := appDB.loadHistory(historySize); err == nil {
+	if history, err := appDB.LoadHistory(historySize); err == nil {
 		appHub.mu.Lock()
 		appHub.history = history
 		appHub.mu.Unlock()
@@ -202,26 +207,26 @@ func main() {
 		log.Printf("Warning: could not load history from DB: %v", err)
 	}
 
-	// Ensure GeoLite2 DB exists
-	dbPath, err := ensureGeoDB()
+	// Ensure GeoLite2 DB exists, downloading it if needed.
+	dbPath, err := geo.EnsureGeoDB()
 	if err != nil {
 		log.Fatalf("Failed to obtain GeoLite2 database: %v", err)
 	}
 
-	geo, err = NewGeoLocator(dbPath)
+	appGeo, err = geo.NewGeoLocator(dbPath)
 	if err != nil {
 		log.Fatalf("Failed to open GeoLite2 database: %v", err)
 	}
-	defer geo.Close()
+	defer appGeo.Close()
 
-	// Discover our public IP and geolocate it
-	selfIP, err = discoverPublicIP()
+	// Discover our public IP and geolocate it.
+	selfIP, err = iputil.DiscoverPublicIP()
 	if err != nil {
 		log.Printf("Warning: could not discover public IP: %v", err)
 		selfIP = "unknown"
 	} else {
 		log.Printf("Public IP: %s", selfIP)
-		loc, err2 := geo.Lookup(selfIP)
+		loc, err2 := appGeo.Lookup(selfIP)
 		if err2 == nil {
 			selfLat = loc.Lat
 			selfLon = loc.Lon
@@ -231,7 +236,9 @@ func main() {
 		}
 	}
 
-	// Start capture listeners on all common HTTP ports
+	// ── Start listeners ────────────────────────────────────────────────────
+
+	// HTTP capture ports.
 	for _, port := range capturePorts {
 		if disabledPorts[port] {
 			continue
@@ -239,49 +246,46 @@ func main() {
 		go startCaptureListener(port)
 	}
 
-	// Start TCP service emulation listeners (non-HTTP protocols)
-	for _, svc := range tcpServices {
+	// TCP service emulation listeners (non-HTTP protocols with banners).
+	for _, svc := range services.TCPServices {
 		if disabledPorts[svc.Port] {
 			continue
 		}
-		go startTCPServiceListener(svc)
+		go services.StartTCPServiceListener(svc, appLimiter.IsBanned, handleCapture)
 	}
 
-	// Start UDP service listeners
-	for _, port := range udpServicePorts {
+	// UDP service listeners.
+	for _, port := range services.UDPServicePorts {
 		if disabledPorts[port] {
 			continue
 		}
-		go startUDPServiceListener(port)
+		go services.StartUDPServiceListener(port, handleCapture)
 	}
 
-	// Start Minecraft Java Edition server-list-ping emulator
-	if !disabledPorts[minecraftPort] {
-		go startMinecraftListener()
+	// Special protocol emulators.
+	if !disabledPorts[services.MinecraftPort] {
+		go services.StartMinecraftListener(appLimiter.IsBanned, handleCapture)
+	}
+	if !disabledPorts[services.LightningPort] {
+		go services.StartLightningListener(appLimiter.IsBanned, handleCapture)
+	}
+	if !disabledPorts[services.VNCPort] {
+		go services.StartVNCListener(appLimiter.IsBanned, handleCapture)
 	}
 
-	// Start Lightning Network BOLT #8 handshake emulator
-	if !disabledPorts[lightningPort] {
-		go startLightningListener()
-	}
-
-	// Start VNC (RFB) clean handshake emulator
-	if !disabledPorts[vncPort] {
-		go startVNCListener()
-	}
-
-	// Start dashboard server on 8999
+	// Dashboard server.
 	go startDashboardServer()
 
 	log.Println("Dashboard available at http://localhost:8999")
 
-	// Block forever
+	// Block forever.
 	select {}
 }
 
+// ── capture ───────────────────────────────────────────────────────────────────
+
 // startCaptureListener binds to the given port, records every incoming HTTP
-// request, and returns a realistic HTTP/1.1 response that mimics a common
-// web server (nginx).
+// request, and returns a realistic HTTP/1.1 response that mimics nginx.
 func startCaptureListener(port int) {
 	addr := fmt.Sprintf(":%d", port)
 	portStr := fmt.Sprintf("%d", port)
@@ -306,8 +310,6 @@ func startCaptureListener(port int) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, "<html><head><title>Welcome to nginx!</title></head><body><h1>Welcome to nginx!</h1><p>If you see this page, the nginx web server is successfully installed and working.</p></body></html>")
 		// Build a text summary of the HTTP request for client data capture.
-		// This is safe text (method/path/UA), but we still hex-encode it
-		// for consistency with raw TCP/UDP captures.
 		httpSummary := fmt.Sprintf("%s %s %s\nHost: %s\nUser-Agent: %s",
 			r.Method, r.URL.RequestURI(), r.Proto, r.Host, r.UserAgent())
 		go handleCapture(srcIP, portStr, "tcp", []byte(httpSummary))
@@ -318,9 +320,10 @@ func startCaptureListener(port int) {
 	}
 }
 
+// handleCapture is the central event handler. It is called from every listener
+// type (HTTP, TCP service, UDP, special protocols).
 func handleCapture(srcIP, dstPort, protocol string, clientData []byte) {
-	// Rate-limit check: only meaningful for TCP — UDP is stateless/fire-and-forget
-	// so there is nothing to terminate and no cost to absorb per-packet.
+	// Rate-limit check: only meaningful for TCP — UDP is stateless.
 	if protocol != "udp" && !appLimiter.Record(srcIP, dstPort) {
 		return
 	}
@@ -328,7 +331,7 @@ func handleCapture(srcIP, dstPort, protocol string, clientData []byte) {
 	var srcLat, srcLon float64
 	var srcCity, srcCC string
 
-	loc, err := geo.Lookup(srcIP)
+	loc, err := appGeo.Lookup(srcIP)
 	if err == nil {
 		srcLat = loc.Lat
 		srcLon = loc.Lon
@@ -338,7 +341,7 @@ func handleCapture(srcIP, dstPort, protocol string, clientData []byte) {
 		log.Printf("Geo lookup failed for %s: %v", srcIP, err)
 	}
 
-	ev := ConnectionEvent{
+	ev := event.ConnectionEvent{
 		Time:       time.Now().UTC().Format(time.RFC3339),
 		SrcIP:      srcIP,
 		DstIP:      selfIP,
@@ -355,25 +358,23 @@ func handleCapture(srcIP, dstPort, protocol string, clientData []byte) {
 		ClientData: hex.EncodeToString(clientData),
 	}
 	appHub.broadcast(ev)
-	appDB.insert(ev)
+	appDB.Insert(ev)
 	appMetrics.Record(ev)
 
 	evJSON, _ := json.Marshal(ev)
 	log.Printf("Connection: %s", string(evJSON))
 }
 
-// startDashboardServer serves the web UI and WebSocket endpoint on :8999
+// ── dashboard server ──────────────────────────────────────────────────────────
+
+// startDashboardServer serves the web UI and WebSocket endpoint on :8999.
 func startDashboardServer() {
 	mux := http.NewServeMux()
 
-	// Serve static frontend — strip the "static/" prefix so / serves index.html
-	stripped, err := fs.Sub(staticFiles, "static")
-	if err != nil {
-		log.Fatalf("Failed to sub static fs: %v", err)
-	}
-	mux.Handle("/", http.FileServer(http.FS(stripped)))
+	// Serve static frontend — strip the "static/" prefix so / serves index.html.
+	mux.Handle("/", http.FileServer(http.FS(staticSubFS())))
 
-	// Self-info endpoint
+	// Self-info endpoint.
 	mux.HandleFunc("/api/self", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -385,10 +386,11 @@ func startDashboardServer() {
 		})
 	})
 
-	// History query endpoint — GET /api/history?country=US&ip=1.2&port=22&service=SSH&date_from=2024-01-01T00:00&date_to=2024-12-31T23:59
+	// History query endpoint.
+	// GET /api/history?country=US&ip=1.2&port=22&service=SSH&date_from=2024-01-01T00:00&date_to=2024-12-31T23:59
 	mux.HandleFunc("/api/history", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		f := HistoryFilter{
+		f := db.HistoryFilter{
 			Country:  q.Get("country"),
 			IP:       q.Get("ip"),
 			Port:     q.Get("port"),
@@ -396,23 +398,23 @@ func startDashboardServer() {
 			DateFrom: q.Get("date_from"),
 			DateTo:   q.Get("date_to"),
 		}
-		events, err := appDB.queryHistory(f)
+		events, err := appDB.QueryHistory(f, services.PortsForService)
 		if err != nil {
 			http.Error(w, "query error: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 		if events == nil {
-			events = []ConnectionEvent{}
+			events = []event.ConnectionEvent{}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(events)
 	})
 
-	// Banned IPs endpoint — returns the current active ban list
+	// Banned IPs endpoint — returns the current active ban list.
 	mux.HandleFunc("/api/banned", func(w http.ResponseWriter, r *http.Request) {
 		bans := appLimiter.ActiveBans()
 		if bans == nil {
-			bans = []BanEntry{}
+			bans = []ratelimit.BanEntry{}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(bans)
@@ -468,34 +470,29 @@ func startDashboardServer() {
 		}
 	})
 
-	// Recent events endpoint — returns the in-memory ring buffer snapshot (includes ephemeral client_data)
+	// Recent events endpoint — returns the in-memory ring buffer snapshot
+	// (includes ephemeral client_data not stored in the DB).
 	mux.HandleFunc("/api/recent", func(w http.ResponseWriter, r *http.Request) {
 		events := appHub.snapshot()
 		if events == nil {
-			events = []ConnectionEvent{}
+			events = []event.ConnectionEvent{}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(events)
 	})
 
-	// Services list endpoint — returns all known service names for the filter dropdown
+	// Services list endpoint — returns all known service names for the filter dropdown.
 	mux.HandleFunc("/api/services", func(w http.ResponseWriter, r *http.Request) {
 		type svcEntry struct {
 			Name  string `json:"name"`
 			Ports []int  `json:"ports"`
 		}
-		// tcpServiceNames is now the single canonical source for all port→name
-		// mappings (TCP services, UDP ports, HTTP capture ports, Minecraft).
-		seen := map[string][]int{}
-		for port, name := range tcpServiceNames {
-			seen[name] = append(seen[name], port)
-		}
-
-		var result []svcEntry
+		seen := services.AllServiceNames()
+		result := make([]svcEntry, 0, len(seen))
 		for name, ports := range seen {
 			result = append(result, svcEntry{Name: name, Ports: ports})
 		}
-		// Sort by name for stable output
+		// Sort by name for stable output.
 		for i := 1; i < len(result); i++ {
 			for j := i; j > 0 && result[j].Name < result[j-1].Name; j-- {
 				result[j], result[j-1] = result[j-1], result[j]
@@ -505,11 +502,11 @@ func startDashboardServer() {
 		json.NewEncoder(w).Encode(result)
 	})
 
-	// Metrics endpoints
-	mux.HandleFunc("/api/metrics", HandleMetrics)
-	mux.HandleFunc("/metrics", HandleMetricsPrometheus)
+	// Metrics endpoints.
+	mux.HandleFunc("/api/metrics", appMetrics.HandleMetrics)
+	mux.HandleFunc("/metrics", appMetrics.HandleMetricsPrometheus)
 
-	// WebSocket endpoint
+	// WebSocket endpoint.
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 			InsecureSkipVerify: true,
@@ -523,11 +520,10 @@ func startDashboardServer() {
 		ctx := conn.CloseRead(context.Background())
 
 		// Subscribe FIRST so live events buffer in the channel during replay.
-		// The 256-deep channel absorbs bursts while we send history.
 		ch := appHub.subscribe()
 		defer appHub.unsubscribe(ch)
 
-		// Determine replay window: ?hours=N (1-24, default 1)
+		// Determine replay window: ?hours=N (1-24, default 1).
 		hours := 1
 		if h := r.URL.Query().Get("hours"); h != "" {
 			if n, err := strconv.Atoi(h); err == nil && n >= 1 && n <= 24 {
@@ -537,7 +533,7 @@ func startDashboardServer() {
 		since := time.Now().UTC().Add(-time.Duration(hours) * time.Hour).Format(time.RFC3339)
 
 		// Replay history from DB for the requested time window.
-		history, err := appDB.loadHistorySince(since)
+		history, err := appDB.LoadHistorySince(since)
 		if err != nil {
 			log.Printf("WebSocket history load error: %v", err)
 		}
@@ -548,8 +544,7 @@ func startDashboardServer() {
 			}
 		}
 
-		// Drain any live events that arrived while replaying history,
-		// then continue streaming live events.
+		// Drain buffered live events then continue streaming.
 		for {
 			select {
 			case ev := <-ch:
@@ -568,6 +563,7 @@ func startDashboardServer() {
 	}
 }
 
+// extractIP extracts the host from a "host:port" remote address string.
 func extractIP(remoteAddr string) string {
 	host, _, err := net.SplitHostPort(remoteAddr)
 	if err != nil {

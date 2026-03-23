@@ -1,4 +1,4 @@
-package main
+package geo
 
 import (
 	"fmt"
@@ -18,7 +18,7 @@ type GeoLocator struct {
 	rgeo atomic.Pointer[rgeo.Rgeo] // nil until background init completes
 }
 
-// Location holds the result of an IP lookup
+// Location holds the result of an IP lookup.
 type Location struct {
 	Lat         float64
 	Lon         float64
@@ -96,7 +96,7 @@ func (g *GeoLocator) Lookup(ipStr string) (*Location, error) {
 	}, nil
 }
 
-// Close releases the database file handle
+// Close releases the database file handle.
 func (g *GeoLocator) Close() {
 	if g.db != nil {
 		g.db.Close()

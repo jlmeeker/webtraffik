@@ -1,4 +1,4 @@
-package main
+package iputil
 
 import (
 	"fmt"
@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// Public IP discovery services — tried in order until one succeeds
+// Public IP discovery services — tried in order until one succeeds.
 var ipServices = []string{
 	"https://api.ipify.org",
 	"https://icanhazip.com",
@@ -16,8 +16,8 @@ var ipServices = []string{
 	"https://ifconfig.me/ip",
 }
 
-// discoverPublicIP queries external services to find our public IPv4 address
-func discoverPublicIP() (string, error) {
+// DiscoverPublicIP queries external services to find our public IPv4 address.
+func DiscoverPublicIP() (string, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	var lastErr error
 	for _, svc := range ipServices {

@@ -1,7 +1,7 @@
 # Build output
 dist/
-webtraffik
-webtraffik.exe
+/webtraffik
+/webtraffik.exe
 
 # GeoLite2 database (auto-downloaded at runtime)
 GeoLite2-City.mmdb

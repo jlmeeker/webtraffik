@@ -1,4 +1,4 @@
-package main
+package db
 
 import (
 	"database/sql"
@@ -9,23 +9,35 @@ import (
 	"strings"
 	"time"
 
+	"webtraffik/internal/event"
+
 	_ "modernc.org/sqlite"
 )
 
-const eventsDBFilename = "events.db"
+const EventsDBFilename = "events.db"
 
-// eventDB wraps the SQLite connection used for event persistence.
-type eventDB struct {
+// ── Metric name constants (shared with metrics package) ─────────────────────
+
+const (
+	MetricConnections = "connections" // labels: port, protocol, service, cc
+	MetricBans        = "bans"        // labels: type (auto/manual)
+	MetricUniqueIPs   = "unique_ips"  // no labels, per-hour unique IP count
+)
+
+// ── eventDB ──────────────────────────────────────────────────────────────────
+
+// EventDB wraps the SQLite connection used for event persistence.
+type EventDB struct {
 	db      *sql.DB
-	insertQ chan ConnectionEvent // async insert queue
-	done    chan struct{}        // closed when writer goroutine exits
+	insertQ chan event.ConnectionEvent // async insert queue
+	done    chan struct{}              // closed when writer goroutine exits
 }
 
-// openEventDB opens (or creates) the SQLite database at dir/events.db,
+// OpenEventDB opens (or creates) the SQLite database at dir/events.db,
 // creates the events table if it doesn't exist, and enables WAL mode for
 // better write concurrency.
-func openEventDB(dir string) (*eventDB, error) {
-	path := filepath.Join(dir, eventsDBFilename)
+func OpenEventDB(dir string) (*EventDB, error) {
+	path := filepath.Join(dir, EventsDBFilename)
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, err
@@ -38,7 +50,7 @@ func openEventDB(dir string) (*eventDB, error) {
 	}
 
 	// Keep writes fast; we can afford to lose the last second of events on a
-	// hard crash (power loss).  Normal OS/app crashes are safe with WAL.
+	// hard crash (power loss). Normal OS/app crashes are safe with WAL.
 	if _, err := db.Exec(`PRAGMA synchronous=NORMAL`); err != nil {
 		db.Close()
 		return nil, err
@@ -50,9 +62,9 @@ func openEventDB(dir string) (*eventDB, error) {
 	}
 
 	log.Printf("Event DB opened: %s", path)
-	edb := &eventDB{
+	edb := &EventDB{
 		db:      db,
-		insertQ: make(chan ConnectionEvent, 4096),
+		insertQ: make(chan event.ConnectionEvent, 4096),
 		done:    make(chan struct{}),
 	}
 	go edb.writeLoop()
@@ -105,26 +117,35 @@ func createSchema(db *sql.DB) error {
 	return nil
 }
 
-// persistBan inserts or replaces a BanEntry in the banned_ips table.
-func (e *eventDB) persistBan(b *BanEntry) error {
+// PersistBan inserts or replaces a BanEntry in the banned_ips table.
+func (e *EventDB) PersistBan(ip, port, service string, bannedAt, expiresAt time.Time) error {
 	_, err := e.db.Exec(`
 		INSERT OR REPLACE INTO banned_ips (ip, port, service, banned_at, expires_at)
 		VALUES (?, ?, ?, ?, ?)`,
-		b.IP, b.Port, b.Service,
-		b.BannedAt.UTC().Format(time.RFC3339),
-		b.ExpiresAt.UTC().Format(time.RFC3339),
+		ip, port, service,
+		bannedAt.UTC().Format(time.RFC3339),
+		expiresAt.UTC().Format(time.RFC3339),
 	)
 	return err
 }
 
-// expireBan removes a ban record from the database once the cooldown has elapsed.
-func (e *eventDB) expireBan(ip, port string) error {
+// ExpireBan removes a ban record from the database once the cooldown has elapsed.
+func (e *EventDB) ExpireBan(ip, port string) error {
 	_, err := e.db.Exec(`DELETE FROM banned_ips WHERE ip = ? AND port = ?`, ip, port)
 	return err
 }
 
-// loadActiveBans returns all ban records whose expires_at is in the future.
-func (e *eventDB) loadActiveBans() ([]BanEntry, error) {
+// BanRecord holds a persisted ban row returned from LoadActiveBans.
+type BanRecord struct {
+	IP        string
+	Port      string
+	Service   string
+	BannedAt  time.Time
+	ExpiresAt time.Time
+}
+
+// LoadActiveBans returns all ban records whose expires_at is in the future.
+func (e *EventDB) LoadActiveBans() ([]BanRecord, error) {
 	rows, err := e.db.Query(`
 		SELECT ip, port, service, banned_at, expires_at
 		FROM banned_ips
@@ -136,9 +157,9 @@ func (e *eventDB) loadActiveBans() ([]BanEntry, error) {
 	}
 	defer rows.Close()
 
-	var bans []BanEntry
+	var bans []BanRecord
 	for rows.Next() {
-		var b BanEntry
+		var b BanRecord
 		var bannedAt, expiresAt string
 		if err := rows.Scan(&b.IP, &b.Port, &b.Service, &bannedAt, &expiresAt); err != nil {
 			return nil, err
@@ -154,9 +175,9 @@ func (e *eventDB) loadActiveBans() ([]BanEntry, error) {
 	return bans, rows.Err()
 }
 
-// insert queues a ConnectionEvent for async persistence. If the queue is full
+// Insert queues a ConnectionEvent for async persistence. If the queue is full
 // the event is dropped (logged) — capture is never blocked on DB writes.
-func (e *eventDB) insert(ev ConnectionEvent) {
+func (e *EventDB) Insert(ev event.ConnectionEvent) {
 	select {
 	case e.insertQ <- ev:
 	default:
@@ -168,11 +189,11 @@ func (e *eventDB) insert(ev ConnectionEvent) {
 // batches writes into SQLite. It groups pending events into a single
 // transaction for throughput, flushing whenever the queue drains or a
 // batch reaches 64 events.
-func (e *eventDB) writeLoop() {
+func (e *EventDB) writeLoop() {
 	defer close(e.done)
 
 	const batchMax = 64
-	batch := make([]ConnectionEvent, 0, batchMax)
+	batch := make([]event.ConnectionEvent, 0, batchMax)
 
 	for {
 		// Block until at least one event is available (or channel closed).
@@ -205,7 +226,7 @@ func (e *eventDB) writeLoop() {
 }
 
 // flushBatch writes a slice of events to SQLite in a single transaction.
-func (e *eventDB) flushBatch(batch []ConnectionEvent) {
+func (e *EventDB) flushBatch(batch []event.ConnectionEvent) {
 	if len(batch) == 0 {
 		return
 	}
@@ -245,9 +266,9 @@ func (e *eventDB) flushBatch(batch []ConnectionEvent) {
 	}
 }
 
-// loadHistory returns the most recent `limit` events, oldest-first, ready to
+// LoadHistory returns the most recent `limit` events, oldest-first, ready to
 // replay to a new WebSocket client.
-func (e *eventDB) loadHistory(limit int) ([]ConnectionEvent, error) {
+func (e *EventDB) LoadHistory(limit int) ([]event.ConnectionEvent, error) {
 	rows, err := e.db.Query(`
 		SELECT time, src_ip, dst_ip, dst_port, protocol,
 		       src_lat, src_lon, dst_lat, dst_lon,
@@ -262,9 +283,9 @@ func (e *eventDB) loadHistory(limit int) ([]ConnectionEvent, error) {
 	}
 	defer rows.Close()
 
-	var events []ConnectionEvent
+	var events []event.ConnectionEvent
 	for rows.Next() {
-		var ev ConnectionEvent
+		var ev event.ConnectionEvent
 		if err := rows.Scan(
 			&ev.Time, &ev.SrcIP, &ev.DstIP, &ev.DstPort, &ev.Protocol,
 			&ev.SrcLat, &ev.SrcLon, &ev.DstLat, &ev.DstLon,
@@ -277,9 +298,9 @@ func (e *eventDB) loadHistory(limit int) ([]ConnectionEvent, error) {
 	return events, rows.Err()
 }
 
-// loadHistorySince returns all events since the given RFC3339 timestamp,
+// LoadHistorySince returns all events since the given RFC3339 timestamp,
 // oldest-first, with no row limit.
-func (e *eventDB) loadHistorySince(since string) ([]ConnectionEvent, error) {
+func (e *EventDB) LoadHistorySince(since string) ([]event.ConnectionEvent, error) {
 	rows, err := e.db.Query(`
 		SELECT time, src_ip, dst_ip, dst_port, protocol,
 		       src_lat, src_lon, dst_lat, dst_lon,
@@ -294,9 +315,9 @@ func (e *eventDB) loadHistorySince(since string) ([]ConnectionEvent, error) {
 	}
 	defer rows.Close()
 
-	var events []ConnectionEvent
+	var events []event.ConnectionEvent
 	for rows.Next() {
-		var ev ConnectionEvent
+		var ev event.ConnectionEvent
 		if err := rows.Scan(
 			&ev.Time, &ev.SrcIP, &ev.DstIP, &ev.DstPort, &ev.Protocol,
 			&ev.SrcLat, &ev.SrcLon, &ev.DstLat, &ev.DstLon,
@@ -309,22 +330,23 @@ func (e *eventDB) loadHistorySince(since string) ([]ConnectionEvent, error) {
 	return events, rows.Err()
 }
 
-// HistoryFilter holds optional filter criteria for queryHistory.
+// HistoryFilter holds optional filter criteria for QueryHistory.
 // Zero values / empty strings mean "no filter" for that field.
 type HistoryFilter struct {
 	Country  string // src_cc (2-letter code, case-insensitive)
 	IP       string // src_ip prefix/exact match
 	Port     string // dst_port exact match
-	Service  string // resolved via portServiceName(); matched against dst_port
+	Service  string // resolved via portServiceNameFn; matched against dst_port
 	DateFrom string // RFC3339 / YYYY-MM-DD lower bound (inclusive)
 	DateTo   string // RFC3339 / YYYY-MM-DD upper bound (inclusive, treated as end-of-day)
 }
 
-// queryHistory executes a filtered SELECT against the events table and returns
+// QueryHistory executes a filtered SELECT against the events table and returns
 // matching events oldest-first.
-func (e *eventDB) queryHistory(f HistoryFilter) ([]ConnectionEvent, error) {
-	where := []string{}
-	args := []interface{}{}
+// portForService is a callback to resolve a service name to matching port strings.
+func (e *EventDB) QueryHistory(f HistoryFilter, portsForService func(string) []string) ([]event.ConnectionEvent, error) {
+	var where []string
+	var args []interface{}
 
 	if f.Country != "" {
 		where = append(where, "UPPER(src_cc) = UPPER(?)")
@@ -339,7 +361,7 @@ func (e *eventDB) queryHistory(f HistoryFilter) ([]ConnectionEvent, error) {
 		args = append(args, f.Port)
 	}
 	// Service filter: resolve port numbers that share the given service name
-	if f.Service != "" {
+	if f.Service != "" && portsForService != nil {
 		ports := portsForService(f.Service)
 		if len(ports) > 0 {
 			placeholders := ""
@@ -353,7 +375,7 @@ func (e *eventDB) queryHistory(f HistoryFilter) ([]ConnectionEvent, error) {
 			where = append(where, "dst_port IN ("+placeholders+")")
 		} else {
 			// No ports match → return empty result set
-			return []ConnectionEvent{}, nil
+			return []event.ConnectionEvent{}, nil
 		}
 	}
 	if f.DateFrom != "" {
@@ -392,9 +414,9 @@ func (e *eventDB) queryHistory(f HistoryFilter) ([]ConnectionEvent, error) {
 	}
 	defer rows.Close()
 
-	var events []ConnectionEvent
+	var events []event.ConnectionEvent
 	for rows.Next() {
-		var ev ConnectionEvent
+		var ev event.ConnectionEvent
 		if err := rows.Scan(
 			&ev.Time, &ev.SrcIP, &ev.DstIP, &ev.DstPort, &ev.Protocol,
 			&ev.SrcLat, &ev.SrcLon, &ev.DstLat, &ev.DstLon,
@@ -407,8 +429,8 @@ func (e *eventDB) queryHistory(f HistoryFilter) ([]ConnectionEvent, error) {
 	return events, rows.Err()
 }
 
-// close drains the insert queue and releases the database connection.
-func (e *eventDB) close() {
+// Close drains the insert queue and releases the database connection.
+func (e *EventDB) Close() {
 	close(e.insertQ) // signal writeLoop to flush and exit
 	<-e.done         // wait for writeLoop to finish
 	if err := e.db.Close(); err != nil {
@@ -418,20 +440,26 @@ func (e *eventDB) close() {
 
 // ── Metrics persistence ─────────────────────────────────────────────────────
 
-// metricsRow is a single row to upsert into the metrics table.
-type metricsRow struct {
+// MetricsRow is a single row to upsert into the metrics table.
+type MetricsRow struct {
 	Name   string
 	Labels string
 	Bucket string
 	Delta  int64 // added to existing value (for counters)
-	Value  int64 // used by queryMetrics results
+	Value  int64 // used by QueryMetrics results
 	AbsMax bool  // if true, use MAX(value, ?) instead of value + ?
 }
 
-// upsertMetrics writes a batch of metric deltas to SQLite in a single transaction.
+// MetricsQuery holds the optional time range for /api/metrics.
+type MetricsQuery struct {
+	From string // ISO8601 lower bound (inclusive), truncated to hour
+	To   string // ISO8601 upper bound (inclusive), truncated to hour
+}
+
+// UpsertMetrics writes a batch of metric deltas to SQLite in a single transaction.
 // For normal counters it adds the delta to the existing value.
 // For AbsMax rows (unique_ips) it sets value = MAX(existing, new).
-func (e *eventDB) upsertMetrics(batch []metricsRow) error {
+func (e *EventDB) UpsertMetrics(batch []MetricsRow) error {
 	tx, err := e.db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
@@ -475,10 +503,10 @@ func (e *eventDB) upsertMetrics(batch []metricsRow) error {
 	return nil
 }
 
-// queryMetrics returns raw metric rows, optionally filtered by time range.
-func (e *eventDB) queryMetrics(mq MetricsQuery) ([]metricsRow, error) {
-	where := []string{}
-	args := []interface{}{}
+// QueryMetrics returns raw metric rows, optionally filtered by time range.
+func (e *EventDB) QueryMetrics(mq MetricsQuery) ([]MetricsRow, error) {
+	var where []string
+	var args []interface{}
 
 	if mq.From != "" {
 		where = append(where, "bucket >= ?")
@@ -501,9 +529,9 @@ func (e *eventDB) queryMetrics(mq MetricsQuery) ([]metricsRow, error) {
 	}
 	defer rows.Close()
 
-	var result []metricsRow
+	var result []MetricsRow
 	for rows.Next() {
-		var r metricsRow
+		var r MetricsRow
 		if err := rows.Scan(&r.Name, &r.Labels, &r.Bucket, &r.Value); err != nil {
 			return nil, err
 		}
@@ -512,10 +540,22 @@ func (e *eventDB) queryMetrics(mq MetricsQuery) ([]metricsRow, error) {
 	return result, rows.Err()
 }
 
-// backfillMetrics generates metric rows from existing events data.
+// CanonLabels builds a canonical, sorted label string from key=value pairs.
+func CanonLabels(pairs ...string) string {
+	if len(pairs) == 0 {
+		return ""
+	}
+	sorted := make([]string, len(pairs))
+	copy(sorted, pairs)
+	sort.Strings(sorted)
+	return strings.Join(sorted, ",")
+}
+
+// BackfillMetrics generates metric rows from existing events data.
 // It aggregates events into hourly buckets for connections (by port/protocol/cc)
 // and unique IPs. This is idempotent — it only inserts if the metrics table is empty.
-func (e *eventDB) backfillMetrics() error {
+// portServiceName is a callback to resolve a port string to a service name.
+func (e *EventDB) BackfillMetrics(portServiceName func(string) string) error {
 	// Check if metrics already have data
 	var count int
 	if err := e.db.QueryRow(`SELECT COUNT(*) FROM metrics`).Scan(&count); err != nil {
@@ -543,7 +583,7 @@ func (e *eventDB) backfillMetrics() error {
 		return fmt.Errorf("backfill connections query: %w", err)
 	}
 
-	var batch []metricsRow
+	var batch []MetricsRow
 	for connRows.Next() {
 		var bucket, port, protocol, cc string
 		var cnt int64
@@ -552,14 +592,14 @@ func (e *eventDB) backfillMetrics() error {
 			return fmt.Errorf("backfill connections scan: %w", err)
 		}
 		service := portServiceName(port)
-		labels := canonLabels(
+		labels := CanonLabels(
 			"cc="+cc,
 			"port="+port,
 			"protocol="+protocol,
 			"service="+service,
 		)
-		batch = append(batch, metricsRow{
-			Name:   metricConnections,
+		batch = append(batch, MetricsRow{
+			Name:   MetricConnections,
 			Labels: labels,
 			Bucket: bucket,
 			Delta:  cnt,
@@ -585,8 +625,8 @@ func (e *eventDB) backfillMetrics() error {
 			ipRows.Close()
 			return fmt.Errorf("backfill unique_ips scan: %w", err)
 		}
-		batch = append(batch, metricsRow{
-			Name:   metricUniqueIPs,
+		batch = append(batch, MetricsRow{
+			Name:   MetricUniqueIPs,
 			Labels: "",
 			Bucket: bucket,
 			Delta:  uniq,
@@ -611,7 +651,7 @@ func (e *eventDB) backfillMetrics() error {
 		return batch[i].Labels < batch[j].Labels
 	})
 
-	if err := e.upsertMetrics(batch); err != nil {
+	if err := e.UpsertMetrics(batch); err != nil {
 		return fmt.Errorf("backfill upsert: %w", err)
 	}
 
