@@ -179,6 +179,8 @@
 <div id="empty-state">No events in the ring buffer yet.</div>
 <div id="event-list"></div>
 
+<!-- Port → service name map (single source of truth) -->
+<script src="/services.js"></script>
 <script>
 (() => {
   // ── Self info ──
@@ -191,44 +193,8 @@
     })
     .catch(() => {});
 
-  const PORT_SERVICE_NAMES = {
-    // TCP service ports (banner emulation)
-    '21': 'FTP', '22': 'SSH', '23': 'Telnet', '25': 'SMTP',
-    '110': 'POP3', '135': 'RPC', '139': 'NetBIOS', '143': 'IMAP',
-    '443': 'HTTPS', '445': 'SMB',
-    '554': 'RTSP',
-    '993': 'IMAPS', '995': 'POP3S',
-    '1433': 'MSSQL', '1521': 'Oracle', '1723': 'PPTP',
-    '2375': 'Docker',
-    '3306': 'MySQL', '3389': 'RDP',
-    '4444': 'Metasploit',
-    '5432': 'PostgreSQL', '5555': 'ADB', '5900': 'VNC',
-    '6000': 'X11', '6379': 'Redis', '6667': 'IRC',
-    '8443': 'HTTPS alt',
-    '9100': 'Printer', '9200': 'Elasticsearch',
-    '11211': 'Memcached', '18789': 'OpenClaw', '27017': 'MongoDB',
-    // Cryptocurrency / blockchain
-    '3333': 'Stratum', '8333': 'Bitcoin P2P',
-    '8545': 'Ethereum RPC', '8546': 'Ethereum WS',
-    '9735': 'Lightning', '10009': 'Lightning gRPC',
-    '18080': 'Monero P2P', '18081': 'Monero RPC',
-    '30303': 'Ethereum P2P',
-    // IP camera / DVR honeypot
-    '8899': 'Hikvision Cam', '34567': 'DVR (XMEye)', '37777': 'DVR (Dahua)',
-    // UDP capture ports
-    '53': 'DNS', '123': 'NTP', '161': 'SNMP',
-    '1434': 'MSSQL Browser', '1900': 'SSDP', '5060': 'SIP',
-    // HTTP capture ports
-    '80': 'HTTP',
-    '3000': 'Node/Express', '3001': 'Node alt', '3128': 'Squid',
-    '4000': 'Phoenix', '4200': 'Angular',
-    '5000': 'Flask', '5001': 'Flask alt',
-    '8000': 'HTTP alt', '8008': 'HTTP alt', '8080': 'HTTP proxy', '8081': 'HTTP proxy',
-    '8088': 'HTTP alt', '8090': 'Confluence', '8888': 'Jupyter',
-    '9000': 'SonarQube', '9090': 'Prometheus',
-    // Minecraft
-    '25565': 'Minecraft',
-  };
+  // PORT_SERVICE_NAMES is defined in /services.js (single source of truth).
+  const PORT_SERVICE_NAMES = window.PORT_SERVICE_NAMES;
 
   const listEl = document.getElementById('event-list');
   const loadingEl = document.getElementById('loading');

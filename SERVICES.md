@@ -25,33 +25,45 @@ This creates realistic fingerprints that scanners and reconnaissance tools will 
 | 22 | SSH | Secure Shell | `SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6` — mimics OpenSSH version string |
 | 23 | Telnet | Telnet | IAC DO TERMINAL-TYPE + IAC DO NAWS negotiation bytes + `Login: ` prompt |
 | 25 | SMTP | Simple Mail Transfer Protocol | `220 mail.example.com ESMTP Postfix (Ubuntu)` — mimics Postfix MTA |
+| 102 | S7comm | Siemens S7 PLC (ISO-TSAP) | 22-byte COTP Connection Confirm (CC) TPDU with rack 0 slot 2 |
 | 110 | POP3 | Post Office Protocol 3 | `+OK POP3 server ready` — standard POP3 greeting |
 | 135 | RPC | Microsoft DCE/RPC Endpoint Mapper | DCE/RPC bind_nak rejection (LOCAL_LIMIT_EXCEEDED) |
 | 139 | NetBIOS | NetBIOS Session Service | Negative session response (not listening on called name) |
 | 143 | IMAP | Internet Message Access Protocol | `* OK [CAPABILITY IMAP4rev1 ...] Dovecot ready.` — mimics Dovecot IMAP |
 | 443 | HTTPS | HTTP over TLS | TLS 1.0 Alert (fatal, handshake_failure) — realistic response to ClientHello |
 | 445 | SMB | Server Message Block | Minimal SMB2 NEGOTIATE response with STATUS_NOT_SUPPORTED — fingerprints as Windows SMB |
+| 502 | Modbus | Modbus/TCP | 9-byte Modbus Exception Response (function 0x83, exception code 0x01) |
 | 554 | RTSP | Real Time Streaming Protocol | `RTSP/1.0 401 Unauthorized` with Digest authentication challenge — mimics Hikvision IP camera |
+| 631 | IPP | Internet Printing Protocol / CUPS | HTTP 200 with `Server: CUPS/2.4 IPP/2.1` header and HTML redirect |
 | 993 | IMAPS | IMAP over SSL/TLS | TLS handshake_failure alert (same as port 443) |
 | 995 | POP3S | POP3 over SSL/TLS | TLS handshake_failure alert (same as port 443) |
 | 1433 | MSSQL | Microsoft SQL Server | TDS pre-login response indicating version 15.00.2000, encryption not supported |
 | 1521 | Oracle | Oracle Database TNS Listener | TNS Refuse packet with error code 1153 |
 | 1723 | PPTP | Point-to-Point Tunneling Protocol VPN | PPTP Start-Control-Connection-Reply (156 bytes) |
+| 2082 | cPanel-HTTP | cPanel Unencrypted HTTP | HTTP 200 with `Server: cpsrvd/11.112` and `X-CPanel-Version: 11.112` |
+| 2083 | cPanel-HTTPS | cPanel Encrypted HTTPS | TLS handshake_failure alert (same as port 443) |
 | 2375 | Docker | Docker Daemon REST API (unencrypted) | HTTP 200 OK mimicking Docker's `/_ping` endpoint with Api-Version and Docker headers |
+| 3283 | ARD | Apple Remote Desktop | 2 bytes: `0x00 0x02` (server capability word) |
 | 3306 | MySQL | MySQL Database | MySQL 8.0.35 handshake packet (Protocol 10) with caching_sha2_password |
 | 3333 | Stratum | Cryptocurrency Mining Pool Protocol | JSON-RPC mining.notify notification — mimics mining pool distributing work |
 | 3389 | RDP | Remote Desktop Protocol | X.224 Connection Confirm PDU with RDP_NEG_RSP (PROTOCOL_RDP, no enhanced security) |
 | 4444 | Metasploit | Metasploit Default Reverse Shell | No banner (silent accept) |
+| 4899 | Radmin | Remote Administrator | `RFB 003.006\n` — Radmin v3 RFB-like handshake |
 | 5432 | PostgreSQL | PostgreSQL Database | ErrorResponse: `FATAL: no pg_hba.conf entry for host` — realistic rejection |
 | 5555 | ADB | Android Debug Bridge | ADB CNXN connect response with device identity string |
 | 5900 | VNC | Virtual Network Computing | `RFB 003.008\n` — RFB protocol version handshake for VNC 3.8 |
+| 5985 | WinRM-HTTP | Windows Remote Management HTTP | HTTP 404 with `Server: Microsoft-HTTPAPI/2.0` |
+| 5986 | WinRM-HTTPS | Windows Remote Management HTTPS | TLS handshake_failure alert (same as port 443) |
 | 6000 | X11 | X Window System | X11 connection-refused response with "No protocol specified" error |
 | 6379 | Redis | Redis In-Memory Database | `-DENIED Redis is running in protected mode` — mimics Redis protected mode |
 | 6667 | IRC | Internet Relay Chat | IRC NOTICE AUTH hostname lookup messages |
+| 8291 | Winbox | MikroTik Winbox | 4 bytes: `0x01 0x00 0x00 0x00` (null-session banner) |
 | 8333 | Bitcoin | Bitcoin P2P Network (mainnet) | Bitcoin protocol version message (magic 0xF9BEB4D9, version 70016, /Satoshi:25.0.0/) |
 | 8443 | HTTPS-Alt | HTTP over TLS (alternate port) | Same TLS handshake_failure alert as port 443 |
 | 8545 | Ethereum-RPC | Ethereum JSON-RPC HTTP Endpoint | HTTP 200 with JSON-RPC error {"code":-32600,"message":"Invalid Request"} |
 | 8546 | Ethereum-WS | Ethereum WebSocket JSON-RPC Endpoint | HTTP 426 Upgrade Required — geth WebSocket endpoint response |
+| 8728 | RouterOS-API | MikroTik RouterOS API | RouterOS API sentence: `!done` + `=ret=ROS_7.14` (length-prefixed) |
+| 8729 | RouterOS-API-SSL | MikroTik RouterOS API-SSL | TLS handshake_failure alert (same as port 443) |
 | 8899 | Hikvision-HTTP | Hikvision IP Camera HTTP Web UI | HTTP 200 OK with `Server: App-webs/` header and redirect to `/doc/page/login.asp` |
 | 9100 | Printer | HP JetDirect / Printer Services | PJL INFO STATUS "Ready" response |
 | 9200 | Elasticsearch | Elasticsearch Search Engine | HTTP 200 with JSON body mimicking Elasticsearch 7.17.16 node info |
@@ -61,10 +73,12 @@ This creates realistic fingerprints that scanners and reconnaissance tools will 
 | 18080 | Monero-P2P | Monero P2P Network (monerod) | Levin protocol header with signature 0x0121010101010101 and handshake command |
 | 18081 | Monero-RPC | Monero JSON-RPC Endpoint (monerod) | HTTP 200 with JSON-RPC error — standard Monero RPC error response |
 | 18789 | OpenClaw | OpenClaw AI Assistant Gateway | HTTP 426 Upgrade Required with WebSocket upgrade headers |
+| 20000 | DNP3 | Distributed Network Protocol (SCADA) | 16-byte DNP3 Unsolicited Response frame (device restart flag) |
 | 27017 | MongoDB | MongoDB Database | OP_REPLY with BSON `{ok:0, errmsg:"Authentication required", code:13}` |
 | 30303 | Ethereum-P2P | Ethereum P2P Network (devp2p/RLPx) | No banner (connection accept only) — waits for initiator's encrypted auth message |
 | 34567 | XMEye | XMEye / Generic DVR Clone Protocol | 20-byte header + JSON payload with DVR login challenge response |
 | 37777 | Dahua | Dahua DVR/NVR Proprietary Protocol | 20-byte Dahua challenge packet with magic bytes `0xFF 0x01` |
+| 44818 | EtherNet/IP | CIP / Rockwell PLC | 65-byte List Identity reply (1756-ENBT/A, vendor ID 1, device type 2) |
 
 ### Detailed Service Descriptions
 
@@ -107,6 +121,39 @@ This creates realistic fingerprints that scanners and reconnaissance tools will 
 **Purpose**: SMTP greeting identifying the server as a Postfix MTA (Mail Transfer Agent) on Ubuntu.
 
 **Why it's convincing**: The `220` code is the standard SMTP "Service ready" response. Postfix is one of the most common MTAs on Linux servers, and this banner format matches real Postfix installations exactly.
+
+---
+
+#### Port 102 — S7comm (Siemens S7 PLC / ISO-TSAP)
+
+**Banner**: 22-byte COTP Connection Confirm (CC) TPDU
+
+**Purpose**: Sends a complete ISO-TSAP / COTP Connection Confirm packet that Siemens S7-300/400/1200/1500 PLCs send when accepting a connection. The response includes:
+- TPKT header: version 0x03, reserved 0x00, length 22
+- COTP header: length 17, PDU type 0xD0 (Connection Confirm)
+- Destination reference: 0x0001
+- Source reference: 0x0000
+- Class/Option: 0x00 (Class 0)
+- Parameter code 0xC1 (TPDU Size): value 0x0A (1024 bytes)
+- Parameter code 0xC2 (Calling TSAP): `\x01\x00` (rack 0, slot 0 / initiator)
+- Parameter code 0xC3 (Called TSAP): `\x01\x02` (rack 0, slot 2 / S7-300 default)
+
+**Why it's convincing**: This is byte-for-byte identical to what a real Siemens S7-300 PLC sends during the ISO-TSAP handshake (the transport layer beneath the S7comm protocol). The TPDU-size=1024 and called TSAP pointing at rack 0 slot 2 are the exact defaults for S7-300 PLCs. Shodan's "siemens" filter and industrial reconnaissance tools like PLCScan fingerprint this exact packet. The response structure matches the ISO 8073 COTP specification perfectly.
+
+**Why this port is targeted**: Port 102 represents one of the most CRITICAL industrial control system (ICS/SCADA) attack surfaces on the internet:
+- **Stuxnet legacy** — Port 102 gained global notoriety as the primary attack vector for Stuxnet, the nation-state malware that sabotaged Iranian nuclear centrifuges. The S7comm protocol has zero authentication in its default configuration, allowing any client to read/write PLC memory, start/stop the CPU, and upload/download programs. Stuxnet exploited this to modify centrifuge speeds and cause physical damage while hiding the modifications from monitoring systems.
+- **Zero authentication** — Siemens S7 PLCs do NOT require authentication for S7comm connections by default. The ISO-TSAP handshake (which this banner emulates) is purely a connection establishment mechanism with no credentials, tokens, or encryption. Once the handshake completes, the attacker has full read/write access to PLC data blocks, flags, timers, counters, and program logic.
+- **Critical infrastructure targeting** — S7 PLCs are deployed in power plants, water treatment facilities, chemical plants, manufacturing lines, oil refineries, natural gas pipelines, and other critical infrastructure. An exposed port 102 indicates direct access to industrial control logic. Attackers (including nation-state APT groups) actively scan for exposed S7 PLCs to:
+  - Map critical infrastructure networks and identify high-value targets
+  - Exfiltrate proprietary process control logic and industrial secrets
+  - Sabotage physical processes (modify setpoints, disable safety interlocks, alter PID controller parameters)
+  - Cause equipment damage, production shutdowns, or safety incidents
+- **Shodan indexing** — Shodan actively scans and indexes exposed S7 PLCs worldwide. Thousands of PLCs are discoverable via searches like `port:102 country:US` or `"Siemens, SIMATIC"`. Each indexed PLC is a potential attack target.
+- **Safety system compromise** — S7 PLCs often implement safety-critical logic (emergency shutdown systems, pressure relief, temperature interlocks). Unauthorized modification of this logic can cause catastrophic safety failures, explosions, chemical releases, or loss of life.
+- **Intellectual property theft** — PLC programs contain proprietary manufacturing processes, recipes, control algorithms, and trade secrets. Attackers exfiltrate these programs to steal competitive intelligence or enable industrial espionage.
+- **Ransomware targeting** — Industrial ransomware (LockerGoga, EKANS/SNAKE, Ryuk variants) specifically targets ICS environments. Compromised PLCs can be used to halt production, encrypt SCADA historian databases, or hold critical processes hostage.
+
+Port 102 is THE canonical ICS/SCADA port on the internet and is one of the highest-risk exposures in critical infrastructure. The combination of zero authentication + physical process control + Stuxnet precedent makes this port a primary target for nation-state APT groups, industrial saboteurs, and ransomware operators.
 
 ---
 
@@ -156,6 +203,44 @@ While port 445 has largely replaced 139 for SMB, many scanners still target both
 
 ---
 
+#### Port 502 — Modbus/TCP
+
+**Banner**: 9-byte Modbus Exception Response
+
+**Purpose**: Sends a complete Modbus/TCP exception response indicating an illegal function error:
+- Transaction ID: `0x0001` (echoes typical scanner request)
+- Protocol ID: `0x0000` (Modbus protocol identifier)
+- Length: `0x0003` (3 bytes of data follow)
+- Unit ID: `0x01` (device address 1)
+- Function code: `0x83` (Read Holding Registers + 0x80 exception flag)
+- Exception code: `0x01` (Illegal Function)
+
+This is the exact response a Modbus TCP device (PLC, RTU, gateway) sends when rejecting an invalid function code or unauthorized request.
+
+**Why it's convincing**: Modbus/TCP is the most widely deployed industrial protocol on the planet. The exception response format is defined in the Modbus specification and is identical across millions of devices from hundreds of vendors (Schneider Electric, ABB, Siemens, Allen-Bradley, Honeywell, Yokogawa, etc.). The transaction ID echo + protocol ID `0x0000` + exception function code is the universal Modbus fingerprint. Reconnaissance tools like ModbusPal, modscan, and Shodan's Modbus probe recognize this as a real Modbus device.
+
+**Why this port is targeted**: Port 502 is one of the MOST heavily-scanned industrial ports globally:
+- **Zero authentication** — Modbus has ZERO security features. No authentication, no encryption, no access control. The protocol was designed in 1979 for serial RS-232 connections within a single control cabinet. Any client that can reach port 502 can read/write any register, coil, or input. This is not a vulnerability — it is the protocol's design.
+- **Universal deployment** — Modbus is the de facto standard for industrial device communication. It's deployed in: power generation and distribution (SCADA RTUs), water/wastewater treatment, oil and gas pipelines, building automation (HVAC, lighting, elevators), manufacturing (assembly lines, robots, sensors), transportation (traffic lights, railroad signaling), and renewable energy (solar inverters, wind turbines). Modbus is EVERYWHERE.
+- **Direct process control** — Modbus registers directly map to physical inputs/outputs, setpoints, and control logic. Attackers can:
+  - Read sensor values (temperatures, pressures, flow rates, levels) to map the physical process
+  - Write to output coils to activate valves, motors, pumps, heaters, or circuit breakers
+  - Modify setpoints to cause equipment damage (overheat boilers, overpressure tanks, overdose chemicals)
+  - Disable safety interlocks and alarms
+  - Trigger emergency shutdowns or prevent emergency stops
+- **ICS honeypot and reconnaissance** — Shodan indexes hundreds of thousands of exposed Modbus devices worldwide (search: `port:502`). Each exposed device reveals vendor identification, device model, firmware version, and register map structure. Attackers use this intelligence to:
+  - Identify vulnerable firmware versions (CVE targeting)
+  - Map SCADA network topology
+  - Build exploit databases for specific PLC/RTU models
+  - Plan targeted attacks against specific industries or facilities
+- **Critical infrastructure targeting** — Nation-state APT groups (Sandworm/Industroyer, Triton/Trisis, Havex, BlackEnergy) specifically target Modbus-enabled SCADA systems. Industroyer's attack on Ukraine's power grid in 2016 used Modbus to directly command circuit breakers. Triton malware targeted Schneider Electric Triconex safety PLCs (which use Modbus) to disable emergency shutdown systems at a Saudi petrochemical plant.
+- **Supply chain and IoT botnet recruitment** — Modbus-enabled IoT devices (smart meters, solar inverters, EV chargers, building controllers) are recruited into botnets. VPNFilter and Mirai variants specifically target Modbus devices for DDoS swarms and cryptomining.
+- **Ransomware enablement** — Industrial ransomware operators use exposed Modbus ports to map OT networks, identify critical assets, and disable safety systems before deploying ransomware on IT networks. The goal is to maximize operational disruption and ransom payment pressure.
+
+Port 502 is the single most dangerous industrial protocol port to expose to the internet. The combination of universal deployment + zero security + direct physical process access makes it the #1 reconnaissance target for industrial cyber-physical attacks.
+
+---
+
 #### Port 554 — RTSP (Real Time Streaming Protocol)
 
 **Banner**: 
@@ -185,6 +270,43 @@ Server: Hikvision-Webs\r\n
 - **Ransomware targeting** — surveillance systems are increasingly targeted by ransomware due to the high-value nature of video footage (evidence in legal cases, safety monitoring, etc.)
 
 Port 554 represents one of the largest attack surfaces in the IoT ecosystem — exposed RTSP cameras are pervasive, poorly secured, and provide both network access and real-world surveillance capabilities to attackers.
+
+---
+
+#### Port 631 — IPP (Internet Printing Protocol / CUPS)
+
+**Banner**: HTTP 200 response with CUPS headers and HTML redirect
+
+**Purpose**: Sends an HTTP response mimicking the CUPS web interface:
+```
+HTTP/1.1 200 OK\r\n
+Server: CUPS/2.4 IPP/2.1\r\n
+Content-Type: text/html\r\n
+Content-Length: 85\r\n
+\r\n
+<html><head><title>Home - CUPS 2.4</title></head><body><h1>CUPS 2.4</h1></body></html>
+```
+
+The response includes:
+- Server header: `CUPS/2.4 IPP/2.1` — identifies as CUPS 2.4 with IPP (Internet Printing Protocol) 2.1 support
+- HTML page with CUPS branding
+
+**Why it's convincing**: This is exactly what the CUPS web interface (http://localhost:631) returns when accessed via HTTP. The `Server: CUPS/2.4 IPP/2.1` header is the universal fingerprint that Shodan and printer reconnaissance tools use to identify exposed CUPS servers. CUPS is the default printing system on Linux, macOS, and BSD systems, making this banner instantly recognizable to automated scanners.
+
+**Why this port is targeted**: Port 631 represents a CRITICAL and recently-exploited vulnerability surface:
+- **CVE-2024-47176 and the CUPS RCE chain** — In September 2024, a critical remote code execution vulnerability chain was disclosed affecting CUPS. The exploit chain (CVE-2024-47176 + CVE-2024-47076 + CVE-2024-47175 + CVE-2024-47177) allows an attacker to execute arbitrary commands on any system running CUPS with port 631 exposed. The attack works by:
+  - Sending a crafted IPP request to add a malicious printer
+  - The malicious printer driver contains command injection payloads
+  - When any user prints to the malicious printer (or when CUPS performs maintenance tasks), the payload executes with CUPS privileges (often root)
+- **Millions of exposed instances** — CUPS is installed by default on virtually every Linux desktop and server, macOS workstation, and many embedded devices. Shodan finds hundreds of thousands of exposed CUPS instances. Most administrators are unaware that port 631 is accessible from the network or internet.
+- **Unauthenticated access** — By default, CUPS allows unauthenticated printer discovery and IPP operations from the local network. Many misconfigurations expose this to the internet. Even "authenticated" CUPS setups often use weak credentials or default accounts.
+- **Credential harvesting** — The CUPS web interface requires authentication for administrative functions. Attackers use exposed CUPS instances for credential brute-forcing and reuse attacks (compromised credentials often work across multiple systems).
+- **Information disclosure** — CUPS leaks system information: hostnames, usernames, installed printers, recent print jobs (including filenames and metadata), network topology, and connected devices. This intelligence aids further attacks.
+- **Print job interception** — Attackers can add rogue printers that capture print jobs, exfiltrating documents sent to the printer (contracts, financial records, PII, credentials, etc.).
+- **Denial of service** — Attackers can disable printers, delete print queues, or flood the system with print jobs to exhaust disk space and CPU.
+- **Lateral movement** — Compromised CUPS servers provide a foothold into internal networks. Printers often have network access to internal file servers, workstations, and infrastructure that is otherwise firewalled from external access.
+
+Port 631 has gone from a low-priority informational disclosure port to a CRITICAL RCE vector as of September 2024. Every exposed CUPS instance is a potential full system compromise. The CVE-2024-47176 exploit chain is actively being weaponized by exploit frameworks and botnet operators.
 
 ---
 
@@ -317,6 +439,58 @@ This is the exact message sequence that IRC servers (ircd-hybrid, UnrealIRCd, In
 - **Network reconnaissance** — IRC servers often indicate informal or legacy infrastructure that may have other security weaknesses
 
 While IRC usage has declined, it remains a target for botnet operators and attackers looking for communication channels.
+
+---
+
+#### Port 2082 — cPanel HTTP (cPanel Unencrypted HTTP)
+
+**Banner**: HTTP 200 response with cPanel headers
+
+**Purpose**: Sends an HTTP response mimicking the cPanel control panel login page:
+```
+HTTP/1.1 200 OK\r\n
+Server: cpsrvd/11.112\r\n
+X-CPanel-Version: 11.112\r\n
+Content-Type: text/html\r\n
+Content-Length: 42\r\n
+\r\n
+<html><body>cPanel Login</body></html>
+```
+
+The response includes:
+- Server header: `cpsrvd/11.112` — cPanel server daemon version 11.112
+- X-CPanel-Version header: identifies the cPanel version explicitly
+- HTML page with cPanel branding
+
+**Why it's convincing**: The `Server: cpsrvd/` header is the universal fingerprint for cPanel installations. cPanel is the dominant shared web hosting control panel, installed on millions of web hosting servers worldwide. Shodan and reconnaissance scanners specifically search for the `cpsrvd` server header to identify cPanel instances. Port 2082 is the standard unencrypted HTTP port for cPanel (port 2083 is the HTTPS variant).
+
+**Why this port is targeted**: Port 2082 is heavily scanned for cPanel-specific attacks:
+- **Credential stuffing** — cPanel login pages are primary targets for credential stuffing attacks. Compromised web hosting credentials allow attackers to: upload malware, deface websites, steal databases, exfiltrate email, modify DNS records, and pivot to other hosted accounts on the same server.
+- **Version-specific exploits** — Older cPanel versions have known vulnerabilities (privilege escalation, XSS, CSRF, authentication bypass). Scanners fingerprint the version via the X-CPanel-Version header and launch targeted exploits.
+- **Email account compromise** — cPanel provides access to email accounts for all hosted domains. Compromised accounts are used for phishing, spam relay, and business email compromise (BEC) attacks.
+- **Domain hijacking** — Attackers with cPanel access can modify DNS records to redirect domains to phishing sites, intercept email, or steal SSL/TLS certificates via Let's Encrypt.
+- **Database theft** — cPanel's phpMyAdmin and database management interfaces provide direct access to MySQL databases containing customer data, user credentials, and application secrets.
+- **File manager exploitation** — cPanel's file manager allows upload of PHP shells, webshells, and backdoors that provide persistent server access.
+- **SEO spam injection** — Compromised cPanel accounts are used to inject hidden spam links, doorway pages, and malicious redirects for black-hat SEO campaigns.
+
+Port 2082 represents the primary attack surface for the shared web hosting industry. Millions of small businesses, bloggers, and organizations rely on cPanel-managed hosting, making this port a high-value target for mass credential attacks.
+
+---
+
+#### Port 2083 — cPanel HTTPS (cPanel Encrypted HTTPS)
+
+**Banner**: TLS handshake_failure alert (same as port 443)
+
+**Purpose**: Sends a TLS 1.0 Alert packet indicating handshake failure:
+```
+\x15\x03\x01\x00\x02\x02\x28
+```
+
+This is the exact binary response that SSL/TLS servers send when rejecting a ClientHello due to configuration mismatch or lack of shared cipher suites.
+
+**Why it's convincing**: Port 2083 is the standard HTTPS port for cPanel. The TLS handshake_failure alert is a realistic response for a TLS server that is present but cannot complete the handshake (due to missing certificates, cipher suite mismatch, or protocol version incompatibility). Scanners looking for HTTPS services on alternate ports will recognize this as an active TLS endpoint. The alert fingerprints identically to real cPanel HTTPS servers that are rejecting connections.
+
+**Why this port is targeted**: Port 2083 is scanned alongside port 2082 as part of cPanel reconnaissance. Attackers prefer HTTPS endpoints (port 2083) for credential theft because the encrypted channel prevents network-based credential interception. The same attacks that target port 2082 also target port 2083: credential stuffing, version-specific exploits, and control panel compromise.
 
 ---
 
@@ -678,6 +852,45 @@ The default port 18789 is well-documented in OpenClaw's installation guides and 
 
 ---
 
+#### Port 20000 — DNP3 (Distributed Network Protocol / SCADA)
+
+**Banner**: 16-byte DNP3 Unsolicited Response frame
+
+**Purpose**: Sends a complete DNP3 Unsolicited Response frame that DNP3 outstations (RTUs, substations, power relays) send to indicate an event or status change:
+- Start bytes: `0x05 0x64` (DNP3 magic header)
+- Length: `0x14` (20 bytes total frame length)
+- Control byte: `0x44` (Unsolicited Response from outstation)
+- Destination address: `0xFF 0xFF` (broadcast address)
+- Source address: `0x00 0x01` (outstation address 1)
+- CRC-16: calculated per DNP3 specification
+- Application layer:
+  - Control byte: `0xC0` (Final fragment, First fragment)
+  - Function code: `0x82` (Unsolicited Response)
+  - IIN (Internal Indication) bytes: `0x80 0x00` (device restart flag set)
+
+**Why it's convincing**: DNP3 is the dominant protocol in the electric power industry (SCADA systems, substations, distribution automation) and is also deployed in water/wastewater, oil/gas pipelines, and transportation. The start bytes `0x05 0x64` are the universal DNP3 magic header that reconnaissance tools look for. The Unsolicited Response function code (0x82) with the device restart flag in IIN1 is a realistic and convincing response — it indicates the outstation has just restarted and is announcing its presence to the master station. This is exactly what real DNP3 devices do after power-on or reboot.
+
+**Why this port is targeted**: Port 20000 is the standard DNP3 port and represents CRITICAL infrastructure attack surface:
+- **Electric grid SCADA** — DNP3 is the protocol of choice for electric utility SCADA systems. Port 20000 connections provide direct access to substation relays, circuit breakers, voltage regulators, and power distribution automation. Compromised DNP3 devices can:
+  - Open or close circuit breakers to cause blackouts
+  - Modify relay settings to disable protective functions
+  - Alter voltage/frequency setpoints to damage equipment
+  - Read real-time grid status and operational data
+- **Industroyer/Crashoverride** — The Industroyer malware (used in the 2016 Ukraine power grid attack) specifically targeted IEC 60870-5-104 and DNP3 protocols to send unauthorized commands to substations. Port 20000 is a primary reconnaissance target for similar attacks.
+- **Zero authentication** — DNP3 has minimal security in its original specification. Authentication (Secure Authentication v5) is an optional extension that is rarely deployed. Most DNP3 devices accept any command from any source IP. There is no encryption, no access control, and no logging in the base protocol.
+- **Water/wastewater SCADA** — DNP3 is also deployed in municipal water systems, controlling pumps, valves, chemical dosing, and monitoring tank levels. Compromised DNP3 endpoints can:
+  - Shut down water supply
+  - Overdose treatment chemicals (chlorine, fluoride)
+  - Manipulate pressure to cause pipe bursts or contamination
+  - Disable alarms and monitoring
+- **Oil and gas pipelines** — DNP3 is used in pipeline SCADA to control pumps, compressors, and valve actuators. Unauthorized access can cause pipeline shutdowns, overpressure events, or safety system bypasses.
+- **Nation-state targeting** — APT groups (Sandworm, Dragonfly/Energetic Bear, APT33) specifically target DNP3-enabled infrastructure for espionage and sabotage preparation. Shodan indexes thousands of exposed DNP3 devices globally.
+- **ICS honeypot and reconnaissance** — Security researchers deploy DNP3 honeypots on port 20000 to study ICS attack patterns. Attackers scan for DNP3 to map critical infrastructure, identify vulnerable firmware, and test command injection payloads.
+
+Port 20000 is one of the most sensitive and heavily-protected ports in critical infrastructure. Exposing DNP3 to the internet is a catastrophic misconfiguration that provides nation-state adversaries with direct access to electric grid, water system, and pipeline control infrastructure.
+
+---
+
 #### Port 27017 — MongoDB (MongoDB Database)
 
 **Banner**: MongoDB OP_REPLY wire protocol message with BSON error document
@@ -790,6 +1003,55 @@ Port 37777 represents one of the highest-risk attack surfaces in the IoT ecosyst
 
 ---
 
+#### Port 44818 — EtherNet/IP (CIP / Rockwell/Allen-Bradley PLCs)
+
+**Banner**: 65-byte List Identity reply
+
+**Purpose**: Sends a complete EtherNet/IP List Identity response that Allen-Bradley/Rockwell Automation PLCs send when queried:
+- Command: `0x0063` (List Identity Reply)
+- Session handle: `0x00000000` (connectionless unconnected message)
+- Status: `0x00000000` (success)
+- Sender context: 8 bytes (echo of request context)
+- Options: `0x00000000`
+- Encapsulation protocol version: `0x0001`
+- Identity item type code: `0x000C` (CIP Identity)
+- Identity item length: 40 bytes
+- Device identity:
+  - Vendor ID: `0x0001` (Rockwell Automation / Allen-Bradley)
+  - Device type: `0x0002` (Communications Adapter)
+  - Product code: `0x0089` (137 decimal = 1756-ENBT/A ControlLogix Ethernet Bridge)
+  - Revision: `3.5` (major.minor firmware revision)
+  - Status: `0x0060` (Operational state, configured)
+  - Serial number: `0x12345678` (device serial number)
+  - Product name: `1756-ENBT/A` (18 characters, counted string)
+  - State: `0xFF` (operational)
+
+**Why it's convincing**: EtherNet/IP is the industrial Ethernet protocol used by Allen-Bradley (Rockwell Automation) PLCs, the dominant automation platform in North American manufacturing. The List Identity command is the standard discovery/enumeration method that SCADA systems, HMI software, and reconnaissance tools use to identify EtherNet/IP devices. The response structure exactly matches the CIP (Common Industrial Protocol) specification. The vendor ID `0x0001` (Rockwell Automation) combined with device type `0x0002` (Communications Adapter) and product code `0x0089` (1756-ENBT/A) is the exact fingerprint that Shodan's "ethernetip" search filter looks for. The 1756-ENBT/A is the Ethernet/IP bridge module for ControlLogix PLCs, one of the most widely deployed industrial controllers globally.
+
+**Why this port is targeted**: Port 44818 is THE primary attack surface for North American industrial automation:
+- **ControlLogix/CompactLogix dominance** — Allen-Bradley ControlLogix, CompactLogix, and MicroLogix PLCs are the standard in automotive manufacturing, food/beverage processing, pharmaceutical production, and discrete manufacturing. Port 44818 is the default EtherNet/IP port for these systems. An exposed port 44818 indicates direct access to production control logic.
+- **Zero authentication** — EtherNet/IP has NO authentication in its base specification. Any client can:
+  - Read PLC tags (variables, I/O states, setpoints, counters)
+  - Write PLC tags to change process parameters or outputs
+  - Upload ladder logic programs (proprietary manufacturing processes, trade secrets)
+  - Download modified programs (sabotage, backdoors)
+  - Start/stop the PLC CPU
+  - Clear faults and alarms
+  - Reset the controller
+- **Critical infrastructure and manufacturing** — ControlLogix PLCs are deployed in: automotive assembly lines (robotics, welding, painting), chemical batch processing, water treatment (pumps, valves, dosing), power generation (turbine controls, boiler management), pharmaceutical clean rooms, food production (mixing, filling, packaging). Compromised EtherNet/IP endpoints can:
+  - Halt production lines (downtime costs thousands to millions per hour)
+  - Modify product recipes or formulations (quality sabotage, safety violations)
+  - Disable safety interlocks (causing equipment damage or worker injury)
+  - Exfiltrate intellectual property (recipes, process parameters, control algorithms)
+- **Shodan indexing** — Shodan actively scans for port 44818 and identifies exposed EtherNet/IP devices by vendor ID and product code. Thousands of PLCs are discoverable via searches like `port:44818 country:US` or `"Product Name: 1756-ENBT"`. Each indexed PLC is a high-value target.
+- **Ransomware targeting** — Industrial ransomware (Ryuk, LockerGoga, EKANS/SNAKE) specifically targets OT environments. EKANS malware contains a hardcoded list of EtherNet/IP-related process names to terminate before encrypting. Compromised EtherNet/IP devices are used to map OT networks and identify critical assets before ransomware deployment.
+- **Nation-state espionage and sabotage** — APT groups (Dragonfly/Energetic Bear, APT33, Triton/Trisis operators) target EtherNet/IP-enabled manufacturing and critical infrastructure for espionage (steal production data, supply chain intelligence) and sabotage preparation (pre-position backdoors, map process control logic).
+- **Supply chain attacks** — Compromised PLCs can be used to sabotage manufactured products (insert defects, weaken materials, violate tolerances) or steal product designs and manufacturing processes for counterfeit production or competitive intelligence.
+
+Port 44818 is the single most important industrial protocol port for North American manufacturing security. An exposed EtherNet/IP device is a catastrophic misconfiguration equivalent to publishing production control credentials and intellectual property to the internet.
+
+---
+
 ## Minecraft Java Edition (Port 25565)
 
 **Port 25565** is handled differently from the banner-based services above. webTraffik implements a full **Server List Ping** protocol emulation as defined in the [Minecraft protocol specification](https://wiki.vg/Server_List_Ping).
@@ -877,6 +1139,7 @@ This is intentional: many UDP-based reconnaissance and amplification attacks rel
 | 1900 | SSDP/UPnP | Simple Service Discovery Protocol / Universal Plug and Play |
 | 5060 | SIP | Session Initiation Protocol (VoIP) |
 | 30303 | Ethereum-Disc | Ethereum Node Discovery Protocol (devp2p discv4/discv5) |
+| 47808 | BACnet | Building Automation and Control Networks |
 
 **Why these ports**:
 - **DNS (53)**: Used by DNS amplification attacks and reconnaissance
@@ -886,6 +1149,7 @@ This is intentional: many UDP-based reconnaissance and amplification attacks rel
 - **SSDP (1900)**: Used by UPnP exploits and device discovery scans
 - **SIP (5060)**: VoIP service discovery and SIP scanning
 - **Ethereum-Disc (30303)**: Ethereum's UDP-based node discovery protocol (discv4 and the newer discv5). Ethereum nodes broadcast UDP discovery ping packets to find peers and maintain the distributed hash table (DHT) of node information. Bots and network mappers send discovery packets to enumerate the Ethereum P2P network. This port complements TCP 30303 (RLPx encrypted transport) for complete Ethereum network reconnaissance capture.
+- **BACnet (47808)**: Building Automation and Control Networks protocol, used for HVAC, elevators, lighting, fire safety, and access control systems in commercial buildings. BACnet devices communicate via UDP broadcasts (Who-Is queries, I-Am announcements, COV notifications). Shodan has indexed hundreds of thousands of exposed BACnet devices globally. Attackers target BACnet to: map building automation infrastructure, identify vulnerable HVAC controllers (exploited for ransomware delivery and lateral movement), manipulate HVAC setpoints (cause discomfort or equipment damage), disable fire safety systems, or hijack access control (unlock doors, disable alarms). Port 47808 is capture-only — real BACnet devices respond to Who-Is broadcasts, but logging the reconnaissance attempts without responding is sufficient to track scanning activity.
 
 ---
 
@@ -905,4 +1169,4 @@ The port lists in `firewall.sh` must always match the port lists in `services.go
 
 ---
 
-**Last synchronized with**: `services.go` as of the current codebase state (45 TCP services, 7 UDP services, 1 Minecraft service, 17 HTTP ports)
+**Last synchronized with**: `services.go` as of the current codebase state (60 TCP services, 8 UDP services, 1 Minecraft service, 17 HTTP ports)
