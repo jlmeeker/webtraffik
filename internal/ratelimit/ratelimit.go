@@ -58,6 +58,8 @@ type Limiter struct {
 
 	shards [rateShards]rateShard
 
+	scanner *scanTracker // port-scan detection
+
 	db              *db.EventDB
 	onChange        func()
 	onBan           func(banType string) // callback to record ban metrics
@@ -72,6 +74,7 @@ func New(portServiceName func(string) string, onBan func(string)) *Limiter {
 		bans:            make(map[ipPortKey]*BanEntry),
 		portServiceName: portServiceName,
 		onBan:           onBan,
+		scanner:         newScanTracker(),
 	}
 	for i := range rl.shards {
 		rl.shards[i].rates = make(map[ipPortKey]*rateState)
@@ -161,8 +164,8 @@ func (rl *Limiter) IsBanned(ip, port string) bool {
 }
 
 // Record records an event for ip:port and triggers a ban if the sustained-rate
-// threshold is breached. Returns false if the IP is already banned (caller
-// should drop the connection).
+// threshold is breached. Also feeds the port-scan detector.
+// Returns false if the IP is already banned (caller should drop the connection).
 func (rl *Limiter) Record(ip, port string) bool {
 	key := ipPortKey{ip, port}
 
@@ -173,6 +176,9 @@ func (rl *Limiter) Record(ip, port string) bool {
 	if banned {
 		return false
 	}
+
+	// Port-scan detection — independent of the rate limiter.
+	rl.scanner.Record(ip, port)
 
 	// Rate tracking — only locks this key's shard.
 	sh := rl.shard(key)
@@ -302,6 +308,12 @@ func (rl *Limiter) ActiveBans() []BanEntry {
 		}
 	}
 	return out
+}
+
+// ActiveScanners returns a snapshot of all IPs currently classified as port
+// scanners, delegating to the embedded scanTracker.
+func (rl *Limiter) ActiveScanners() []ScannerEntry {
+	return rl.scanner.ActiveScanners()
 }
 
 // ManualBan immediately bans ip:port for the standard BanCooldown duration.

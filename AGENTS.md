@@ -32,6 +32,12 @@ handleCapture(srcIP, dstPort)
   - geo.Lookup(srcIP) -> Location{Lat, Lon, City, CountryCode}
   - builds ConnectionEvent struct
   |
+  +-> appLimiter.Record(srcIP, dstPort)
+  |     - feeds rate limiter (connection count per IP)
+  |     - feeds scan tracker (port hit tracking, 5-port/10-minute threshold detection)
+  |     - evicts stale port hits outside scan window
+  |     - non-blocking, mutex-protected
+  |
   +-> appHub.broadcast(ev)
   |     - appends to in-memory ring buffer (historySize = 1000, oldest evicted)
   |     - fans out to all open WebSocket subscriber channels (non-blocking select)
@@ -72,6 +78,7 @@ handleCapture(srcIP, dstPort)
 - Two corner overlay panels positioned absolutely on the map:
   - `#panel-service` (top-left): Top Services — top 10 services with bar charts showing relative traffic
   - `#panel-banned` (top-right): Banned IPs — list of currently banned source IPs
+  - `#panel-scanners` (top-right, below banned): Port Scanners — list of IPs detected hitting 5+ ports in 10 minutes
 - Panel rendering decoupled from event processing: uses `requestIdleCallback` on a 2-second timer with dirty flags; only re-renders when data changes
 - Log panel (`#log-panel`): scrolling list, capped at 200 entries, shows time/IP/city/CC/port; uses rAF-based rendering via `scheduleLogRender()` for low latency
 - Arc lifecycle: gradient pooling (reuses SVG gradients by color pair instead of per-arc gradients), no glow filters on dots (only on self-dot), arc count capped at 150, dot count capped at 1000
@@ -88,6 +95,7 @@ handleCapture(srcIP, dstPort)
 | `SERVICES.md` | Detailed reference of all emulated TCP/UDP services and their protocol banners; must be kept in sync with `services.go` |
 | `db.go` | SQLite open/close, schema creation, `insert()`, `loadHistory()`, metrics table schema, `upsertMetrics()`, `queryMetrics()`, `backfillMetrics()` |
 | `metrics.go` | `metricsCache` struct, in-memory hourly-bucketed metrics aggregation, `Record()`, `RecordBan()`, `flushLoop()` (5-second interval), `/api/metrics` and `/metrics` (Prometheus) handlers |
+| `internal/ratelimit/scanner.go` | Port scan detection tracker; `ScannerEntry` struct; `scanTracker` with per-IP port-hit tracking; 5-port/10-minute threshold; 1-hour display window; 2-minute GC loop; `ActiveScanners()` for `/api/scanners` endpoint |
 | `geo.go` | `GeoLocator` (GeoLite2 reader + rgeo fallback), `Lookup()`, `Location` struct |
 | `geodb.go` | `ensureGeoDB()` — auto-download of `GeoLite2-City.mmdb` from GitHub mirror |
 | `iputil.go` | `discoverPublicIP()` — queries external APIs to find the server's public IP |
@@ -340,6 +348,62 @@ webtraffik_bans_total{type="auto"} 12
 Query parameters:
 - `from` — ISO 8601 timestamp (default: 24 hours ago)
 - `to` — ISO 8601 timestamp (default: now)
+
+---
+
+## Port Scan Detection
+
+webTraffik includes an in-memory port scan detection system that identifies IPs hitting multiple distinct ports within a short time window.
+
+### Detection logic
+
+- **Threshold**: 5 distinct ports within 10 minutes
+- **Display duration**: detected scanners remain visible for 1 hour after last activity
+- **GC interval**: stale port hits and fully-expired entries are cleaned every 2 minutes
+- **Non-blocking**: all operations use mutex-protected maps; never blocks the capture path
+
+### Architecture
+
+**scanner.go (`internal/ratelimit` package):**
+- `ScannerEntry` struct (exported): `IP`, `PortCount`, `DetectedAt`, `ExpiresAt`, `LastSeenAt` — all JSON-tagged for API serialization
+- `scanTracker`: unexported tracker with per-IP port-hit timestamps (`map[string]time.Time` per IP)
+- `Record(srcIP, dstPort) bool`: records hit, evicts stale hits outside `ScanWindow`, returns true when IP crosses threshold
+- `ActiveScanners() []ScannerEntry`: returns snapshot of detected scanners sorted by port count descending
+- `gcLoop()`: background goroutine runs every 2 minutes to prune stale hits and remove expired entries
+
+**ratelimit.go integration:**
+- `Limiter.scanner` field initialized by `New()`
+- `Limiter.Record()` calls `scanner.Record()` before rate-limit shard logic
+- `Limiter.ActiveScanners()` delegates to `scanner.ActiveScanners()`
+
+**Frontend integration (`static/index.html` & `static/index.js`):**
+- New `#panel-scanners` div in `#right-panels` wrapper (top-right, stacked above `#panel-banned`)
+- Amber/orange color scheme (`#ffb74d`) to distinguish from banned IPs (red)
+- Displays scanner IP, port count, time ago ("2m 15s ago"), and countdown to expiry
+- Polled every 10 seconds via `/api/scanners` endpoint
+- Idle-callback rendering with dirty flags (same pattern as other panels)
+
+### API Endpoint
+
+**`GET /api/scanners`** — returns JSON array of `ScannerEntry`:
+
+```json
+[
+  {
+    "ip": "1.2.3.4",
+    "port_count": 8,
+    "detected_at": "2026-03-22T14:23:45Z",
+    "expires_at": "2026-03-22T15:23:45Z",
+    "last_seen_at": "2026-03-22T14:28:12Z"
+  }
+]
+```
+
+### Integration points
+
+- `handleCapture()` (`main.go`) → `appLimiter.Record(srcIP, dstPort)` → `scanner.Record()`
+- `/api/scanners` handler (`main.go`) → `appLimiter.ActiveScanners()`
+- Frontend polls every 10 seconds, renders in top-right panel
 
 ---
 
@@ -623,3 +687,4 @@ The metrics system will automatically:
 - When adding or removing services in `services.go`, update `SERVICES.md` to reflect the change. This file is the human-readable reference for all emulated services.
 - When adding or removing services in `services.go`, also update the `PORT_SERVICE_NAMES` map in `static/index.html` to add or remove the corresponding port→name entry. This keeps the frontend log and panel labels in sync with the backend.
 - The metrics system (`metrics.go`) maintains in-memory hourly-bucketed counters that are flushed to SQLite every 5 seconds. The flush loop is non-blocking — it snapshots dirty counters under lock, then writes to the database without holding the lock. Metrics survive restarts via SQLite persistence, and `backfillMetrics()` is called automatically on first run to aggregate existing events. Never add blocking operations to `Record()` methods — they are called from the capture path and must be fast.
+- The port scan detection system (`internal/ratelimit/scanner.go`) tracks per-IP port hits in memory with a 10-minute sliding window. Detection is threshold-based (5 ports) with no auto-ban integration — it is purely observational. All operations are mutex-protected and non-blocking. The `gcLoop()` runs every 2 minutes to prune stale data. Never add blocking operations to `Record()` — it is called from the capture path via `Limiter.Record()`.
