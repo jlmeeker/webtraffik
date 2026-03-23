@@ -11,12 +11,20 @@ import (
 
 // ── Rate-limiter / abuse-ban constants ──────────────────────────────────────
 const (
+	// High-rate (flood) ban: >2 events/sec sustained for 10 minutes.
 	rateThreshold     = 2                // events per second that triggers tracking
 	rateSustainWindow = 10 * time.Minute // must sustain high rate for this long to get banned
-	BanCooldown       = 1 * time.Hour    // ban duration before the IP is allowed again
-	rateShards        = 64               // number of rate-map shards (must be power of 2)
-	rateGCInterval    = 5 * time.Minute  // how often we sweep stale rate entries
-	rateGCMaxAge      = 30 * time.Second // evict rate entries idle longer than this
+
+	// Volume-window ban: 30 or more events within any rolling 10-minute window.
+	// Catches slow, persistent scanners (e.g. VNC brute-forcers) that never
+	// exceed the per-second threshold but hammer a single port continuously.
+	volumeThreshold = 30               // total events within volumeWindow to trigger a ban
+	volumeWindow    = 10 * time.Minute // sliding window for volume counting
+
+	BanCooldown    = 1 * time.Hour              // ban duration before the IP is allowed again
+	rateShards     = 64                         // number of rate-map shards (must be power of 2)
+	rateGCInterval = 5 * time.Minute            // how often we sweep stale rate entries
+	rateGCMaxAge   = volumeWindow + time.Minute // evict rate entries idle longer than this
 )
 
 // BanEntry is a single active ban record. It is both held in memory and
@@ -36,9 +44,13 @@ type ipPortKey struct {
 }
 
 // rateState tracks recent event timestamps for one IP+port combination.
+// It maintains two timestamp slices:
+//   - timestamps: pruned to the last 1 second (high-rate / flood detection)
+//   - volumeTimestamps: pruned to the last volumeWindow (slow-scanner detection)
 type rateState struct {
-	timestamps []time.Time
-	highSince  time.Time
+	timestamps       []time.Time
+	highSince        time.Time
+	volumeTimestamps []time.Time
 }
 
 // rateShard is one shard of the rate map — its own lock + map.
@@ -92,6 +104,8 @@ func (rl *Limiter) shard(key ipPortKey) *rateShard {
 }
 
 // rateGC periodically sweeps stale rate entries that have gone idle.
+// An entry is considered stale when its most recent event (in either the
+// 1-second or volume window) is older than rateGCMaxAge (volumeWindow + 1 min).
 func (rl *Limiter) rateGC() {
 	for {
 		time.Sleep(rateGCInterval)
@@ -100,7 +114,17 @@ func (rl *Limiter) rateGC() {
 			sh := &rl.shards[i]
 			sh.mu.Lock()
 			for k, st := range sh.rates {
-				if len(st.timestamps) == 0 || st.timestamps[len(st.timestamps)-1].Before(cutoff) {
+				// Use the most recent timestamp across both windows.
+				var lastSeen time.Time
+				if n := len(st.timestamps); n > 0 {
+					lastSeen = st.timestamps[n-1]
+				}
+				if n := len(st.volumeTimestamps); n > 0 {
+					if t := st.volumeTimestamps[n-1]; t.After(lastSeen) {
+						lastSeen = t
+					}
+				}
+				if lastSeen.IsZero() || lastSeen.Before(cutoff) {
 					delete(sh.rates, k)
 				}
 			}
@@ -212,6 +236,22 @@ func (rl *Limiter) Record(ip, port string) bool {
 		}
 	} else {
 		st.highSince = time.Time{}
+	}
+
+	// Volume-window check: ban if 30+ events in any rolling 10-minute window.
+	// This catches slow persistent scanners that never flood at >2/sec.
+	if !shouldBan {
+		st.volumeTimestamps = append(st.volumeTimestamps, now)
+		volCutoff := now.Add(-volumeWindow)
+		j := 0
+		for j < len(st.volumeTimestamps) && st.volumeTimestamps[j].Before(volCutoff) {
+			j++
+		}
+		st.volumeTimestamps = st.volumeTimestamps[j:]
+		if len(st.volumeTimestamps) >= volumeThreshold {
+			shouldBan = true
+			delete(sh.rates, key)
+		}
 	}
 
 	sh.mu.Unlock()
