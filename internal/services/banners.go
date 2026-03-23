@@ -101,12 +101,14 @@ var tcpServices = []serviceEntry{
 		},
 	},
 	{
-		Port: 554, // RTSP
+		Port: 554, // RTSP — impersonates a Hikvision IP camera
 		Banner: func() []byte {
-			return []byte("RTSP/1.0 200 OK\r\n" +
+			// Hikvision cameras respond to any RTSP request with 401 Unauthorized,
+			// demanding Digest auth. This is the fingerprint scanners look for.
+			return []byte("RTSP/1.0 401 Unauthorized\r\n" +
 				"CSeq: 1\r\n" +
-				"Public: DESCRIBE, SETUP, TEARDOWN, PLAY, PAUSE\r\n" +
-				"Server: GStreamer RTSP Server\r\n" +
+				"WWW-Authenticate: Digest realm=\"IP Camera(C6473WD)\", nonce=\"4f3a9c1b7e2d8f05\", algorithm=\"MD5\"\r\n" +
+				"Server: Hikvision-Webs\r\n" +
 				"\r\n")
 		},
 	},
@@ -526,6 +528,64 @@ Content-Type: application/json; charset=UTF-8
 		Port: 30303, // Ethereum P2P (devp2p/RLPx) — no banner; connection accept is the event
 		Banner: func() []byte {
 			return nil
+		},
+	},
+	// ── IP Camera / DVR honeypot services ────────────────────────────────────
+	{
+		Port: 8899, // Hikvision IP camera HTTP web UI
+		Banner: func() []byte {
+			// Hikvision cameras serve a redirect to their web login on the root path.
+			// Scanners (and Shodan) fingerprint this specific Server header + redirect.
+			body := "<html><body><a href=\"/doc/page/login.asp\">Object Moved</a></body></html>"
+			return []byte(fmt.Sprintf("HTTP/1.1 200 OK\r\n"+
+				"Content-Type: text/html\r\n"+
+				"Content-Length: %d\r\n"+
+				"Server: App-webs/\r\n"+
+				"X-Frame-Options: SAMEORIGIN\r\n"+
+				"\r\n"+
+				"%s", len(body), body))
+		},
+	},
+	{
+		Port: 37777, // Dahua DVR/NVR proprietary TCP protocol
+		Banner: func() []byte {
+			// Dahua devices respond with a fixed 20-byte challenge packet.
+			// Byte layout: 0xFF 0x01 (magic), 0x00 0x00 (reserved),
+			// 4-byte session ID, 4-byte sequence, 4-byte data length,
+			// 4-byte result code (0 = OK), 2-byte error code.
+			// This is the fingerprint mass-scanners use to identify Dahua DVRs.
+			return []byte{
+				0xff, 0x01, // magic
+				0x00, 0x00, // reserved
+				0xa1, 0xb2, 0xc3, 0xd4, // session ID
+				0x00, 0x00, 0x00, 0x01, // sequence
+				0x00, 0x00, 0x00, 0x00, // data length (no payload)
+				0x00, 0x00, 0x00, 0x00, // result code 0 (success/challenge)
+			}
+		},
+	},
+	{
+		Port: 34567, // XMEye / generic DVR clone (Hikvision-derivative firmware)
+		Banner: func() []byte {
+			// XMEye protocol: JSON-over-TCP with a fixed 20-byte header.
+			// Header: magic 0xff 0x00 0x00 0x00, session 0x00000000,
+			// sequence LE uint32, channel 0x00, end flags 0x00 0x00,
+			// message type LE uint16 (0x03E8 = login response),
+			// payload length LE uint32.
+			// Payload is a JSON login challenge — the exact string real XMEye
+			// devices send when a client connects without credentials.
+			payload := []byte(`{"AlarmState":"","DeviceType ":"DVR","Ret":100,"SessionID":"0x00000001"}`)
+			pLen := len(payload)
+			hdr := []byte{
+				0xff, 0x00, 0x00, 0x00, // magic
+				0x00, 0x00, 0x00, 0x00, // session ID
+				0x01, 0x00, 0x00, 0x00, // sequence = 1
+				0x00,       // channel
+				0x00, 0x00, // end flags
+				0xe8, 0x03, // message type 1000 (login response) LE
+				byte(pLen), byte(pLen >> 8), byte(pLen >> 16), byte(pLen >> 24),
+			}
+			return append(hdr, payload...)
 		},
 	},
 }

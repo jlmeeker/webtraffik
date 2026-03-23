@@ -13,6 +13,9 @@ var tcpServiceNames = map[int]string{
 	// TCP service ports (banner emulation)
 	21:    "FTP",
 	554:   "RTSP",
+	8899:  "Hikvision Cam",
+	34567: "DVR (XMEye)",
+	37777: "DVR (Dahua)",
 	22:    "SSH",
 	23:    "Telnet",
 	25:    "SMTP",
