@@ -290,6 +290,13 @@
   let magIdleTimer = null;
   let magVisible = false;
   let magInitialized = false;
+  // Last bbox used for projection — used to skip redundant map redraws
+  let magLastBbox = null;          // { lonMin, lonMax, latMin, latMax }
+  const MAG_BBOX_TOLERANCE = 0.5; // degrees — skip redraw if bbox shifts less than this
+  // Throttle: pending call stored here, fired after MAG_THROTTLE_MS
+  let magThrottleTimer = null;
+  let magPendingArgs = null;
+  const MAG_THROTTLE_MS = 200;
 
   // Magnifier has its own projection, path generator, and SVG groups
   // Use Mercator for the magnifier — it zooms cleanly to any region
@@ -349,7 +356,8 @@
     }
   }
 
-  // Fit the magnifier projection to a bounding box around src and dst
+  // Fit the magnifier projection to a bounding box around src and dst.
+  // Returns the final { lonMin, lonMax, latMin, latMax } used.
   function magFitBbox(srcPt, dstPt) {
     let lonMin = Math.min(srcPt[0], dstPt[0]) - MAG_PAD_DEG;
     let lonMax = Math.max(srcPt[0], dstPt[0]) + MAG_PAD_DEG;
@@ -438,6 +446,8 @@
       .scale(scale)
       .center([centerLon, centerLat])
       .translate([MAG_W / 2, MAG_H / 2]);
+
+    return { lonMin, lonMax, latMin, latMax };
   }
 
   // Redraw the magnifier's static map layers after projection change
@@ -451,8 +461,20 @@
     if (!magInitialized || !worldLandGeo) return;
 
     // Fit projection to the arc's bounding box
-    magFitBbox(srcPt, dstPt);
-    magRedrawMap();
+    const bbox = magFitBbox(srcPt, dstPt);
+
+    // Only redraw the static map layers (land, borders, lakes, rivers) when
+    // the bbox has shifted enough to matter. These paths are expensive to
+    // recompute and are invisible to the user for sub-degree changes.
+    const bboxChanged = !magLastBbox ||
+      Math.abs(bbox.lonMin - magLastBbox.lonMin) > MAG_BBOX_TOLERANCE ||
+      Math.abs(bbox.lonMax - magLastBbox.lonMax) > MAG_BBOX_TOLERANCE ||
+      Math.abs(bbox.latMin - magLastBbox.latMin) > MAG_BBOX_TOLERANCE ||
+      Math.abs(bbox.latMax - magLastBbox.latMax) > MAG_BBOX_TOLERANCE;
+    if (bboxChanged) {
+      magRedrawMap();
+      magLastBbox = bbox;
+    }
 
     // Clear previous arc/dots in magnifier
     magArcGroup.selectAll('*').remove();
@@ -579,6 +601,21 @@
     magVisible = false;
     magEl.classList.remove('visible');
     magIdleTimer = null;
+  }
+
+  // Throttled entry point for magShowArc — during event bursts this prevents
+  // a full projection recompute + SVG redraw for every single event.
+  // Only the most-recent call within each MAG_THROTTLE_MS window is executed.
+  function magShowArcThrottled(ev, srcPt, dstPt, c1, c2, hitCount) {
+    magPendingArgs = [ev, srcPt, dstPt, c1, c2, hitCount];
+    if (magThrottleTimer) return; // already scheduled — latest args will be used
+    magThrottleTimer = setTimeout(() => {
+      magThrottleTimer = null;
+      if (magPendingArgs) {
+        magShowArc(...magPendingArgs);
+        magPendingArgs = null;
+      }
+    }, MAG_THROTTLE_MS);
   }
 
   // ── Self dot ─────────────────────────────────────────────────────────────
@@ -1014,7 +1051,7 @@
       attachTooltip(existing.dotEl, tooltipLabel(existing.ev, existing.hitCount), existing.ev);
       // Trigger magnifier for short arcs or arcs clipped by zoom
       if (shouldShowMagnifier(existing.srcPt, existing.dstPt)) {
-        magShowArc(ev, existing.srcPt, existing.dstPt, existing.c1, existing.c2, existing.hitCount);
+        magShowArcThrottled(ev, existing.srcPt, existing.dstPt, existing.c1, existing.c2, existing.hitCount);
       }
     } else {
       drawArc(ev, hitCount);
@@ -1133,7 +1170,7 @@
 
     // Trigger magnifier for short arcs or arcs clipped by zoom
     if (shouldShowMagnifier(srcPt, dstPt)) {
-      magShowArc(ev, srcPt, dstPt, c1, c2, hitCount);
+      magShowArcThrottled(ev, srcPt, dstPt, c1, c2, hitCount);
     }
   }
 
@@ -1418,6 +1455,11 @@
     // Clear arc flood buffer
     arcBuffer.clear();
     if (floodFlushTimer) { clearTimeout(floodFlushTimer); floodFlushTimer = null; }
+
+    // Clear magnifier throttle + bbox state
+    if (magThrottleTimer) { clearTimeout(magThrottleTimer); magThrottleTimer = null; }
+    magPendingArgs = null;
+    magLastBbox = null;
 
     // Clear log
     logBuffer.length = 0;
