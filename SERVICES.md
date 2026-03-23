@@ -31,7 +31,7 @@ This creates realistic fingerprints that scanners and reconnaissance tools will 
 | 143 | IMAP | Internet Message Access Protocol | `* OK [CAPABILITY IMAP4rev1 ...] Dovecot ready.` — mimics Dovecot IMAP |
 | 443 | HTTPS | HTTP over TLS | TLS 1.0 Alert (fatal, handshake_failure) — realistic response to ClientHello |
 | 445 | SMB | Server Message Block | Minimal SMB2 NEGOTIATE response with STATUS_NOT_SUPPORTED — fingerprints as Windows SMB |
-| 554 | RTSP | Real Time Streaming Protocol | `RTSP/1.0 200 OK` with CSeq, Public methods, and Server: GStreamer RTSP Server headers |
+| 554 | RTSP | Real Time Streaming Protocol | `RTSP/1.0 401 Unauthorized` with Digest authentication challenge — mimics Hikvision IP camera |
 | 993 | IMAPS | IMAP over SSL/TLS | TLS handshake_failure alert (same as port 443) |
 | 995 | POP3S | POP3 over SSL/TLS | TLS handshake_failure alert (same as port 443) |
 | 1433 | MSSQL | Microsoft SQL Server | TDS pre-login response indicating version 15.00.2000, encryption not supported |
@@ -52,6 +52,7 @@ This creates realistic fingerprints that scanners and reconnaissance tools will 
 | 8443 | HTTPS-Alt | HTTP over TLS (alternate port) | Same TLS handshake_failure alert as port 443 |
 | 8545 | Ethereum-RPC | Ethereum JSON-RPC HTTP Endpoint | HTTP 200 with JSON-RPC error {"code":-32600,"message":"Invalid Request"} |
 | 8546 | Ethereum-WS | Ethereum WebSocket JSON-RPC Endpoint | HTTP 426 Upgrade Required — geth WebSocket endpoint response |
+| 8899 | Hikvision-HTTP | Hikvision IP Camera HTTP Web UI | HTTP 200 OK with `Server: App-webs/` header and redirect to `/doc/page/login.asp` |
 | 9100 | Printer | HP JetDirect / Printer Services | PJL INFO STATUS "Ready" response |
 | 9200 | Elasticsearch | Elasticsearch Search Engine | HTTP 200 with JSON body mimicking Elasticsearch 7.17.16 node info |
 | 9735 | Lightning | Lightning Network P2P (BOLT #8) | 50-byte Act One response (Noise_XK handshake) |
@@ -62,6 +63,8 @@ This creates realistic fingerprints that scanners and reconnaissance tools will 
 | 18789 | OpenClaw | OpenClaw AI Assistant Gateway | HTTP 426 Upgrade Required with WebSocket upgrade headers |
 | 27017 | MongoDB | MongoDB Database | OP_REPLY with BSON `{ok:0, errmsg:"Authentication required", code:13}` |
 | 30303 | Ethereum-P2P | Ethereum P2P Network (devp2p/RLPx) | No banner (connection accept only) — waits for initiator's encrypted auth message |
+| 34567 | XMEye | XMEye / Generic DVR Clone Protocol | 20-byte header + JSON payload with DVR login challenge response |
+| 37777 | Dahua | Dahua DVR/NVR Proprietary Protocol | 20-byte Dahua challenge packet with magic bytes `0xFF 0x01` |
 
 ### Detailed Service Descriptions
 
@@ -155,15 +158,22 @@ While port 445 has largely replaced 139 for SMB, many scanners still target both
 
 #### Port 554 — RTSP (Real Time Streaming Protocol)
 
-**Banner**: `RTSP/1.0 200 OK\r\nCSeq: 1\r\nPublic: DESCRIBE, SETUP, TEARDOWN, PLAY, PAUSE\r\nServer: GStreamer RTSP Server\r\n\r\n`
+**Banner**: 
+```
+RTSP/1.0 401 Unauthorized\r\n
+CSeq: 1\r\n
+WWW-Authenticate: Digest realm="IP Camera(C6473WD)", nonce="4f3a9c1b7e2d8f05", algorithm="MD5"\r\n
+Server: Hikvision-Webs\r\n
+\r\n
+```
 
-**Purpose**: Sends a standard RTSP 200 OK response listing supported methods. This is the response an RTSP media server (IP camera, media streaming server) sends when queried. The response includes:
-- Status line: `RTSP/1.0 200 OK` indicating successful request processing
+**Purpose**: Sends an RTSP 401 Unauthorized response with Digest authentication challenge, impersonating a Hikvision IP camera. This is the exact response that Hikvision cameras send when an unauthenticated client attempts to access an RTSP stream. The response includes:
+- Status line: `RTSP/1.0 401 Unauthorized` indicating authentication required
 - CSeq header: matches the client's command sequence number
-- Public header: lists supported RTSP methods (DESCRIBE, SETUP, TEARDOWN, PLAY, PAUSE)
-- Server header: identifies as GStreamer RTSP Server, a common media framework used in IP camera firmware
+- WWW-Authenticate header: Digest authentication challenge with realm string `IP Camera(C6473WD)` (a real Hikvision camera model identifier)
+- Server header: `Hikvision-Webs` — the exact server string Hikvision cameras use (NOT the generic "Hikvision RTSP Server" — it's specifically "Hikvision-Webs", which is their embedded web server name)
 
-**Why it's convincing**: RTSP servers respond to OPTIONS requests (and some malformed requests) with a 200 OK listing supported methods. The GStreamer server string is ubiquitous in IP camera firmware (Hikvision, Dahua, Axis, and countless OEM/white-label cameras use GStreamer). Scanners and Shodan recognize this as a real RTSP endpoint.
+**Why it's convincing**: The `Hikvision-Webs` server header combined with the Digest realm string `IP Camera(C6473WD)` is the exact fingerprint that Shodan, Censys, and reconnaissance scanners use to identify Hikvision IP cameras. The 401 Unauthorized response is more realistic than a 200 OK because real Hikvision cameras require authentication before allowing stream access. This banner fingerprints identically to millions of deployed Hikvision cameras and cheap Hikvision-compatible clones.
 
 **Why this port is targeted**: Port 554 is one of the most heavily scanned IoT ports on the internet:
 - **IP camera exploitation** — the Mirai botnet and its variants (Satori, Okiru, Masuta) specifically target RTSP-enabled cameras for compromise and recruitment into DDoS botnets
@@ -438,6 +448,43 @@ Port 8546 is often scanned alongside 8545 as part of comprehensive Ethereum node
 
 ---
 
+#### Port 8899 — Hikvision IP Camera HTTP Web UI
+
+**Banner**: HTTP 200 OK response with Hikvision-specific headers and HTML redirect:
+
+```
+HTTP/1.1 200 OK\r\n
+Server: App-webs/\r\n
+Content-Type: text/html\r\n
+Content-Length: 120\r\n
+\r\n
+<html>
+<head>
+<meta http-equiv="refresh" content="0; url=/doc/page/login.asp">
+</head>
+<body>Redirecting...</body>
+</html>
+```
+
+**Purpose**: Mimics the HTTP web interface of a Hikvision IP camera. The response includes:
+- Server header: `App-webs/` — the exact server string used by Hikvision cameras (note the trailing slash — this is not a typo, it's how Hikvision formats this header)
+- HTML redirect to `/doc/page/login.asp` — the standard Hikvision camera web UI login page path
+
+**Why it's convincing**: The `Server: App-webs/` header (with the trailing slash) is the fingerprint Shodan and other reconnaissance tools use to identify Hikvision IP cameras. The redirect to `/doc/page/login.asp` is the exact path structure used by real Hikvision camera web interfaces. This port-and-header combination is instantly recognizable as a Hikvision camera to automated scanners.
+
+**Why this port is targeted**: Port 8899 is one of the most heavily-scanned IP camera ports on the internet:
+- **Default credential exploitation** — Hikvision cameras are notorious for shipping with default credentials (`admin` with blank password, or `admin`/`12345`). Port 8899 is the HTTP web UI where these credentials are tested. Millions of deployed cameras still use default credentials, making this one of the highest-success-rate ports for botnet recruitment.
+- **Hikvision-specific vulnerabilities** — numerous CVEs target Hikvision cameras specifically: CVE-2017-7921 (authentication bypass), CVE-2021-36260 (command injection), CVE-2022-30563 (unrestricted file upload), and many others. Exploit scanners specifically look for the `App-webs/` server header to identify vulnerable targets.
+- **Botnet recruitment** — the Mirai botnet and countless variants (Moobot, Gafgyt, Miori) specifically target port 8899 with Hikvision default credentials for recruitment into DDoS swarms.
+- **Surveillance access** — attackers gain access to live video feeds, recorded footage, camera settings, and network configuration. Compromised cameras are indexed on sites like Insecam and sold on the dark web.
+- **Lateral movement** — cameras often have network access to internal systems (NVRs, management networks) and can be used as pivot points for deeper network penetration.
+- **Firmware replacement** — attackers upload malicious firmware to maintain persistent access even after credential changes or reboots.
+- **Configuration extraction** — camera configuration files contain WiFi credentials, network topology information, and other sensitive data that aids further attacks.
+
+Hikvision cameras (and the thousands of white-label brands using Hikvision firmware) represent one of the largest and most vulnerable IoT device categories on the internet. Port 8899 is the primary attack surface for these devices.
+
+---
+
 #### Port 9100 — Printer (HP JetDirect / Printer Services)
 
 **Banner**: PJL (Printer Job Language) INFO STATUS response
@@ -670,6 +717,79 @@ Port 30303 is the foundation of Ethereum's P2P layer and is constantly scanned b
 
 ---
 
+#### Port 34567 — XMEye (XMEye / Generic DVR Clone Protocol)
+
+**Banner**: 20-byte binary header + JSON payload
+
+```
+Header (20 bytes):
+0xFF 0x00 0x00 0x00  // Magic bytes (XMEye protocol signature)
+0xE8 0x03 0x00 0x00  // Message type 0x03E8 (1000 decimal, little-endian) = login response
+0x00 0x00 0x00 0x00  // Reserved
+0x53 0x00 0x00 0x00  // Payload length (83 bytes, little-endian)
+0x00 0x00 0x00 0x00  // Session ID placeholder
+0x00 0x00 0x00 0x00  // Sequence number
+
+JSON Payload (83 bytes):
+{"AlarmState":"","DeviceType":"DVR","Ret":100,"SessionID":"0x00000001"}
+```
+
+**Purpose**: Mimics the login challenge response of XMEye firmware, a Hikvision-derivative DVR/NVR protocol used in millions of cheap security camera systems. The response structure:
+- 20-byte binary header with magic `0xFF 0x00 0x00 0x00` (XMEye protocol identifier)
+- Message type `0x03E8` (1000 = login response in XMEye protocol)
+- JSON payload with `Ret:100` (return code 100 = "authentication required" in XMEye protocol)
+- SessionID field (initially `0x00000001` for unauthenticated connections)
+
+**Why it's convincing**: XMEye is Hikvision-derivative firmware used in countless white-label DVR/NVR clones sold under hundreds of brand names (Zosi, Annke, Reolink, Sannce, Zmodo, Jooan, and literally hundreds more). The 20-byte header + JSON-over-TCP structure is the exact protocol format these devices use. The magic bytes `0xFF 0x00 0x00 0x00` and message type `0x03E8` are the fingerprints reconnaissance tools use to identify XMEye devices. The `Ret:100` response code ("authentication required") is more realistic than a successful login, as it indicates the device is secured but present.
+
+**Why this port is targeted**: Port 34567 is one of the MOST heavily-scanned ports on the entire internet:
+- **Massive deployed device count** — tens of millions (possibly over 100 million) XMEye-based DVRs and NVRs are deployed worldwide. This is one of the largest IoT device categories in existence. Every cheap "8-channel DVR" or "16-channel NVR" sold on Amazon, eBay, AliExpress, and through security camera installers likely uses XMEye firmware.
+- **Universal default credentials** — XMEye devices overwhelmingly ship with default credentials: `admin` (blank password), `admin`/`admin`, `admin`/`12345`, `admin`/`123456`, or `888888`/`888888`. Credential stuffing attacks on port 34567 have an extraordinarily high success rate.
+- **Critical vulnerabilities** — XMEye firmware is riddled with security flaws: authentication bypass (CVE-2018-9995 — allows complete device access without credentials), backdoor accounts (hardcoded `default`/`tluafed` credentials in some versions), command injection, buffer overflows, and firmware backdoors. Many of these vulnerabilities have NEVER been patched in deployed devices.
+- **Botnet recruitment** — Mirai variants and IoT botnets (Moobot, Gafgyt, Kaiten) specifically target port 34567 for recruitment. Compromised XMEye DVRs are used for DDoS attacks, cryptomining, proxying, and network infiltration.
+- **Surveillance access** — attackers gain access to all connected camera feeds (often 4, 8, 16, or 32 cameras per DVR), recorded footage, motion detection zones, and camera settings. This provides surveillance of homes, businesses, warehouses, parking lots, and other private spaces.
+- **Lateral movement** — DVRs are typically installed on the main network (not isolated VLANs) and have network access to internal systems, making them prime pivot points for ransomware and lateral movement attacks.
+- **Data exfiltration** — recorded footage is exfiltrated and sold (or used for blackmail). Business surveillance footage, home security cameras, and even baby monitors have been compromised and published.
+- **Persistent backdoors** — attackers install persistent malware in firmware or startup scripts, maintaining access even after password changes or system reboots.
+
+Port 34567 is arguably the single largest IoT security disaster category on the internet. The combination of massive deployment numbers + universal default credentials + unpatched critical vulnerabilities + single protocol makes this port a primary target for every IoT botnet operator and surveillance hacker.
+
+---
+
+#### Port 37777 — Dahua (Dahua DVR/NVR Proprietary Protocol)
+
+**Banner**: 20-byte Dahua challenge packet
+
+```
+0xFF 0x01 0x00 0x00  // Magic bytes (Dahua protocol signature: 0xFF 0x01)
+0x00 0x00 0x00 0x00  // Session ID (0x00000000 = new/unauthenticated session)
+0x00 0x00 0x00 0x00  // Sequence number (0x00000000 = first packet in session)
+0x00 0x00 0x00 0x00  // Reserved / padding
+0x00 0x00 0x00 0x00  // Result code (0x00000000 = success/ready)
+```
+
+**Purpose**: Mimics the challenge packet that Dahua DVR and NVR devices send when a client initiates a TCP connection. The response structure:
+- Magic bytes `0xFF 0x01` — the Dahua protocol signature (this is THE fingerprint scanners look for)
+- Session ID of `0x00000000` (indicates a new, unauthenticated session)
+- Sequence number `0x00000000` (first packet in the session handshake)
+- Result code `0x00000000` (success — the device is ready to proceed with authentication)
+
+**Why it's convincing**: Dahua is one of the world's largest security camera and DVR manufacturers (second only to Hikvision). The magic bytes `0xFF 0x01` at the start of every Dahua protocol packet are the exact fingerprint that Shodan, Censys, and reconnaissance tools use to identify Dahua devices. This 20-byte challenge packet is what real Dahua DVRs send immediately after accepting a TCP connection on port 37777, before any authentication negotiation begins.
+
+**Why this port is targeted**: Port 37777 is one of the most CRITICAL and heavily-exploited IoT ports on the internet:
+- **CVE-2021-33044 and the Dahua credential bypass epidemic** — CVE-2021-33044 is an authentication bypass vulnerability affecting hundreds of Dahua DVR/NVR/IP camera models. Attackers can bypass authentication entirely and gain admin access without knowing credentials. This vulnerability (and related bypasses CVE-2022-30564, CVE-2022-30563) remains UNPATCHED on millions of deployed Dahua devices. Port 37777 is the attack surface for these exploits.
+- **Massive deployment scale** — Dahua devices are deployed in commercial security systems, government facilities, critical infrastructure, retail stores, warehouses, and residential installations worldwide. Dahua has 30%+ global market share in the DVR/NVR market.
+- **Default credentials** — like Hikvision, Dahua devices ship with default credentials (`admin`/`admin`, `admin`/blank, `888888`/`888888`). Most deployed devices still use these defaults.
+- **Nation-state targeting** — the U.S. government banned Dahua devices from federal installations (NDAA Section 889) due to cybersecurity and surveillance concerns. Despite this, millions of Dahua devices remain deployed in critical infrastructure. Port 37777 is actively scanned by nation-state actors seeking access to surveillance networks.
+- **Botnet recruitment** — IoT botnets specifically target port 37777 with both credential stuffing and CVE-2021-33044 exploits. Compromised Dahua devices are recruited into DDoS swarms.
+- **Surveillance hijacking** — attackers gain access to live camera feeds, recorded footage, alarm/motion detection settings, and network configuration. Dahua systems often control 4–64 cameras per DVR/NVR, providing extensive surveillance access.
+- **Supply chain concerns** — Dahua devices have been implicated in supply chain security concerns due to potential backdoors and data exfiltration to Chinese servers. Port 37777 communication has been observed initiating outbound connections to Dahua cloud services without user consent.
+- **Firmware persistence** — attackers upload malicious firmware or modify startup scripts to maintain persistent access. Dahua's firmware update mechanism is poorly secured, allowing unauthorized firmware installation via port 37777.
+
+Port 37777 represents one of the highest-risk attack surfaces in the IoT ecosystem due to the combination of critical unpatched vulnerabilities + massive deployment scale + government/nation-state interest + botnet targeting. The magic bytes `0xFF 0x01` are instantly recognizable to every IoT scanner on the internet.
+
+---
+
 ## Minecraft Java Edition (Port 25565)
 
 **Port 25565** is handled differently from the banner-based services above. webTraffik implements a full **Server List Ping** protocol emulation as defined in the [Minecraft protocol specification](https://wiki.vg/Server_List_Ping).
@@ -785,4 +905,4 @@ The port lists in `firewall.sh` must always match the port lists in `services.go
 
 ---
 
-**Last synchronized with**: `services.go` as of the current codebase state (42 TCP services, 7 UDP services, 1 Minecraft service, 17 HTTP ports)
+**Last synchronized with**: `services.go` as of the current codebase state (45 TCP services, 7 UDP services, 1 Minecraft service, 17 HTTP ports)
