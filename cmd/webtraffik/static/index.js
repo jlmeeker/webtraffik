@@ -1366,6 +1366,11 @@
   const MAX_DOTS = 1000;
   const dotRing = []; // circular buffer of DOM nodes
 
+  // ── History dot deduplication ────────────────────────────────────────────
+  // Tracks one dot per unique source IP across the replay window.
+  // key: src_ip  value: { dotEl (D3 selection), hitCount, ev (most recent) }
+  const historyDotMap = new Map();
+
   function trackDot(node) {
     dotRing.push(node);
     while (dotRing.length > MAX_DOTS) {
@@ -1509,6 +1514,7 @@
 
     // Clear dots
     dotRing.length = 0;
+    historyDotMap.clear();
     dotGroup.selectAll('.src-dot').remove();
 
     // Clear arcs
@@ -1660,9 +1666,23 @@
       .on('mouseout',  function()      { scheduleTipHide(); });
   }
 
-  // Draw a faded static dot for historical events (no arc animation)
+  // Draw a faded static dot for historical events (no arc animation).
+  // Deduplicates by source IP: if a dot for this IP already exists, the
+  // existing dot's hit count is incremented and its radius/tooltip updated.
+  // This ensures all unique source IPs in the replay window are represented
+  // without exhausting the MAX_DOTS cap on duplicate events from the same IP.
   function drawHistoryDot(ev) {
     if (!ev.src_lon && !ev.src_lat) return;
+    const ip = ev.src_ip;
+    const existing = historyDotMap.get(ip);
+    if (existing) {
+      // Update existing dot: grow radius with hit count, refresh tooltip.
+      existing.hitCount++;
+      const dotR = Math.min(6, 3 + Math.log2(existing.hitCount));
+      existing.dotEl.attr('r', dotR);
+      attachTooltip(existing.dotEl, tooltipLabel(existing.ev, existing.hitCount), existing.ev);
+      return;
+    }
     const srcPt = [ev.src_lon, ev.src_lat];
     const [x, y] = projection(srcPt);
     const portColor = portStats[ev.dst_port]?.color || '#546e7a';
@@ -1678,6 +1698,7 @@
     if (bannedSet.has(banKey(ev.src_ip, ev.dst_port))) {
       dot.classed('banned', true).attr('fill', '#ef5350').attr('opacity', 0.9);
     }
+    historyDotMap.set(ip, { dotEl: dot, hitCount: 1, ev });
     trackDot(dot.node());
   }
 
