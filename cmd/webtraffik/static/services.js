@@ -39,6 +39,7 @@ window.PORT_SERVICE_NAMES = {
   '5986': 'WinRM SSL',
   '6000': 'X11',
   '6379': 'Redis',
+  '6443': 'Kubernetes API',
   '6667': 'IRC',
   '8291': 'Winbox',
   '8443': 'HTTPS alt',

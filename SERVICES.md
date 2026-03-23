@@ -55,6 +55,7 @@ This creates realistic fingerprints that scanners and reconnaissance tools will 
 | 5985 | WinRM-HTTP | Windows Remote Management HTTP | HTTP 404 with `Server: Microsoft-HTTPAPI/2.0` |
 | 5986 | WinRM-HTTPS | Windows Remote Management HTTPS | TLS handshake_failure alert (same as port 443) |
 | 6000 | X11 | X Window System | X11 connection-refused response with "No protocol specified" error |
+| 6443 | Kubernetes | Kubernetes API Server (kube-apiserver) | HTTP/1.0 400 Bad Request response: "Client sent an HTTP request to an HTTPS server." |
 | 6379 | Redis | Redis In-Memory Database | `-DENIED Redis is running in protected mode` — mimics Redis protected mode |
 | 6667 | IRC | Internet Relay Chat | IRC NOTICE AUTH hostname lookup messages |
 | 8291 | Winbox | MikroTik Winbox | 4 bytes: `0x01 0x00 0x00 0x00` (null-session banner) |
@@ -370,6 +371,48 @@ The response structure is:
 While X11 forwarding over SSH is less common now (Wayland is gradually replacing X11 in modern Linux distributions), legacy systems, remote workstations, and misconfigured lab/development machines still expose X11 ports. Shodan indexes thousands of open X11 servers, and attackers actively scan for them as high-value targets for credential theft and lateral movement.
 
 The combination of network exposure + powerful remote capabilities + weak authentication (xhost-based) makes port 6000 one of the most dangerous ports to expose on a workstation or desktop system.
+
+---
+
+#### Port 6443 — Kubernetes API Server (kube-apiserver)
+
+**Banner**: HTTP/1.0 400 Bad Request response
+
+**Purpose**: Sends the exact response that Go's `crypto/tls` package (used by kube-apiserver) returns when a client sends a plain HTTP request to a TLS endpoint:
+
+```
+HTTP/1.0 400 Bad Request
+Content-Type: text/plain; charset=utf-8
+X-Content-Type-Options: nosniff
+Content-Length: 48
+
+Client sent an HTTP request to an HTTPS server.
+```
+
+This is the response produced by Go's `net/http` TLS server when the client connects without a TLS `ClientHello` (i.e., sends a raw HTTP request instead of initiating a TLS handshake).
+
+**Why it's convincing**: The body text "Client sent an HTTP request to an HTTPS server." is unique to Go's TLS implementation and is definitively associated with kube-apiserver (since kube-apiserver is written in Go). The `HTTP/1.0` version string combined with the exact body text and headers is the primary fingerprint that Shodan uses for the `kubernetes` tag. Tools like `kube-hunter`, Masscan, and security scanners specifically look for this response body when probing port 6443 to detect exposed Kubernetes clusters.
+
+**Why this port is targeted**: Port 6443 represents one of the most CRITICAL attack surfaces in cloud-native infrastructure:
+- **Kubernetes API server exposure** — Port 6443 is the default port for the Kubernetes API server (`kube-apiserver`), which is the control plane component that exposes the Kubernetes API. An exposed unauthenticated API server is a critical security finding that grants attackers complete control over the entire Kubernetes cluster.
+- **Cluster takeover** — With access to an unauthenticated or misconfigured Kubernetes API, attackers can:
+  - Create privileged pods with `hostPath` volume mounts to access the underlying host filesystem
+  - Deploy containers with `hostNetwork`, `hostPID`, or `hostIPC` to escape container isolation
+  - Read Kubernetes Secrets containing credentials, API tokens, database passwords, and cloud provider keys
+  - Modify ConfigMaps to inject malicious configuration into applications
+  - Create ServiceAccounts with cluster-admin privileges for persistent access
+  - Deploy DaemonSets to run malicious workloads on every node in the cluster
+  - Access the kubelet API on worker nodes (port 10250) for further exploitation
+- **Cryptominer deployment** — TeamTNT, Hildegard, Siloscape, and other cloud-native malware campaigns specifically scan for exposed Kubernetes APIs (port 6443) to deploy cryptominers in privileged containers. These campaigns have compromised thousands of Kubernetes clusters.
+- **Data exfiltration** — Kubernetes Secrets often contain AWS credentials, GCP service account keys, Azure tokens, database connection strings, API keys, and SSH keys. Attackers with API access can enumerate and exfiltrate all cluster secrets.
+- **Container registry poisoning** — Compromised clusters allow attackers to push malicious images to private container registries, enabling supply chain attacks against applications pulling from those registries.
+- **Cloud credential theft** — Kubernetes nodes running in cloud environments (EKS, GKE, AKS) often have instance metadata access (IMDSv1/v2) or node IAM roles that provide cloud provider credentials. Attackers use privileged pods to access these credentials and pivot to the underlying cloud account.
+- **Lateral movement** — A compromised Kubernetes cluster provides access to all workloads running in the cluster, including databases, message queues, microservices, and internal APIs. Attackers use the cluster as a pivot point to compromise the entire application stack.
+- **Ransomware targeting** — Industrial and enterprise ransomware operators (REvil, Conti, LockBit) have begun targeting Kubernetes clusters. The attack chain: expose API → deploy privileged pods → access host filesystems → encrypt data and backups → demand ransom.
+- **Shodan and reconnaissance** — Shodan actively indexes exposed Kubernetes API servers by searching for the "Client sent an HTTP request to an HTTPS server." response on port 6443. Thousands of clusters are discoverable via searches like `port:6443 "kubernetes"` or `"Client sent an HTTP request to an HTTPS server."`.
+- **kube-hunter and automated exploitation** — Tools like `kube-hunter` (Aqua Security's Kubernetes penetration testing tool) automatically scan for port 6443, fingerprint the API server, test for authentication bypass vulnerabilities, enumerate exposed services, and attempt privilege escalation. An exposed API on port 6443 is the first step in every Kubernetes security assessment and attack.
+
+Port 6443 is the crown jewel of cloud-native infrastructure security. An exposed Kubernetes API server is a catastrophic misconfiguration equivalent to publishing cloud admin credentials to the internet. NEVER expose port 6443 to untrusted networks. Always use network policies, authentication (client certificates, OIDC, webhook tokens), and authorization (RBAC) to secure the API server.
 
 ---
 

@@ -530,6 +530,24 @@ Content-Type: application/json; charset=UTF-8
 			return nil
 		},
 	},
+	// ── Container Orchestration ───────────────────────────────────────────────
+	{
+		Port: 6443, // Kubernetes API server (kube-apiserver)
+		Banner: func() []byte {
+			// The Kubernetes API server listens on 6443 with TLS. Scanners that
+			// connect without a TLS ClientHello (e.g. curl http://...:6443) get
+			// the standard Go TLS server error: HTTP 400 with a distinctive body.
+			// This is the fingerprint Shodan's "kubernetes" filter and mass-scanners
+			// (kube-hunter, etc.) look for when probing for unauthenticated API servers.
+			body := "Client sent an HTTP request to an HTTPS server.\n"
+			return []byte("HTTP/1.0 400 Bad Request\r\n" +
+				"Content-Type: text/plain; charset=utf-8\r\n" +
+				"X-Content-Type-Options: nosniff\r\n" +
+				"Content-Length: 48\r\n" +
+				"\r\n" +
+				body)
+		},
+	},
 	// ── IP Camera / DVR honeypot services ────────────────────────────────────
 	{
 		Port: 8899, // Hikvision IP camera HTTP web UI
