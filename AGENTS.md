@@ -33,7 +33,7 @@ handleCapture(srcIP, dstPort)
   - builds ConnectionEvent struct
   |
   +-> appLimiter.Record(srcIP, dstPort)
-  |     - feeds rate limiter (connection count per IP)
+  |     - feeds rate limiter (dual-threshold auto-ban: flood check + volume-window check)
   |     - feeds scan tracker (port hit tracking, 5-port/10-minute threshold detection)
   |     - evicts stale port hits outside scan window
   |     - non-blocking, mutex-protected
@@ -96,6 +96,7 @@ handleCapture(srcIP, dstPort)
 | `db.go` | SQLite open/close, schema creation, `insert()`, `loadHistory()`, metrics table schema, `upsertMetrics()`, `queryMetrics()`, `backfillMetrics()` |
 | `metrics.go` | `metricsCache` struct, in-memory hourly-bucketed metrics aggregation, `Record()`, `RecordBan()`, `flushLoop()` (5-second interval), `/api/metrics` and `/metrics` (Prometheus) handlers |
 | `internal/ratelimit/scanner.go` | Port scan detection tracker; `ScannerEntry` struct; `scanTracker` with per-IP port-hit tracking; 5-port/10-minute threshold; 1-hour display window; 2-minute GC loop; `ActiveScanners()` for `/api/scanners` endpoint |
+| `internal/ratelimit/ratelimit.go` | Auto-ban rate limiter; `Limiter` struct; dual-threshold detection (flood + volume-window); per-IP+port ban tracking; SQLite persistence; `IsBanned()` fast read-lock check; `ManualBan()`/`ManualUnban()` API handlers; 64-shard FNV32a hash design |
 | `geo.go` | `GeoLocator` (GeoLite2 reader + rgeo fallback), `Lookup()`, `Location` struct |
 | `geodb.go` | `ensureGeoDB()` — auto-download of `GeoLite2-City.mmdb` from GitHub mirror |
 | `iputil.go` | `discoverPublicIP()` — queries external APIs to find the server's public IP |
@@ -407,6 +408,98 @@ webTraffik includes an in-memory port scan detection system that identifies IPs 
 
 ---
 
+## Auto-Ban System
+
+webTraffik includes an automatic IP banning system that detects abusive connection patterns and temporarily blocks offending IPs on a per-port basis.
+
+### Ban triggers
+
+Two independent detection mechanisms can trigger an automatic ban:
+
+1. **High-rate (flood) ban** — sustained connection flooding:
+   - Threshold: `>2 connections/sec` sustained for `10 minutes`
+   - Catches rapid port scanners and brute-force tools
+
+2. **Volume-window ban** — slow persistent scanning:
+   - Threshold: `30 or more connections` within any rolling `10-minute window`
+   - Catches slow, methodical scanners (e.g., VNC brute-forcers) that stay under the per-second threshold but hammer a single port continuously
+
+### Ban characteristics
+
+- **Duration**: `1 hour` (`BanCooldown`)
+- **Scope**: per-IP per-port (keyed as `ipPortKey{ip, port}`)
+- **Persistence**: bans are written to the `banned_ips` SQLite table and survive restarts
+- **Expiration**: bans auto-expire after cooldown via `scheduleUnban()` (scheduled goroutine)
+- **Metrics**: auto-bans are tracked in the metrics system with label `type=auto`
+
+### Architecture
+
+**ratelimit.go (`internal/ratelimit` package):**
+- `Limiter` struct: holds ban map (RWMutex-protected) + 64-shard rate tracker (per-shard mutex)
+- `IsBanned(ip, port) bool`: fast read-lock check; called at connection accept time in all TCP/HTTP handlers
+- `Record(srcIP, dstPort) bool`: tracks connection, evicts stale timestamps, checks both flood and volume thresholds, triggers ban if breached; returns `false` if IP is banned (caller drops connection)
+- `ManualBan(ip, port)` / `ManualUnban(ip, port)`: API-driven ban/unban; manual bans use `type=manual` metric label
+- `ban()`: creates `BanEntry`, persists to DB (fire-and-forget), schedules auto-expiration, triggers `onChange()` callback (updates frontend panel)
+- `scheduleUnban()`: sleeps for `BanCooldown`, then removes ban from memory and DB
+- `LoadBans()`: seeds in-memory ban set from SQLite on startup; skips expired bans, schedules remaining
+
+**Database schema:**
+```sql
+CREATE TABLE IF NOT EXISTS banned_ips (
+    ip         TEXT NOT NULL,
+    port       TEXT NOT NULL,
+    service    TEXT NOT NULL,
+    banned_at  TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    PRIMARY KEY (ip, port)
+);
+```
+
+**Sharded rate tracker:**
+- `64 shards` (`rateShards`), each with its own mutex + `map[ipPortKey]*rateState`
+- FNV32a hash on `ip+port` → shard index
+- Per-IP+port `rateState`: two timestamp slices (1-second window for flood, 10-minute window for volume)
+- GC loop: sweeps every 5 minutes, evicts entries idle longer than 11 minutes (`volumeWindow + 1 minute`)
+
+### Integration points
+
+**Capture path:**
+- `handleCapture()` (`main.go`) → `appLimiter.Record(srcIP, dstPort)` → ban check + rate tracking
+- TCP service handlers (`services.go`) → `IsBanned()` check before sending banner; if banned, connection is closed immediately
+- HTTP handlers (`main.go`) → `IsBanned()` check before responding; if banned, connection is closed immediately
+- UDP handlers (`services.go`) → ban check is **skipped** (UDP is connectionless; banning is ineffective)
+
+**API endpoints:**
+- `GET /api/banned` — returns JSON array of `BanEntry` (current bans, sorted by `BannedAt` descending)
+- `POST /api/ban` — manual ban via JSON body: `{"ip": "1.2.3.4", "port": "22"}`
+- `POST /api/unban` — manual unban via JSON body: `{"ip": "1.2.3.4", "port": "22"}`
+
+**Frontend:**
+- `#panel-banned` (top-right) displays active bans
+- Polled every 10 seconds via `/api/banned`
+- Updates triggered by WebSocket events when `onChange()` callback fires
+
+### Constants (ratelimit.go lines 12-28)
+
+```go
+const (
+    // High-rate (flood) ban: >2 events/sec sustained for 10 minutes.
+    rateThreshold     = 2
+    rateSustainWindow = 10 * time.Minute
+
+    // Volume-window ban: 30+ events within any rolling 10-minute window.
+    volumeThreshold = 30
+    volumeWindow    = 10 * time.Minute
+
+    BanCooldown    = 1 * time.Hour
+    rateShards     = 64
+    rateGCInterval = 5 * time.Minute
+    rateGCMaxAge   = volumeWindow + time.Minute  // 11 minutes
+)
+```
+
+---
+
 ## Firewall
 
 ### Technology
@@ -688,3 +781,4 @@ The metrics system will automatically:
 - When adding or removing services in `services.go`, also update the `PORT_SERVICE_NAMES` map in `static/index.html` to add or remove the corresponding port→name entry. This keeps the frontend log and panel labels in sync with the backend.
 - The metrics system (`metrics.go`) maintains in-memory hourly-bucketed counters that are flushed to SQLite every 5 seconds. The flush loop is non-blocking — it snapshots dirty counters under lock, then writes to the database without holding the lock. Metrics survive restarts via SQLite persistence, and `backfillMetrics()` is called automatically on first run to aggregate existing events. Never add blocking operations to `Record()` methods — they are called from the capture path and must be fast.
 - The port scan detection system (`internal/ratelimit/scanner.go`) tracks per-IP port hits in memory with a 10-minute sliding window. Detection is threshold-based (5 ports) with no auto-ban integration — it is purely observational. All operations are mutex-protected and non-blocking. The `gcLoop()` runs every 2 minutes to prune stale data. Never add blocking operations to `Record()` — it is called from the capture path via `Limiter.Record()`.
+- The auto-ban rate limiter (`internal/ratelimit/ratelimit.go`) uses a dual-threshold design: flood detection (>2 connections/sec sustained for 10 minutes) and volume-window detection (30+ connections within any rolling 10-minute window). Bans are per-IP+port, not global. The sharded rate tracker (64 shards, FNV32a hash) avoids lock contention between different IPs. All operations are non-blocking and mutex-protected. Never add blocking operations to `Record()` — it is called from the capture path for every connection. The `IsBanned()` check uses a fast read-lock and is called at connection accept time in all TCP/HTTP handlers.
