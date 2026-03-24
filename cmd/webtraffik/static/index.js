@@ -936,6 +936,8 @@
 
   // Cancel any in-flight EventSource and clean up transient arcs.
   let activeTraceES = null;
+  // Pending setTimeout handles from animateTraceHops (hold + cleanup timers).
+  const traceTimers = [];
   // Last rendered hop list — kept so reproject() can redraw after resize.
   let lastTraceHops = null;
 
@@ -944,9 +946,11 @@
       activeTraceES.close();
       activeTraceES = null;
     }
+    // Cancel any pending hold/fade/cleanup timers
+    while (traceTimers.length) clearTimeout(traceTimers.pop());
     tracerouteActive = false;
     lastTraceHops = null;
-    traceGroup.selectAll('*').remove();
+    traceGroup.selectAll('*').interrupt().remove();
     traceIndicator.classList.remove('visible');
     // Snap back to world view immediately (no transition — we're aborting)
     svg.call(zoom.transform, d3.zoomIdentity);
@@ -1161,21 +1165,31 @@
     });
 
     // ── Fade-out + zoom back ─────────────────────────────────────────────────
+    // Use setTimeout rather than a D3 transition on the group — a group-level
+    // D3 transition interrupts the children's ongoing draw transitions.
     const totalDrawMs = arcDelay + (n - 1) * TRACE_STAGGER_MS + TRACE_ARC_DRAW_MS;
     const holdDelay = totalDrawMs + TRACE_HOLD_MS;
 
-    traceGroup.transition()
-      .delay(holdDelay)
-      .duration(TRACE_FADE_MS)
-      .attr('opacity', 0)
-      .on('end', () => {
+    const t1 = setTimeout(() => {
+      // Fade out every child individually so we don't conflict with any
+      // lingering child transitions.
+      traceGroup.selectAll('*')
+        .transition()
+        .duration(TRACE_FADE_MS)
+        .style('opacity', 0)
+        .on('end', function() { d3.select(this).remove(); });
+
+      const t2 = setTimeout(() => {
         traceGroup.selectAll('*').remove();
         traceGroup.attr('opacity', 1);
         tracerouteActive = false;
         lastTraceHops = null;
         traceIndicator.classList.remove('visible');
         zoomToWorld(TRACE_ZOOM_OUT_MS);
-      });
+      }, TRACE_FADE_MS + 50);
+      traceTimers.push(t2);
+    }, holdDelay);
+    traceTimers.push(t1);
   }
 
   // Instantly reproject trace hop geometry (no re-animation) — called from
