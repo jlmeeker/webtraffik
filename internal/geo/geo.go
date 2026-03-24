@@ -20,10 +20,11 @@ type GeoLocator struct {
 
 // Location holds the result of an IP lookup.
 type Location struct {
-	Lat         float64
-	Lon         float64
-	City        string
-	CountryCode string
+	Lat            float64
+	Lon            float64
+	City           string
+	CountryCode    string
+	AccuracyRadius uint16 // km; MaxMind accuracy radius (large = country-level, small = city-level)
 }
 
 // NewGeoLocator opens the GeoLite2 City .mmdb database and kicks off the
@@ -89,10 +90,11 @@ func (g *GeoLocator) Lookup(ipStr string) (*Location, error) {
 	}
 
 	return &Location{
-		Lat:         lat,
-		Lon:         lon,
-		City:        city,
-		CountryCode: record.Country.IsoCode,
+		Lat:            lat,
+		Lon:            lon,
+		City:           city,
+		CountryCode:    record.Country.IsoCode,
+		AccuracyRadius: record.Location.AccuracyRadius,
 	}, nil
 }
 

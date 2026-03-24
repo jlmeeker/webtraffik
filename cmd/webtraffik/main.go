@@ -544,12 +544,12 @@ func startDashboardServer() {
 		}
 
 		// Build geo callback wrapping the app-level GeoLocator.
-		geoFn := func(ipStr string) (lat, lon float64, city, cc string) {
+		geoFn := func(ipStr string) (lat, lon float64, city, cc string, accuracyKm uint16) {
 			loc, err := appGeo.Lookup(ipStr)
 			if err != nil || loc == nil {
-				return 0, 0, "", ""
+				return 0, 0, "", "", 0
 			}
-			return loc.Lat, loc.Lon, loc.City, loc.CountryCode
+			return loc.Lat, loc.Lon, loc.City, loc.CountryCode, loc.AccuracyRadius
 		}
 
 		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
