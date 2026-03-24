@@ -1282,7 +1282,11 @@
 
   // Kick off a traceroute SSE stream for the given source IP.
   // Suppresses live arc rendering until the animation is fully done.
-  function startTraceroute(srcIP) {
+  // srcGeo is optional: { lat, lon, city, cc } from the connection event.
+  // When provided, it is prepended as the first point in the animation so
+  // the path always starts from the source's known location — even when
+  // traceroute's last hop is a mid-path router in a different country.
+  function startTraceroute(srcIP, srcGeo) {
     cancelTrace(); // cancel any previous in-flight trace
 
     tracerouteActive = true;
@@ -1309,6 +1313,19 @@
       // from their location inward toward our server — matching the mental
       // model of "their request travelling to us".
       const reversedHops = [...hops].reverse();
+
+      // Prepend the source IP's known geolocation so the animation always
+      // starts from the actual origin — not from the last traceroute hop
+      // which may be a router in a completely different country.
+      if (srcGeo && (srcGeo.lat || srcGeo.lon)) {
+        const srcHop = { ip: srcIP, lat: srcGeo.lat, lon: srcGeo.lon, city: srcGeo.city || '', cc: srcGeo.cc || '' };
+        // Only prepend if it differs from the first hop (avoid duplicate dot)
+        if (!reversedHops.length ||
+            reversedHops[0].lat !== srcHop.lat || reversedHops[0].lon !== srcHop.lon) {
+          reversedHops.unshift(srcHop);
+        }
+      }
+
       if (selfPos) {
         reversedHops.push({ lat: selfPos.lat, lon: selfPos.lon, ip: selfPos.ip, city: selfPos.city, cc: selfPos.cc });
       }
@@ -1864,7 +1881,7 @@
 
       if (ev.src_lat && ev.src_lon && ev.src_ip) {
         row.addEventListener('click', () => {
-          startTraceroute(ev.src_ip);
+          startTraceroute(ev.src_ip, { lat: ev.src_lat, lon: ev.src_lon, city: ev.src_city, cc: ev.src_cc });
           row.classList.add('arc-flash');
           setTimeout(() => row.classList.remove('arc-flash'), 400);
         });
@@ -2085,7 +2102,7 @@
     dotTooltip.style.display = 'none';
     tipCurrentEv = null;
     if (!ev || !ev.src_ip) return;
-    startTraceroute(ev.src_ip);
+    startTraceroute(ev.src_ip, { lat: ev.src_lat, lon: ev.src_lon, city: ev.src_city, cc: ev.src_cc });
   });
 
   function attachTooltip(sel, label, ev) {
@@ -2095,7 +2112,7 @@
       .on('mouseout',  function()      { scheduleTipHide(); })
       .on('dblclick',  function(event) {
         event.stopPropagation(); // prevent svg dblclick handler from firing
-        if (ev && ev.src_ip) startTraceroute(ev.src_ip);
+        if (ev && ev.src_ip) startTraceroute(ev.src_ip, { lat: ev.src_lat, lon: ev.src_lon, city: ev.src_city, cc: ev.src_cc });
       });
   }
 
