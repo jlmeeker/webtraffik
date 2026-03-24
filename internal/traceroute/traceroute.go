@@ -17,6 +17,7 @@ import (
 	"net"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -26,6 +27,8 @@ type Hop struct {
 	N int `json:"n"`
 	// IP is the router/gateway IP at this hop.
 	IP string `json:"ip"`
+	// RTT is the round-trip time in milliseconds (0 if unavailable).
+	RTT float64 `json:"rtt"`
 	// Lat/Lon is the geolocation of this hop (0,0 if unknown).
 	Lat float64 `json:"lat"`
 	Lon float64 `json:"lon"`
@@ -44,6 +47,11 @@ var reIPv4 = regexp.MustCompile(`\b(\d{1,3}(?:\.\d{1,3}){3})\b`)
 // traceroute / tracepath output, e.g.  "2001:db8::1" or "(2001:db8::1)".
 var reIPv6 = regexp.MustCompile(`\b([0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{0,4}){2,7})\b`)
 
+// reRTT matches an RTT value in traceroute/tracepath output.
+// traceroute format: "1.234 ms" (space before ms)
+// tracepath format:  "1.234ms"  (no space)
+var reRTT = regexp.MustCompile(`(\d+(?:\.\d+)?)\s*ms\b`)
+
 // isPrivate returns true for RFC-1918 / link-local / loopback addresses that
 // are not useful to geolocate.
 func isPrivate(ip string) bool {
@@ -53,6 +61,18 @@ func isPrivate(ip string) bool {
 	}
 	return parsed.IsLoopback() || parsed.IsPrivate() || parsed.IsLinkLocalUnicast() ||
 		parsed.IsLinkLocalMulticast() || parsed.IsUnspecified()
+}
+
+// extractRTT returns the first RTT value (in milliseconds) found in a
+// traceroute output line, or 0 if none is found.
+func extractRTT(line string) float64 {
+	if m := reRTT.FindStringSubmatch(line); m != nil {
+		v, err := strconv.ParseFloat(m[1], 64)
+		if err == nil {
+			return v
+		}
+	}
+	return 0
 }
 
 // extractIP returns the first public IP found in a traceroute output line, or
@@ -131,7 +151,7 @@ func Run(ctx context.Context, target string, maxHops int, geo GeoFunc, ch chan<-
 		}
 		seenIPs[ip] = true
 
-		hop := Hop{N: hopNum, IP: ip}
+		hop := Hop{N: hopNum, IP: ip, RTT: extractRTT(line)}
 		if geo != nil {
 			hop.Lat, hop.Lon, hop.City, hop.CountryCode = geo(ip)
 		}
