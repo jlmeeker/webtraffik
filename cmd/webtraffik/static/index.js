@@ -927,6 +927,54 @@
     }
   }
 
+  // ── Traceroute RTT-based geo plausibility ──────────────────────────────
+  // Light in fiber ≈ 200 km/ms (2/3 c).  RTT is round-trip, so one-way
+  // distance ≈ deltaRTT/2 * 200 = deltaRTT * 100 km.  Real paths are
+  // never straight, so we apply a generous 3x multiplier to avoid false
+  // positives.  If the great-circle distance between consecutive hops
+  // exceeds this budget, the GeoIP is likely wrong — clamp the hop to the
+  // previous hop's position.
+
+  // Haversine great-circle distance in km between two [lat, lon] points.
+  function haversineKm(lat1, lon1, lat2, lon2) {
+    const R = 6371; // Earth radius in km
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) ** 2 +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+              Math.sin(dLon / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }
+
+  // Maximum plausible one-way distance per ms of RTT delta.
+  // 100 km/ms (speed of light in fiber) * 3x routing overhead margin.
+  const RTT_KM_PER_MS = 100 * 3; // 300 km per ms of RTT delta
+
+  // Given hops in traceroute order (from our server outward, with ascending
+  // RTTs), clamp any hop whose geo jump is implausible for the RTT delta
+  // to the previous hop's position.  Mutates hops in place.
+  function correctImplausibleGeo(hops) {
+    for (let i = 1; i < hops.length; i++) {
+      const prev = hops[i - 1];
+      const curr = hops[i];
+
+      // Skip if either hop has no RTT (can't judge plausibility)
+      if (!prev.rtt || !curr.rtt) continue;
+
+      const deltaRTT = Math.abs(curr.rtt - prev.rtt);
+      const maxKm = deltaRTT * RTT_KM_PER_MS;
+      const actualKm = haversineKm(prev.lat, prev.lon, curr.lat, curr.lon);
+
+      if (actualKm > maxKm && maxKm > 0) {
+        // GeoIP is implausible — place this hop at the previous hop's location.
+        curr.lat = prev.lat;
+        curr.lon = prev.lon;
+        curr.city = prev.city;
+        curr.cc = prev.cc;
+      }
+    }
+  }
+
   // ── Traceroute state ─────────────────────────────────────────────────────
   // When a traceroute is running, live arc animations are suppressed so the
   // hop path has the stage to itself.  The WebSocket keeps running normally —
@@ -1308,6 +1356,11 @@
       es.close();
       activeTraceES = null;
       traceIndicator.classList.remove('visible');
+
+      // Correct implausible geo before reversing — hops are in traceroute
+      // order (from our server outward) with ascending cumulative RTTs.
+      correctImplausibleGeo(hops);
+
       // traceroute runs FROM us TO them: hop 1 = our first upstream router,
       // last hop ≈ their IP.  Reverse the list so the animation flows
       // from their location inward toward our server — matching the mental
