@@ -562,8 +562,9 @@ webTraffik includes an on-demand traceroute feature that traces the network path
 ### Backend
 
 **traceroute.go (`internal/traceroute` package):**
-- `Hop` struct (exported): `N`, `IP`, `Lat`, `Lon`, `City`, `CountryCode`, `RTT` — all JSON-tagged for SSE serialization. `RTT` is the round-trip time in milliseconds parsed from traceroute output.
+- `Hop` struct (exported): `N`, `IP`, `Lat`, `Lon`, `City`, `CountryCode`, `RTT`, `AccuracyKm` — all JSON-tagged for SSE serialization. `RTT` is the round-trip time in milliseconds parsed from traceroute output. `AccuracyKm` is the MaxMind accuracy radius in kilometers (larger values indicate less precise geolocation).
 - `Run(ctx, target, maxHops, geo, ch)`: spawns `traceroute` (or `tracepath` fallback) as a subprocess via `exec.CommandContext`, pipes stdout, parses each line for public IPs, geolocates each hop via `GeoFunc` callback, de-duplicates IPs, and sends `Hop` structs on `ch`. Channel is closed when the process exits or context is cancelled. Max hops default: 20.
+- `GeoFunc` callback type: signature updated to return 5 values: `(lat, lon, city, cc, accuracyKm)` — accuracy propagated from `geo.Location.AccuracyRadius`.
 - `buildCmd()`: tries `traceroute` first (with `-n -m N -w 1 -q 1` flags for fast numeric output), falls back to `tracepath` (with `-n -m N`). Returns empty if neither is available.
 - `extractRTT(line)`: parses RTT values from both `traceroute` format (`1.234 ms` with space) and `tracepath` format (`1.085ms` without space) using regex `reRTT`. Returns RTT in milliseconds.
 - Private/loopback/link-local IPs are silently skipped (not useful for geolocation).
@@ -584,6 +585,33 @@ webTraffik includes an on-demand traceroute feature that traces the network path
 - **State flags**: `tracerouteActive` suppresses live arc rendering during trace; `traceDrawing` suppresses `reprojectTraceHops()` during the draw phase to avoid destroying active transitions
 - **Cancellation**: Escape key calls `cancelTrace()` — closes EventSource, clears all `traceTimers`, removes trace geometry, snaps back to world view
 - **Timing constants**: `TRACE_ARC_DRAW_MS = 1800`, `TRACE_STAGGER_MS = 2000`, `TRACE_HOLD_MS = 2500`, `TRACE_FADE_MS = 800`
+
+### Country-Level Hop Filtering
+
+webTraffik includes a preprocessing filter that removes country-level geolocation centroids from traceroute paths before animation.
+
+**Problem:**
+- MaxMind GeoLite2 returns country-level centroid coordinates (e.g., 37.75, -97.82 for United States) when it can only resolve an IP to country level
+- These centroids have large accuracy radii (500-1000 km) indicating low confidence
+- Country centroids are meaningless geographic centers, not real router locations
+- Drawing arcs to/from these centroids creates misleading visualizations (e.g., traceroutes from Asia appearing to route through Kansas)
+
+**Solution:**
+- `GEO_ACCURACY_THRESHOLD = 200` constant in `static/index.js` — hops with `accuracy_km >= 200` are classified as country-level
+- `filterCountryLevelHops(hops)` function — removes hops whose `accuracy_km >= 200`
+- MaxMind city-level results have accuracy radii typically 1-50 km; country-level results have 500-1000 km
+- The 200 km threshold cleanly separates the two classes
+
+**Integration:**
+- Called in `startTraceroute()` after hop collection completes, before `correctImplausibleGeo()` and before hop reversal
+- Runs client-side only — backend continues to stream all hops including country-level ones
+- Only city-level hops (those with precise geolocation) remain in the trace animation
+
+**Data flow:**
+1. Backend `geo.Lookup()` populates `AccuracyRadius` from MaxMind database (`internal/geo/geo.go`)
+2. Traceroute `GeoFunc` callback propagates accuracy to `Hop.AccuracyKm` field (`internal/traceroute/traceroute.go`)
+3. SSE stream sends `accuracy_km` in JSON for each hop
+4. Frontend filters hops with `accuracy_km >= 200` before animation
 
 ### RTT Plausibility Correction
 
@@ -837,7 +865,7 @@ The metrics system will automatically:
 ## Notes for Agents
 
 - The `modernc.org/sqlite` driver requires no CGo. Do not substitute it with a CGo-based driver — it will break cross-compilation.
-- `geo.go` uses an `atomic.Pointer[rgeo.Rgeo]` for the fallback geocoder. This is intentionally lock-free; do not add a mutex around `rgeo` access.
+- `geo.go` uses an `atomic.Pointer[rgeo.Rgeo]` for the fallback geocoder. This is intentionally lock-free; do not add a mutex around `rgeo` access. The `geo.Location` struct now includes `AccuracyRadius` from MaxMind — this is the geolocation accuracy in kilometers and is propagated through the traceroute pipeline to enable country-level centroid filtering on the frontend.
 - The `hub.broadcast()` method snapshots subscribers under lock, then releases the lock before fan-out. Subscriber channel sends are non-blocking (`select/default`). This pattern keeps subscribe/unsubscribe operations fast even during high-traffic fan-out. Do not add blocking operations to the snapshot-and-send logic.
 - `insert()` queues events into a buffered channel and never blocks. A dedicated `writeLoop()` goroutine drains the channel and batches writes into SQLite for high throughput. The `database/sql` pool handles concurrent reads safely.
 - Static files are embedded at compile time via `static_embed.go`. Changes to `static/index.html` require a rebuild to take effect.
@@ -849,3 +877,4 @@ The metrics system will automatically:
 - The auto-ban rate limiter (`internal/ratelimit/ratelimit.go`) uses a dual-threshold design: flood detection (>2 connections/sec sustained for 10 minutes) and volume-window detection (30+ connections within any rolling 10-minute window). Bans are per-IP+port, not global. The sharded rate tracker (64 shards, FNV32a hash) avoids lock contention between different IPs. All operations are non-blocking and mutex-protected. Never add blocking operations to `Record()` — it is called from the capture path for every connection. The `IsBanned()` check uses a fast read-lock and is called at connection accept time in all TCP/HTTP handlers.
 - The `internal/traceroute` package spawns an external `traceroute` or `tracepath` process and parses its stdout line-by-line. It requires one of these tools to be installed on the server (no Go-native ICMP implementation). The `/api/traceroute` SSE endpoint has a 60-second context timeout and validates that the target IP is public. The frontend suppresses live arc rendering while a traceroute animation is active (`tracerouteActive` flag). Only one traceroute can be active at a time — starting a new one cancels the previous via `cancelTrace()`.
 - The traceroute RTT extraction (`extractRTT()` in `internal/traceroute/traceroute.go`) handles both `traceroute` output format (`1.234 ms` with space) and `tracepath` output format (`1.085ms` without space) via regex matching. The frontend `correctImplausibleGeo()` runs before hop reversal and modifies hops in-place to clamp geo-implausible positions (where great-circle distance exceeds the RTT-derived speed-of-light budget) to the previous hop's coordinates. The 300 km/ms budget is intentionally generous (3× overhead) to avoid false positives on legitimate transcontinental fiber routes while still catching GeoIP database errors that would place a router on the wrong continent.
+- The traceroute pipeline includes country-level centroid filtering (`filterCountryLevelHops()` in `static/index.js`) that removes hops with `accuracy_km >= 200` before animation. This prevents misleading visualizations where MaxMind returns country-centroid coordinates (e.g., US centroid at 37.75, -97.82 with accuracy=1000km) instead of actual router locations. The filter runs after hop collection but before RTT plausibility correction, ensuring only city-level hops (accuracy typically 1-50km) remain in the trace. This is distinct from RTT plausibility correction — filtering removes low-confidence hops entirely, while plausibility correction clamps high-confidence hops that are physically implausible given measured RTT.
