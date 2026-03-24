@@ -1017,9 +1017,9 @@
   // Draw a series of transient arcs along the sequence of hop points.
   // Each arc draws from hops[i] → hops[i+1] with a staggered delay, then
   // all arcs fade out together after TRACE_HOLD_MS.
-  const TRACE_ARC_DRAW_MS  = 1200; // draw-in duration per hop segment
-  const TRACE_STAGGER_MS   = 400;  // delay between successive segment draws
-  const TRACE_HOLD_MS      = 2000; // hold time before fade-out begins
+  const TRACE_ARC_DRAW_MS  = 1800; // draw-in duration per hop segment
+  const TRACE_STAGGER_MS   = 2000; // delay between successive segment draws (one arc at a time)
+  const TRACE_HOLD_MS      = 2500; // hold time before fade-out begins
   const TRACE_FADE_MS      = 800;  // fade-out duration
   const TRACE_DOT_RADIUS   = 5;
 
