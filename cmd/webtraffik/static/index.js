@@ -141,8 +141,10 @@
     // Reproject self dot
     drawSelfDot();
 
-    // Reproject any visible traceroute hop geometry (instant, no re-animation)
-    if (lastTraceHops && lastTraceHops.length >= 2) {
+    // Reproject any visible traceroute hop geometry (instant, no re-animation).
+    // Skip while the sequential draw is in progress — the zoom-in fires
+    // reproject on every frame and would destroy live dash-offset transitions.
+    if (lastTraceHops && lastTraceHops.length >= 2 && !traceDrawing) {
       reprojectTraceHops(lastTraceHops);
     }
   }
@@ -931,6 +933,10 @@
   // events are still logged, just not drawn as arcs.
   let tracerouteActive = false;
 
+  // True while the sequential arc draw is in progress — suppresses
+  // reprojectTraceHops() during zoom-in to avoid destroying live transitions.
+  let traceDrawing = false;
+
   // Group that holds transient traceroute hop arcs (drawn above persistent arcs)
   const traceGroup = svg.append('g');
 
@@ -949,6 +955,7 @@
     // Cancel any pending hold/fade/cleanup timers
     while (traceTimers.length) clearTimeout(traceTimers.pop());
     tracerouteActive = false;
+    traceDrawing = false;
     lastTraceHops = null;
     traceGroup.selectAll('*').interrupt().remove();
     traceIndicator.classList.remove('visible');
@@ -1038,7 +1045,12 @@
   }
 
   // Called once the traceroute is complete (or cancelled) with the full hop list.
-  // Animates arc segments sequentially, holds, then fades everything out.
+  // Animates arc segments sequentially — one arc every TRACE_STAGGER_MS — then
+  // holds the full path and fades out.
+  //
+  // IMPORTANT: arcs and dots are created on-demand via setTimeout, NOT scheduled
+  // upfront with D3 .delay().  This avoids zoom/reproject transitions destroying
+  // in-flight dash-offset animations.
   function animateTraceHops(hops) {
     // Need at least two points to draw anything
     if (!hops || hops.length < 2) {
@@ -1053,21 +1065,35 @@
     // Zoom in to frame all the hops before drawing begins.
     zoomToHops(hops, TRACE_ZOOM_IN_MS);
 
-    // Delay arc drawing until after zoom-in lands.
-    const arcDelay = TRACE_ZOOM_IN_MS + 100;
-
     // Clear any previous trace geometry
     traceGroup.selectAll('*').remove();
     traceGroup.attr('opacity', 1);
+    traceDrawing = true;
 
     const n = hops.length;
-    const pts = hops.map(hx => projection([hx.lon, hx.lat]));
 
-    // ── Arc segments ────────────────────────────────────────────────────────
-    // Each segment is colored at the midpoint hue between its two endpoint hops.
-    pts.forEach((pt, i) => {
-      if (i === 0) return;
+    // Helper: create one arc segment + endpoint dot + label for hop index i.
+    // Returns immediately; the draw-in animation runs asynchronously.
+    function drawSegment(i) {
+      const pts = hops.map(hx => projection([hx.lon, hx.lat]));
+
+      // ── Source dot (hop 0) on first call ────────────────────────────────
+      if (i === 1) {
+        const [cx0, cy0] = pts[0];
+        const dotColor0 = traceHopColor(0, n - 1);
+        traceGroup.append('circle')
+          .attr('cx', cx0).attr('cy', cy0)
+          .attr('r', 0)
+          .attr('fill', dotColor0)
+          .attr('opacity', 0.95)
+          .transition().duration(250).attr('r', TRACE_DOT_RADIUS);
+        appendHopLabel(cx0, cy0, dotColor0, '1');
+      }
+
+      // ── Arc from hop i-1 → hop i ───────────────────────────────────────
       const prev = pts[i - 1];
+      const pt   = pts[i];
+      if (!prev || !pt) return;
       const [x0, y0] = prev;
       const [x1, y1] = pt;
       const mx = (x0 + x1) / 2;
@@ -1075,8 +1101,6 @@
       const chord = Math.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2);
       const bulge = Math.min(chord * 0.3, h * 0.15);
       const fullD = `M${x0},${y0} Q${mx},${my - bulge} ${x1},${y1}`;
-
-      // Color at the midpoint between the two endpoint hops
       const segColor = traceHopColor((i - 0.5), n - 1);
 
       // Approximate path length for dash animation
@@ -1092,8 +1116,6 @@
         totalLen += Math.sqrt((px1-px0)**2 + (py1-py0)**2);
       }
 
-      const delay = arcDelay + (i - 1) * TRACE_STAGGER_MS;
-
       traceGroup.append('path')
         .attr('fill', 'none')
         .attr('stroke', segColor)
@@ -1104,39 +1126,31 @@
         .attr('opacity', 0.92)
         .attr('d', fullD)
         .transition()
-          .delay(delay)
           .duration(TRACE_ARC_DRAW_MS)
           .ease(d3.easeQuadOut)
           .attr('stroke-dashoffset', 0);
-    });
 
-    // ── Dots + number labels ─────────────────────────────────────────────────
-    hops.forEach((hop, i) => {
-      if (!pts[i]) return;
-      const [cx, cy] = pts[i];
+      // ── Destination dot + label (pops near end of arc draw) ────────────
+      const [cx, cy] = pt;
       const dotColor = traceHopColor(i, n - 1);
-      const delay = i === 0
-        ? arcDelay
-        : arcDelay + (i - 1) * TRACE_STAGGER_MS + TRACE_ARC_DRAW_MS * 0.8;
 
-      // Dot
-      traceGroup.append('circle')
-        .attr('cx', cx).attr('cy', cy)
-        .attr('r', 0)
-        .attr('fill', dotColor)
-        .attr('opacity', 0.95)
-        .transition()
-          .delay(delay)
-          .duration(250)
-          .attr('r', TRACE_DOT_RADIUS);
+      const dotTimer = setTimeout(() => {
+        traceGroup.append('circle')
+          .attr('cx', cx).attr('cy', cy)
+          .attr('r', 0)
+          .attr('fill', dotColor)
+          .attr('opacity', 0.95)
+          .transition().duration(250).attr('r', TRACE_DOT_RADIUS);
+        appendHopLabel(cx, cy, dotColor, String(i + 1));
+      }, TRACE_ARC_DRAW_MS * 0.8);
+      traceTimers.push(dotTimer);
+    }
 
-      // Number label — dark pill background + colored number
+    // Helper: append a numbered label pill next to a dot
+    function appendHopLabel(cx, cy, color, text) {
       const labelX = cx + TRACE_DOT_RADIUS + 4;
       const labelY = cy - TRACE_DOT_RADIUS - 2;
-      const labelText = String(i + 1);
-
-      // Background rect (sized after text — approximate with fixed char width)
-      const labelW = labelText.length * 6 + 6;
+      const labelW = text.length * 6 + 6;
       const labelH = 12;
 
       const labelG = traceGroup.append('g')
@@ -1151,45 +1165,55 @@
 
       labelG.append('text')
         .attr('x', labelX + 1).attr('y', labelY)
-        .attr('fill', dotColor)
+        .attr('fill', color)
         .attr('font-size', '9px')
         .attr('font-family', 'inherit')
         .attr('font-weight', '600')
         .attr('letter-spacing', '0.03em')
-        .text(labelText);
+        .text(text);
 
-      labelG.transition()
-        .delay(delay + 200)
-        .duration(250)
-        .attr('opacity', 1);
-    });
+      labelG.transition().duration(250).attr('opacity', 1);
+    }
 
-    // ── Fade-out + zoom back ─────────────────────────────────────────────────
-    // Use setTimeout rather than a D3 transition on the group — a group-level
-    // D3 transition interrupts the children's ongoing draw transitions.
-    const totalDrawMs = arcDelay + (n - 1) * TRACE_STAGGER_MS + TRACE_ARC_DRAW_MS;
-    const holdDelay = totalDrawMs + TRACE_HOLD_MS;
+    // ── Sequential scheduler ─────────────────────────────────────────────────
+    // Wait for zoom-in to land, then draw one segment at a time.
+    const firstDelay = TRACE_ZOOM_IN_MS + 100;
+    let segIndex = 1; // segments go from 1..n-1
 
-    const t1 = setTimeout(() => {
-      // Fade out every child individually so we don't conflict with any
-      // lingering child transitions.
-      traceGroup.selectAll('*')
-        .transition()
-        .duration(TRACE_FADE_MS)
-        .style('opacity', 0)
-        .on('end', function() { d3.select(this).remove(); });
+    function scheduleNext() {
+      if (segIndex >= n || !tracerouteActive) {
+        // All segments drawn — drawing phase is over.
+        traceDrawing = false;
+        // All segments drawn — hold, then fade out.
+        const holdTimer = setTimeout(() => {
+          traceGroup.selectAll('*')
+            .transition()
+            .duration(TRACE_FADE_MS)
+            .style('opacity', 0);
 
-      const t2 = setTimeout(() => {
-        traceGroup.selectAll('*').remove();
-        traceGroup.attr('opacity', 1);
-        tracerouteActive = false;
-        lastTraceHops = null;
-        traceIndicator.classList.remove('visible');
-        zoomToWorld(TRACE_ZOOM_OUT_MS);
-      }, TRACE_FADE_MS + 50);
-      traceTimers.push(t2);
-    }, holdDelay);
-    traceTimers.push(t1);
+          const cleanupTimer = setTimeout(() => {
+            traceGroup.selectAll('*').remove();
+            traceGroup.attr('opacity', 1);
+            tracerouteActive = false;
+            lastTraceHops = null;
+            traceIndicator.classList.remove('visible');
+            zoomToWorld(TRACE_ZOOM_OUT_MS);
+          }, TRACE_FADE_MS + 50);
+          traceTimers.push(cleanupTimer);
+        }, TRACE_HOLD_MS);
+        traceTimers.push(holdTimer);
+        return;
+      }
+
+      drawSegment(segIndex);
+      segIndex++;
+
+      const nextTimer = setTimeout(scheduleNext, TRACE_STAGGER_MS);
+      traceTimers.push(nextTimer);
+    }
+
+    const startTimer = setTimeout(scheduleNext, firstDelay);
+    traceTimers.push(startTimer);
   }
 
   // Instantly reproject trace hop geometry (no re-animation) — called from
