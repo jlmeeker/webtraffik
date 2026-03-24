@@ -562,9 +562,10 @@ webTraffik includes an on-demand traceroute feature that traces the network path
 ### Backend
 
 **traceroute.go (`internal/traceroute` package):**
-- `Hop` struct (exported): `N`, `IP`, `Lat`, `Lon`, `City`, `CountryCode` — all JSON-tagged for SSE serialization
+- `Hop` struct (exported): `N`, `IP`, `Lat`, `Lon`, `City`, `CountryCode`, `RTT` — all JSON-tagged for SSE serialization. `RTT` is the round-trip time in milliseconds parsed from traceroute output.
 - `Run(ctx, target, maxHops, geo, ch)`: spawns `traceroute` (or `tracepath` fallback) as a subprocess via `exec.CommandContext`, pipes stdout, parses each line for public IPs, geolocates each hop via `GeoFunc` callback, de-duplicates IPs, and sends `Hop` structs on `ch`. Channel is closed when the process exits or context is cancelled. Max hops default: 20.
 - `buildCmd()`: tries `traceroute` first (with `-n -m N -w 1 -q 1` flags for fast numeric output), falls back to `tracepath` (with `-n -m N`). Returns empty if neither is available.
+- `extractRTT(line)`: parses RTT values from both `traceroute` format (`1.234 ms` with space) and `tracepath` format (`1.085ms` without space) using regex `reRTT`. Returns RTT in milliseconds.
 - Private/loopback/link-local IPs are silently skipped (not useful for geolocation).
 
 **`/api/traceroute` SSE endpoint (`main.go`):**
@@ -583,6 +584,33 @@ webTraffik includes an on-demand traceroute feature that traces the network path
 - **State flags**: `tracerouteActive` suppresses live arc rendering during trace; `traceDrawing` suppresses `reprojectTraceHops()` during the draw phase to avoid destroying active transitions
 - **Cancellation**: Escape key calls `cancelTrace()` — closes EventSource, clears all `traceTimers`, removes trace geometry, snaps back to world view
 - **Timing constants**: `TRACE_ARC_DRAW_MS = 1800`, `TRACE_STAGGER_MS = 2000`, `TRACE_HOLD_MS = 2500`, `TRACE_FADE_MS = 800`
+
+### RTT Plausibility Correction
+
+webTraffik includes a speed-of-light-based plausibility filter that detects and corrects geo-implausible traceroute hops — cases where the geolocation database returns a location that is physically impossible given the measured round-trip time.
+
+**Speed-of-light model:**
+- Light travels in fiber at ~200,000 km/s → 100 km/ms one-way
+- `RTT_KM_PER_MS = 300` constant applies a 3× routing overhead multiplier (accounts for non-direct routing, processing delays, queuing)
+- Distance budget for hop N→N+1: `(RTT[N+1] - RTT[N]) × 300 km/ms`
+
+**Detection and correction** (`correctImplausibleGeo()` in `static/index.js`):
+- Iterates through hops in order (before reversal for animation)
+- Computes great-circle distance between consecutive hops via `haversineKm(lat1, lon1, lat2, lon2)`
+- If distance > RTT-derived budget, the hop is geo-implausible (e.g., GeoIP database placed a router in the wrong continent)
+- Implausible hops are clamped to the previous hop's geo position (latitude/longitude overwritten in-place)
+- This prevents animation from drawing physically impossible arcs (e.g., 5000 km traversed in 2 ms)
+
+**Timing:**
+- Called in `startTraceroute()` after hop collection is complete, before hop reversal
+- Runs client-side only — does not modify backend data
+- Hops with missing RTT values (rare) are skipped and not corrected
+
+**Rationale:**
+- GeoIP databases are city-level accurate at best and frequently misplace routers (especially provider/backbone infrastructure)
+- RTT is measured ground truth; geolocation is inferred
+- The 300 km/ms budget is intentionally generous (3× overhead) to avoid false positives on legitimate transcontinental fiber routes
+- Clamping to the previous hop's position is conservative — it preserves route directionality without inventing coordinates
 
 ### System requirements
 
@@ -820,3 +848,4 @@ The metrics system will automatically:
 - The port scan detection system (`internal/ratelimit/scanner.go`) tracks per-IP port hits in memory with a 10-minute sliding window. Detection is threshold-based (5 ports) with no auto-ban integration — it is purely observational. All operations are mutex-protected and non-blocking. The `gcLoop()` runs every 2 minutes to prune stale data. Never add blocking operations to `Record()` — it is called from the capture path via `Limiter.Record()`.
 - The auto-ban rate limiter (`internal/ratelimit/ratelimit.go`) uses a dual-threshold design: flood detection (>2 connections/sec sustained for 10 minutes) and volume-window detection (30+ connections within any rolling 10-minute window). Bans are per-IP+port, not global. The sharded rate tracker (64 shards, FNV32a hash) avoids lock contention between different IPs. All operations are non-blocking and mutex-protected. Never add blocking operations to `Record()` — it is called from the capture path for every connection. The `IsBanned()` check uses a fast read-lock and is called at connection accept time in all TCP/HTTP handlers.
 - The `internal/traceroute` package spawns an external `traceroute` or `tracepath` process and parses its stdout line-by-line. It requires one of these tools to be installed on the server (no Go-native ICMP implementation). The `/api/traceroute` SSE endpoint has a 60-second context timeout and validates that the target IP is public. The frontend suppresses live arc rendering while a traceroute animation is active (`tracerouteActive` flag). Only one traceroute can be active at a time — starting a new one cancels the previous via `cancelTrace()`.
+- The traceroute RTT extraction (`extractRTT()` in `internal/traceroute/traceroute.go`) handles both `traceroute` output format (`1.234 ms` with space) and `tracepath` output format (`1.085ms` without space) via regex matching. The frontend `correctImplausibleGeo()` runs before hop reversal and modifies hops in-place to clamp geo-implausible positions (where great-circle distance exceeds the RTT-derived speed-of-light budget) to the previous hop's coordinates. The 300 km/ms budget is intentionally generous (3× overhead) to avoid false positives on legitimate transcontinental fiber routes while still catching GeoIP database errors that would place a router on the wrong continent.
