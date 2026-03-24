@@ -950,9 +950,22 @@
   // 100 km/ms (speed of light in fiber) * 3x routing overhead margin.
   const RTT_KM_PER_MS = 100 * 3; // 300 km per ms of RTT delta
 
+  // Accuracy radius threshold (km) for filtering country-level centroid hops.
+  // MaxMind returns ~1000km for country-level, ~1-50km for city-level.
+  const GEO_ACCURACY_THRESHOLD = 200;
+
+  // Remove hops whose geolocation is only country-level (centroid coordinates).
+  // These have large accuracy radii and add no real geographic information —
+  // they just cluster at the country's geographic center (e.g. 37.75, -97.82
+  // for the US) and create misleading arcs.
+  function filterCountryLevelHops(hops) {
+    return hops.filter(h => !h.accuracy_km || h.accuracy_km < GEO_ACCURACY_THRESHOLD);
+  }
+
   // Given hops in traceroute order (from our server outward, with ascending
   // RTTs), clamp any hop whose geo jump is implausible for the RTT delta
   // to the previous hop's position.  Mutates hops in place.
+  // Should be called AFTER filterCountryLevelHops() so only city-level hops remain.
   function correctImplausibleGeo(hops) {
     for (let i = 1; i < hops.length; i++) {
       const prev = hops[i - 1];
@@ -1357,15 +1370,19 @@
       activeTraceES = null;
       traceIndicator.classList.remove('visible');
 
+      // Filter out country-level centroid hops (accuracy >= 200km) — their
+      // coordinates are meaningless geographic centers, not real router locations.
+      const cityHops = filterCountryLevelHops(hops);
+
       // Correct implausible geo before reversing — hops are in traceroute
       // order (from our server outward) with ascending cumulative RTTs.
-      correctImplausibleGeo(hops);
+      correctImplausibleGeo(cityHops);
 
       // traceroute runs FROM us TO them: hop 1 = our first upstream router,
       // last hop ≈ their IP.  Reverse the list so the animation flows
       // from their location inward toward our server — matching the mental
       // model of "their request travelling to us".
-      const reversedHops = [...hops].reverse();
+      const reversedHops = [...cityHops].reverse();
 
       // Prepend the source IP's known geolocation so the animation always
       // starts from the actual origin — not from the last traceroute hop

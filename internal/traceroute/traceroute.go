@@ -35,10 +35,14 @@ type Hop struct {
 	// City and CountryCode are optional labels for display.
 	City        string `json:"city"`
 	CountryCode string `json:"cc"`
+	// AccuracyKm is the MaxMind accuracy radius in km.
+	// Large values (500+) indicate country-level-only geolocation (centroid coordinates).
+	AccuracyKm uint16 `json:"accuracy_km"`
 }
 
-// GeoFunc is the signature of a geo lookup callback (matches geo.GeoLocator.Lookup).
-type GeoFunc func(ip string) (lat, lon float64, city, cc string)
+// GeoFunc is the signature of a geo lookup callback.
+// Returns lat, lon, city, country code, and accuracy radius in km.
+type GeoFunc func(ip string) (lat, lon float64, city, cc string, accuracyKm uint16)
 
 // reIPv4 matches a dotted-decimal IPv4 address (non-capturing context).
 var reIPv4 = regexp.MustCompile(`\b(\d{1,3}(?:\.\d{1,3}){3})\b`)
@@ -153,7 +157,7 @@ func Run(ctx context.Context, target string, maxHops int, geo GeoFunc, ch chan<-
 
 		hop := Hop{N: hopNum, IP: ip, RTT: extractRTT(line)}
 		if geo != nil {
-			hop.Lat, hop.Lon, hop.City, hop.CountryCode = geo(ip)
+			hop.Lat, hop.Lon, hop.City, hop.CountryCode, hop.AccuracyKm = geo(ip)
 		}
 		// Only emit hops that have valid coordinates (or were explicitly
 		// requested without geo — caller decides what to do with 0,0).
