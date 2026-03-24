@@ -74,7 +74,8 @@ handleCapture(srcIP, dstPort)
 - D3.js Natural Earth projection (svg `#map`)
 - Animated arcs: great-circle paths via `d3.geoInterpolate`, 20-point sampling with `curveNatural` (optimized from 60-point CatmullRom), animated with `stroke-dashoffset`
 - Persistent dots: remain after arc animation completes; store `[lon, lat]` as D3 datum for reprojection on resize (no DOM attributes)
-- Tooltips: `#dot-tooltip` div, shown on `mouseover` of `.src-dot` elements via D3 event handlers, displays "City, CC" or just IP if geo unavailable
+- Tooltips: `#dot-tooltip` div, shown on `mouseover` of `.src-dot` elements via D3 event handlers, displays "City, CC", source IP, "Trace route" button, and "Ban"/"Unban" button
+- Traceroute visualization: tooltip "Trace route" button or double-click on `.src-dot` triggers an SSE stream from `/api/traceroute?ip=...`; during a trace, live arc rendering is suppressed (`tracerouteActive` flag); hops are reversed (animation flows from source toward server) and drawn as sequential staggered arcs in a `traceGroup` SVG layer with progressive color scale (red→amber→cyan); map auto-zooms to fit all hop points; `#trace-indicator` overlay shows "Tracing route…" during SSE stream; Escape key cancels and zooms back to world view
 - Two corner overlay panels positioned absolutely on the map:
   - `#panel-service` (top-left): Top Services — top 10 services with bar charts showing relative traffic
   - `#panel-banned` (top-right): Banned IPs — list of currently banned source IPs
@@ -90,18 +91,19 @@ handleCapture(srcIP, dstPort)
 
 | File | Owns |
 |------|------|
-| `main.go` | `ConnectionEvent` struct, `hub` (ring buffer + fan-out), HTTP capture listeners, dashboard server, `/ws` handler, `/api/self` endpoint, `capturePorts` var (HTTP-only ports) |
+| `main.go` | `ConnectionEvent` struct, `hub` (ring buffer + fan-out), HTTP capture listeners, dashboard server, `/ws` handler, `/api/self` endpoint, `capturePorts` var (HTTP-only ports), `/api/traceroute` SSE endpoint |
 | `services.go` | TCP service port emulation (`tcpServices` with banners for FTP, SSH, Teltel, SMTP, etc.) and UDP port capture (`udpServicePorts`) |
 | `SERVICES.md` | Detailed reference of all emulated TCP/UDP services and their protocol banners; must be kept in sync with `services.go` |
 | `db.go` | SQLite open/close, schema creation, `insert()`, `loadHistory()`, metrics table schema, `upsertMetrics()`, `queryMetrics()`, `backfillMetrics()` |
 | `metrics.go` | `metricsCache` struct, in-memory hourly-bucketed metrics aggregation, `Record()`, `RecordBan()`, `flushLoop()` (5-second interval), `/api/metrics` and `/metrics` (Prometheus) handlers |
 | `internal/ratelimit/scanner.go` | Port scan detection tracker; `ScannerEntry` struct; `scanTracker` with per-IP port-hit tracking; 5-port/10-minute threshold; 1-hour display window; 2-minute GC loop; `ActiveScanners()` for `/api/scanners` endpoint |
+| `internal/traceroute/traceroute.go` | `Hop` struct, `Run()` function (streams traceroute/tracepath hops incrementally), `GeoFunc` callback type, `buildCmd()` tool detection (prefers `traceroute`, falls back to `tracepath`), private/loopback IP filtering, hop de-duplication |
 | `internal/ratelimit/ratelimit.go` | Auto-ban rate limiter; `Limiter` struct; dual-threshold detection (flood + volume-window); per-IP+port ban tracking; SQLite persistence; `IsBanned()` fast read-lock check; `ManualBan()`/`ManualUnban()` API handlers; 64-shard FNV32a hash design |
 | `geo.go` | `GeoLocator` (GeoLite2 reader + rgeo fallback), `Lookup()`, `Location` struct |
 | `geodb.go` | `ensureGeoDB()` — auto-download of `GeoLite2-City.mmdb` from GitHub mirror |
 | `iputil.go` | `discoverPublicIP()` — queries external APIs to find the server's public IP |
 | `static_embed.go` | `//go:embed static` directive; exposes `staticFiles fs.FS` |
-| `static/index.html` | Entire browser UI: D3.js map, WebSocket client, arc animation, tooltips, corner panels, log |
+| `static/index.html` | Entire browser UI: D3.js map, WebSocket client, arc animation, tooltips, corner panels, log, traceroute visualization |
 | `firewall.sh` | nftables ruleset installer; auto-detects interface/subnet; substitutes tokens into `nftables.conf` |
 | `nftables.conf` | Ruleset template; contains `__SUBNET__`, `__CAPTURE_PORTS_TCP__`, and `__CAPTURE_PORTS_UDP__` tokens |
 | `install.sh` | Standalone deployer: creates user, data dir, copies binary, writes systemd unit, calls `firewall.sh` |
@@ -553,6 +555,41 @@ make firewall
 
 ---
 
+## Traceroute
+
+webTraffik includes an on-demand traceroute feature that traces the network path from the server to a source IP and visualizes the hops on the dashboard map.
+
+### Backend
+
+**traceroute.go (`internal/traceroute` package):**
+- `Hop` struct (exported): `N`, `IP`, `Lat`, `Lon`, `City`, `CountryCode` — all JSON-tagged for SSE serialization
+- `Run(ctx, target, maxHops, geo, ch)`: spawns `traceroute` (or `tracepath` fallback) as a subprocess via `exec.CommandContext`, pipes stdout, parses each line for public IPs, geolocates each hop via `GeoFunc` callback, de-duplicates IPs, and sends `Hop` structs on `ch`. Channel is closed when the process exits or context is cancelled. Max hops default: 20.
+- `buildCmd()`: tries `traceroute` first (with `-n -m N -w 1 -q 1` flags for fast numeric output), falls back to `tracepath` (with `-n -m N`). Returns empty if neither is available.
+- Private/loopback/link-local IPs are silently skipped (not useful for geolocation).
+
+**`/api/traceroute` SSE endpoint (`main.go`):**
+- `GET /api/traceroute?ip=<public-ip>` — Server-Sent Events stream
+- Validates target is a parseable public IP (rejects private, loopback, link-local, unspecified)
+- 60-second context timeout
+- Each hop streamed as `data: {json}\n\n`; terminal `event: done\ndata: {}\n\n` sentinel when trace completes
+- Geo callback wraps `appGeo.Lookup()` for consistent geolocation with the main capture path
+
+### Frontend
+
+- **Trigger**: tooltip "Trace route" button, double-click on `.src-dot`, or click on log row
+- **SSE client**: `startTraceroute(srcIP)` opens an `EventSource` to `/api/traceroute?ip=...`
+- **Hop collection**: hops with valid geo coordinates are collected; on `done` event, hops are reversed and `selfPos` is appended so the animation flows from the source IP inward toward the server
+- **Animation** (`animateTraceHops()`): sequential arc draw via `setTimeout` chain (one arc every `TRACE_STAGGER_MS`); progressive color scale (red→amber→cyan via `d3.interpolateRgbBasis`); numbered dot labels at each hop; map auto-zooms to fit all hop points (`zoomToHops()`)
+- **State flags**: `tracerouteActive` suppresses live arc rendering during trace; `traceDrawing` suppresses `reprojectTraceHops()` during the draw phase to avoid destroying active transitions
+- **Cancellation**: Escape key calls `cancelTrace()` — closes EventSource, clears all `traceTimers`, removes trace geometry, snaps back to world view
+- **Timing constants**: `TRACE_ARC_DRAW_MS = 1800`, `TRACE_STAGGER_MS = 2000`, `TRACE_HOLD_MS = 2500`, `TRACE_FADE_MS = 800`
+
+### System requirements
+
+Requires `traceroute` or `tracepath` to be installed on the server. If neither is available, the endpoint returns an empty stream (immediate `done` sentinel, no hops). On most Linux distributions, install via `apt install traceroute` or `yum install traceroute`.
+
+---
+
 ## Git Workflow
 
 - Always branch off `main` before making changes
@@ -782,3 +819,4 @@ The metrics system will automatically:
 - The metrics system (`metrics.go`) maintains in-memory hourly-bucketed counters that are flushed to SQLite every 5 seconds. The flush loop is non-blocking — it snapshots dirty counters under lock, then writes to the database without holding the lock. Metrics survive restarts via SQLite persistence, and `backfillMetrics()` is called automatically on first run to aggregate existing events. Never add blocking operations to `Record()` methods — they are called from the capture path and must be fast.
 - The port scan detection system (`internal/ratelimit/scanner.go`) tracks per-IP port hits in memory with a 10-minute sliding window. Detection is threshold-based (5 ports) with no auto-ban integration — it is purely observational. All operations are mutex-protected and non-blocking. The `gcLoop()` runs every 2 minutes to prune stale data. Never add blocking operations to `Record()` — it is called from the capture path via `Limiter.Record()`.
 - The auto-ban rate limiter (`internal/ratelimit/ratelimit.go`) uses a dual-threshold design: flood detection (>2 connections/sec sustained for 10 minutes) and volume-window detection (30+ connections within any rolling 10-minute window). Bans are per-IP+port, not global. The sharded rate tracker (64 shards, FNV32a hash) avoids lock contention between different IPs. All operations are non-blocking and mutex-protected. Never add blocking operations to `Record()` — it is called from the capture path for every connection. The `IsBanned()` check uses a fast read-lock and is called at connection accept time in all TCP/HTTP handlers.
+- The `internal/traceroute` package spawns an external `traceroute` or `tracepath` process and parses its stdout line-by-line. It requires one of these tools to be installed on the server (no Go-native ICMP implementation). The `/api/traceroute` SSE endpoint has a 60-second context timeout and validates that the target IP is public. The frontend suppresses live arc rendering while a traceroute animation is active (`tracerouteActive` flag). Only one traceroute can be active at a time — starting a new one cancels the previous via `cancelTrace()`.
