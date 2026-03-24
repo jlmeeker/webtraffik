@@ -388,8 +388,34 @@
       overflow: hidden;
     }
     #dot-tooltip .tip-label {
-      padding: 5px 10px 4px;
+      padding: 5px 10px 2px;
       white-space: nowrap;
+    }
+    #dot-tooltip .tip-ip {
+      padding: 0 10px 4px;
+      font-size: 0.62rem;
+      color: #7a9abf;
+      white-space: nowrap;
+      font-family: 'Courier New', monospace;
+    }
+    #dot-tooltip .tip-trace {
+      display: block;
+      width: 100%;
+      padding: 4px 10px 5px;
+      font-size: 0.65rem;
+      letter-spacing: 0.05em;
+      text-align: left;
+      background: none;
+      border: none;
+      border-top: 1px solid #2a4a70;
+      cursor: pointer;
+      font-family: inherit;
+      color: #b2ebf2;
+      transition: background 0.15s, color 0.15s;
+    }
+    #dot-tooltip .tip-trace:hover {
+      background: rgba(178,235,242,0.12);
+      color: #e0f7fa;
     }
     #dot-tooltip .tip-ban {
       display: block;
@@ -417,6 +443,27 @@
       background: rgba(128,203,196,0.15);
       color: #4db6ac;
     }
+    /* ── Traceroute in-progress indicator ── */
+    #trace-indicator {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(14, 24, 46, 0.92);
+      border: 1px solid #b2ebf2;
+      border-radius: 4px;
+      color: #b2ebf2;
+      font-size: 0.65rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 4px 14px;
+      z-index: 10;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+    #trace-indicator.visible { opacity: 1; }
+
   </style>
 </head>
 <body>
@@ -439,11 +486,15 @@
 
 <div id="dot-tooltip">
   <div class="tip-label" id="tip-label-text"></div>
+  <div class="tip-ip" id="tip-ip-text"></div>
+  <button class="tip-trace" id="tip-trace-btn">Trace route</button>
   <button class="tip-ban" id="tip-ban-btn"></button>
 </div>
 
 <div id="map-container">
   <svg id="map"></svg>
+  <!-- Traceroute in-progress indicator -->
+  <div id="trace-indicator">Tracing route&hellip;</div>
   <!-- Zoom level indicator -->
   <div id="zoom-level">1.0x</div>
   <!-- Corner overlay panels -->

@@ -25,6 +25,7 @@ import (
 	"webtraffik/internal/metrics"
 	"webtraffik/internal/ratelimit"
 	"webtraffik/internal/services"
+	"webtraffik/internal/traceroute"
 )
 
 // ── hub ──────────────────────────────────────────────────────────────────────
@@ -510,6 +511,65 @@ func startDashboardServer() {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(result)
+	})
+
+	// Traceroute SSE endpoint.
+	// GET /api/traceroute?ip=1.2.3.4
+	// Streams Server-Sent Events; each event is a JSON-encoded traceroute.Hop.
+	// The stream ends with a final "event: done\ndata: {}\n\n" sentinel.
+	mux.HandleFunc("/api/traceroute", func(w http.ResponseWriter, r *http.Request) {
+		ip := strings.TrimSpace(r.URL.Query().Get("ip"))
+		if ip == "" {
+			http.Error(w, "ip query parameter required", http.StatusBadRequest)
+			return
+		}
+		// Validate: must be a parseable, non-private IP.
+		parsed := net.ParseIP(ip)
+		if parsed == nil || parsed.IsLoopback() || parsed.IsPrivate() ||
+			parsed.IsLinkLocalUnicast() || parsed.IsUnspecified() {
+			http.Error(w, "ip must be a public IP address", http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("X-Accel-Buffering", "no") // disable nginx buffering if present
+		w.WriteHeader(http.StatusOK)
+
+		fl, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming not supported", http.StatusInternalServerError)
+			return
+		}
+
+		// Build geo callback wrapping the app-level GeoLocator.
+		geoFn := func(ipStr string) (lat, lon float64, city, cc string) {
+			loc, err := appGeo.Lookup(ipStr)
+			if err != nil || loc == nil {
+				return 0, 0, "", ""
+			}
+			return loc.Lat, loc.Lon, loc.City, loc.CountryCode
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+		defer cancel()
+
+		hopCh := make(chan traceroute.Hop, 32)
+		go traceroute.Run(ctx, ip, 20, geoFn, hopCh)
+
+		for hop := range hopCh {
+			data, err := json.Marshal(hop)
+			if err != nil {
+				continue
+			}
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			fl.Flush()
+		}
+
+		// Send a terminal sentinel so the client knows the trace is complete.
+		fmt.Fprintf(w, "event: done\ndata: {}\n\n")
+		fl.Flush()
 	})
 
 	// Metrics endpoints.
