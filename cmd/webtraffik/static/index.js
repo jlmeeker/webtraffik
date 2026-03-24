@@ -140,9 +140,15 @@
 
     // Reproject self dot
     drawSelfDot();
+
+    // Reproject any visible traceroute hop geometry (instant, no re-animation)
+    if (lastTraceHops && lastTraceHops.length >= 2) {
+      reprojectTraceHops(lastTraceHops);
+    }
   }
 
-  const zoomLevelEl = document.getElementById('zoom-level');
+  const zoomLevelEl    = document.getElementById('zoom-level');
+  const traceIndicator = document.getElementById('trace-indicator');
   let zoomLevelTimer = null;
 
   const zoom = d3.zoom()
@@ -919,6 +925,366 @@
     }
   }
 
+  // ── Traceroute state ─────────────────────────────────────────────────────
+  // When a traceroute is running, live arc animations are suppressed so the
+  // hop path has the stage to itself.  The WebSocket keeps running normally —
+  // events are still logged, just not drawn as arcs.
+  let tracerouteActive = false;
+
+  // Group that holds transient traceroute hop arcs (drawn above persistent arcs)
+  const traceGroup = svg.append('g');
+
+  // Cancel any in-flight EventSource and clean up transient arcs.
+  let activeTraceES = null;
+  // Last rendered hop list — kept so reproject() can redraw after resize.
+  let lastTraceHops = null;
+
+  function cancelTrace() {
+    if (activeTraceES) {
+      activeTraceES.close();
+      activeTraceES = null;
+    }
+    tracerouteActive = false;
+    lastTraceHops = null;
+    traceGroup.selectAll('*').remove();
+    traceIndicator.classList.remove('visible');
+    // Snap back to world view immediately (no transition — we're aborting)
+    svg.call(zoom.transform, d3.zoomIdentity);
+  }
+
+  // ── Traceroute zoom helpers ───────────────────────────────────────────────
+  const TRACE_ZOOM_PAD   = 0.15; // fraction of viewport to pad around bbox
+  const TRACE_ZOOM_IN_MS = 900;  // zoom-in transition duration (ms)
+  const TRACE_ZOOM_OUT_MS = 1200; // zoom-out transition duration (ms)
+
+  // Compute a d3 zoom transform that fits all [lon, lat] hop points into the
+  // viewport with padding, using the *base* (identity-scale) projection so
+  // the result is a pure k/x/y transform that can be fed to zoom.transform.
+  function hopsFitTransform(hops) {
+    // Project every hop at identity scale (baseScale, baseTranslate)
+    const baseProjPts = hops
+      .map(h => {
+        const baseProj = d3.geoNaturalEarth1()
+          .scale(baseScale)
+          .translate(baseTranslate);
+        return baseProj([h.lon, h.lat]);
+      })
+      .filter(p => p && isFinite(p[0]) && isFinite(p[1]));
+
+    if (baseProjPts.length < 2) return d3.zoomIdentity;
+
+    const xs = baseProjPts.map(p => p[0]);
+    const ys = baseProjPts.map(p => p[1]);
+    const x0 = Math.min(...xs), x1 = Math.max(...xs);
+    const y0 = Math.min(...ys), y1 = Math.max(...ys);
+
+    const bboxW = Math.max(x1 - x0, 1);
+    const bboxH = Math.max(y1 - y0, 1);
+
+    // Scale to fill the viewport with padding, capped at 10x
+    const pad = TRACE_ZOOM_PAD;
+    const k = Math.min(
+      10,
+      (1 - 2 * pad) * Math.min(w / bboxW, h / bboxH)
+    );
+
+    // Translate so the bbox centre lands at the viewport centre
+    const cx = (x0 + x1) / 2;
+    const cy = (y0 + y1) / 2;
+    const tx = w / 2 - k * cx;
+    const ty = h / 2 - k * cy;
+
+    return d3.zoomIdentity.translate(tx, ty).scale(k);
+  }
+
+  // Smoothly zoom the map to fit the given hops.
+  function zoomToHops(hops, durationMs) {
+    const t = hopsFitTransform(hops);
+    svg.transition()
+      .duration(durationMs)
+      .ease(d3.easeCubicInOut)
+      .call(zoom.transform, t);
+  }
+
+  // Smoothly zoom back to the full world view.
+  function zoomToWorld(durationMs) {
+    svg.transition()
+      .duration(durationMs)
+      .ease(d3.easeCubicInOut)
+      .call(zoom.transform, d3.zoomIdentity);
+  }
+
+  // Draw a series of transient arcs along the sequence of hop points.
+  // Each arc draws from hops[i] → hops[i+1] with a staggered delay, then
+  // all arcs fade out together after TRACE_HOLD_MS.
+  const TRACE_ARC_DRAW_MS  = 1200; // draw-in duration per hop segment
+  const TRACE_STAGGER_MS   = 400;  // delay between successive segment draws
+  const TRACE_HOLD_MS      = 2000; // hold time before fade-out begins
+  const TRACE_FADE_MS      = 800;  // fade-out duration
+  const TRACE_DOT_RADIUS   = 5;
+
+  // Progressive color scale: red (source/far end) → amber → cyan (our server)
+  const traceColorScale = d3.scaleSequential()
+    .domain([0, 1])
+    .interpolator(d3.interpolateRgbBasis(['#ef5350', '#ffb74d', '#b2ebf2']));
+
+  // Returns the color for hop index i out of total hops.
+  function traceHopColor(i, total) {
+    return traceColorScale(total <= 1 ? 1 : i / (total - 1));
+  }
+
+  // Called once the traceroute is complete (or cancelled) with the full hop list.
+  // Animates arc segments sequentially, holds, then fades everything out.
+  function animateTraceHops(hops) {
+    // Need at least two points to draw anything
+    if (!hops || hops.length < 2) {
+      tracerouteActive = false;
+      lastTraceHops = null;
+      zoomToWorld(TRACE_ZOOM_OUT_MS);
+      return;
+    }
+
+    lastTraceHops = hops; // save for reproject on resize
+
+    // Zoom in to frame all the hops before drawing begins.
+    zoomToHops(hops, TRACE_ZOOM_IN_MS);
+
+    // Delay arc drawing until after zoom-in lands.
+    const arcDelay = TRACE_ZOOM_IN_MS + 100;
+
+    // Clear any previous trace geometry
+    traceGroup.selectAll('*').remove();
+    traceGroup.attr('opacity', 1);
+
+    const n = hops.length;
+    const pts = hops.map(hx => projection([hx.lon, hx.lat]));
+
+    // ── Arc segments ────────────────────────────────────────────────────────
+    // Each segment is colored at the midpoint hue between its two endpoint hops.
+    pts.forEach((pt, i) => {
+      if (i === 0) return;
+      const prev = pts[i - 1];
+      const [x0, y0] = prev;
+      const [x1, y1] = pt;
+      const mx = (x0 + x1) / 2;
+      const my = (y0 + y1) / 2;
+      const chord = Math.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2);
+      const bulge = Math.min(chord * 0.3, h * 0.15);
+      const fullD = `M${x0},${y0} Q${mx},${my - bulge} ${x1},${y1}`;
+
+      // Color at the midpoint between the two endpoint hops
+      const segColor = traceHopColor((i - 0.5), n - 1);
+
+      // Approximate path length for dash animation
+      const N = 10;
+      let totalLen = 0;
+      for (let j = 1; j <= N; j++) {
+        const t0 = (j - 1) / N, t1 = j / N;
+        const u0 = 1 - t0, u1 = 1 - t1;
+        const px0 = u0*u0*x0 + 2*u0*t0*mx + t0*t0*x1;
+        const py0 = u0*u0*y0 + 2*u0*t0*(my - bulge) + t0*t0*y1;
+        const px1 = u1*u1*x0 + 2*u1*t1*mx + t1*t1*x1;
+        const py1 = u1*u1*y0 + 2*u1*t1*(my - bulge) + t1*t1*y1;
+        totalLen += Math.sqrt((px1-px0)**2 + (py1-py0)**2);
+      }
+
+      const delay = arcDelay + (i - 1) * TRACE_STAGGER_MS;
+
+      traceGroup.append('path')
+        .attr('fill', 'none')
+        .attr('stroke', segColor)
+        .attr('stroke-width', 2)
+        .attr('stroke-linecap', 'round')
+        .attr('stroke-dasharray', totalLen)
+        .attr('stroke-dashoffset', totalLen)
+        .attr('opacity', 0.92)
+        .attr('d', fullD)
+        .transition()
+          .delay(delay)
+          .duration(TRACE_ARC_DRAW_MS)
+          .ease(d3.easeQuadOut)
+          .attr('stroke-dashoffset', 0);
+    });
+
+    // ── Dots + number labels ─────────────────────────────────────────────────
+    hops.forEach((hop, i) => {
+      if (!pts[i]) return;
+      const [cx, cy] = pts[i];
+      const dotColor = traceHopColor(i, n - 1);
+      const delay = i === 0
+        ? arcDelay
+        : arcDelay + (i - 1) * TRACE_STAGGER_MS + TRACE_ARC_DRAW_MS * 0.8;
+
+      // Dot
+      traceGroup.append('circle')
+        .attr('cx', cx).attr('cy', cy)
+        .attr('r', 0)
+        .attr('fill', dotColor)
+        .attr('opacity', 0.95)
+        .transition()
+          .delay(delay)
+          .duration(250)
+          .attr('r', TRACE_DOT_RADIUS);
+
+      // Number label — dark pill background + colored number
+      const labelX = cx + TRACE_DOT_RADIUS + 4;
+      const labelY = cy - TRACE_DOT_RADIUS - 2;
+      const labelText = String(i + 1);
+
+      // Background rect (sized after text — approximate with fixed char width)
+      const labelW = labelText.length * 6 + 6;
+      const labelH = 12;
+
+      const labelG = traceGroup.append('g')
+        .attr('opacity', 0)
+        .attr('pointer-events', 'none');
+
+      labelG.append('rect')
+        .attr('x', labelX - 2).attr('y', labelY - 9)
+        .attr('width', labelW).attr('height', labelH)
+        .attr('rx', 2)
+        .attr('fill', 'rgba(10,18,38,0.78)');
+
+      labelG.append('text')
+        .attr('x', labelX + 1).attr('y', labelY)
+        .attr('fill', dotColor)
+        .attr('font-size', '9px')
+        .attr('font-family', 'inherit')
+        .attr('font-weight', '600')
+        .attr('letter-spacing', '0.03em')
+        .text(labelText);
+
+      labelG.transition()
+        .delay(delay + 200)
+        .duration(250)
+        .attr('opacity', 1);
+    });
+
+    // ── Fade-out + zoom back ─────────────────────────────────────────────────
+    const totalDrawMs = arcDelay + (n - 1) * TRACE_STAGGER_MS + TRACE_ARC_DRAW_MS;
+    const holdDelay = totalDrawMs + TRACE_HOLD_MS;
+
+    traceGroup.transition()
+      .delay(holdDelay)
+      .duration(TRACE_FADE_MS)
+      .attr('opacity', 0)
+      .on('end', () => {
+        traceGroup.selectAll('*').remove();
+        traceGroup.attr('opacity', 1);
+        tracerouteActive = false;
+        lastTraceHops = null;
+        traceIndicator.classList.remove('visible');
+        zoomToWorld(TRACE_ZOOM_OUT_MS);
+      });
+  }
+
+  // Instantly reproject trace hop geometry (no re-animation) — called from
+  // reproject() on zoom/resize while hops are still visible.
+  function reprojectTraceHops(hops) {
+    traceGroup.selectAll('*').remove();
+    const n = hops.length;
+    const pts = hops.map(hx => projection([hx.lon, hx.lat]));
+
+    // Arc segments
+    pts.forEach((pt, i) => {
+      if (i === 0) return;
+      const prev = pts[i - 1];
+      const [x0, y0] = prev;
+      const [x1, y1] = pt;
+      const mx = (x0 + x1) / 2;
+      const my = (y0 + y1) / 2;
+      const chord = Math.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2);
+      const bulge = Math.min(chord * 0.3, h * 0.15);
+      const segColor = traceHopColor((i - 0.5), n - 1);
+      traceGroup.append('path')
+        .attr('fill', 'none')
+        .attr('stroke', segColor)
+        .attr('stroke-width', 2)
+        .attr('stroke-linecap', 'round')
+        .attr('opacity', 0.92)
+        .attr('d', `M${x0},${y0} Q${mx},${my - bulge} ${x1},${y1}`);
+    });
+
+    // Dots + labels
+    hops.forEach((hop, i) => {
+      if (!pts[i]) return;
+      const [cx, cy] = pts[i];
+      const dotColor = traceHopColor(i, n - 1);
+
+      traceGroup.append('circle')
+        .attr('cx', cx).attr('cy', cy)
+        .attr('r', TRACE_DOT_RADIUS)
+        .attr('fill', dotColor)
+        .attr('opacity', 0.95);
+
+      const labelX = cx + TRACE_DOT_RADIUS + 4;
+      const labelY = cy - TRACE_DOT_RADIUS - 2;
+      const labelText = String(i + 1);
+      const labelW = labelText.length * 6 + 6;
+      const labelH = 12;
+
+      const labelG = traceGroup.append('g').attr('pointer-events', 'none');
+
+      labelG.append('rect')
+        .attr('x', labelX - 2).attr('y', labelY - 9)
+        .attr('width', labelW).attr('height', labelH)
+        .attr('rx', 2)
+        .attr('fill', 'rgba(10,18,38,0.78)');
+
+      labelG.append('text')
+        .attr('x', labelX + 1).attr('y', labelY)
+        .attr('fill', dotColor)
+        .attr('font-size', '9px')
+        .attr('font-family', 'inherit')
+        .attr('font-weight', '600')
+        .attr('letter-spacing', '0.03em')
+        .text(labelText);
+    });
+  }
+
+  // Kick off a traceroute SSE stream for the given source IP.
+  // Suppresses live arc rendering until the animation is fully done.
+  function startTraceroute(srcIP) {
+    cancelTrace(); // cancel any previous in-flight trace
+
+    tracerouteActive = true;
+    traceIndicator.classList.add('visible');
+    const hops = [];
+
+    const es = new EventSource(`/api/traceroute?ip=${encodeURIComponent(srcIP)}`);
+    activeTraceES = es;
+
+    es.onmessage = (e) => {
+      let hop;
+      try { hop = JSON.parse(e.data); } catch { return; }
+      // Only use hops with valid geo coordinates — skip private/unknown routers
+      if (!hop.lat && !hop.lon) return;
+      hops.push(hop);
+    };
+
+    es.addEventListener('done', () => {
+      es.close();
+      activeTraceES = null;
+      traceIndicator.classList.remove('visible');
+      // traceroute runs FROM us TO them: hop 1 = our first upstream router,
+      // last hop ≈ their IP.  Reverse the list so the animation flows
+      // from their location inward toward our server — matching the mental
+      // model of "their request travelling to us".
+      const reversedHops = [...hops].reverse();
+      if (selfPos) {
+        reversedHops.push({ lat: selfPos.lat, lon: selfPos.lon, ip: selfPos.ip, city: selfPos.city, cc: selfPos.cc });
+      }
+      animateTraceHops(reversedHops);
+    });
+
+    es.onerror = () => {
+      es.close();
+      activeTraceES = null;
+      tracerouteActive = false;
+      traceIndicator.classList.remove('visible');
+    };
+  }
+
   // ── Arc drawing ──────────────────────────────────────────────────────────
   let arcSeq = 0;
 
@@ -1064,6 +1430,10 @@
   let floodFlushTimer = null;
 
   function handleArc(ev) {
+    // While a traceroute is animating, silently drop live arc draws so the
+    // hop path has the stage to itself.  The event is already in the log.
+    if (tracerouteActive) return;
+
     if (!ev.src_lon && !ev.src_lat) return;
     arcTimestamps.push(performance.now());
 
@@ -1454,9 +1824,9 @@
         row.appendChild(protoSpan);
       }
 
-      if (ev.src_lat && ev.src_lon) {
+      if (ev.src_lat && ev.src_lon && ev.src_ip) {
         row.addEventListener('click', () => {
-          dispatchArc(ev, 1);
+          startTraceroute(ev.src_ip);
           row.classList.add('arc-flash');
           setTimeout(() => row.classList.remove('arc-flash'), 400);
         });
@@ -1492,6 +1862,9 @@
 
   // ── Reset all visual state for reconnect ──
   function resetState() {
+    // Cancel any in-flight traceroute
+    cancelTrace();
+
     // Reset zoom to default view
     currentTransform = d3.zoomIdentity;
     svg.call(zoom.transform, d3.zoomIdentity);
@@ -1600,6 +1973,8 @@
   // ── Hover card wiring ─────────────────────────────────────────────────────
   const dotTooltip  = document.getElementById('dot-tooltip');
   const tipLabelEl  = document.getElementById('tip-label-text');
+  const tipIpEl     = document.getElementById('tip-ip-text');
+  const tipTraceBtn = document.getElementById('tip-trace-btn');
   const tipBanBtn   = document.getElementById('tip-ban-btn');
   let tipHideTimer  = null;
   let tipCurrentEv  = null;
@@ -1608,6 +1983,14 @@
     clearTimeout(tipHideTimer);
     tipCurrentEv = ev;
     tipLabelEl.textContent = label || ev.src_ip;
+
+    // Show IP as sub-label (only when it differs from the main label)
+    const ip = ev && ev.src_ip ? ev.src_ip : '';
+    tipIpEl.textContent  = ip;
+    tipIpEl.style.display = ip ? 'block' : 'none';
+
+    // Trace button — only useful if we have a real public IP
+    tipTraceBtn.style.display = (ev && ev.src_ip) ? 'block' : 'none';
 
     const isBanned = ev && bannedSet.has(banKey(ev.src_ip, ev.dst_port));
     tipBanBtn.textContent = isBanned ? 'Unban' : 'Ban';
@@ -1659,11 +2042,23 @@
       .catch(() => {});
   });
 
+  tipTraceBtn.addEventListener('click', () => {
+    const ev = tipCurrentEv;
+    dotTooltip.style.display = 'none';
+    tipCurrentEv = null;
+    if (!ev || !ev.src_ip) return;
+    startTraceroute(ev.src_ip);
+  });
+
   function attachTooltip(sel, label, ev) {
     sel
       .on('mouseover', function(event) { showTip(event, label, ev); })
       .on('mousemove', function(event) { moveTip(event.clientX, event.clientY); })
-      .on('mouseout',  function()      { scheduleTipHide(); });
+      .on('mouseout',  function()      { scheduleTipHide(); })
+      .on('dblclick',  function(event) {
+        event.stopPropagation(); // prevent svg dblclick handler from firing
+        if (ev && ev.src_ip) startTraceroute(ev.src_ip);
+      });
   }
 
   // Draw a faded static dot for historical events (no arc animation).
@@ -1769,6 +2164,14 @@
       if (currentWs) currentWs.close();
       connect();
     }, 1000);
+  });
+
+  // Escape key: cancel any in-flight traceroute and zoom back to world view.
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && tracerouteActive) {
+      cancelTrace();
+      zoomToWorld(TRACE_ZOOM_OUT_MS);
+    }
   });
 
   connect();
