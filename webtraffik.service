@@ -15,7 +15,10 @@ Group=webtraffik
 ExecStart=/usr/local/bin/webtraffik
 WorkingDirectory=/var/lib/webtraffik
 
-# Allow binding to ports <1024 without root
+# Allow binding to ports <1024 without root.
+# For eBPF hybrid/ebpf-only modes, also add CAP_BPF and CAP_NET_ADMIN:
+#   AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_BPF CAP_NET_ADMIN
+#   CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_BPF CAP_NET_ADMIN
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 
