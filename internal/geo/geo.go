@@ -27,10 +27,11 @@ type Location struct {
 	AccuracyRadius uint16 // km; MaxMind accuracy radius (large = country-level, small = city-level)
 }
 
-// NewGeoLocator opens the GeoLite2 City .mmdb database and kicks off the
-// embedded reverse geocoder init in the background. Lookups that arrive before
-// it is ready simply skip the city fallback — no blocking, no data loss.
-func NewGeoLocator(path string) (*GeoLocator, error) {
+// NewGeoLocator opens the GeoLite2 City .mmdb database. If enableRgeo is true,
+// the embedded reverse geocoder is initialised in the background to provide city
+// name fallback for IPs where MaxMind has coordinates but no city. Lookups that
+// arrive before it is ready simply skip the fallback — no blocking, no data loss.
+func NewGeoLocator(path string, enableRgeo bool) (*GeoLocator, error) {
 	db, err := geoip2.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open mmdb: %w", err)
@@ -38,16 +39,20 @@ func NewGeoLocator(path string) (*GeoLocator, error) {
 
 	g := &GeoLocator{db: db}
 
-	go func() {
-		rg, err := rgeo.New(rgeo.Cities10, rgeo.Provinces10)
-		if err != nil {
-			log.Printf("rgeo init failed (city fallback disabled): %v", err)
-			return
-		}
-		rg.Build() // pre-build S2 index so first lookup is fast
-		g.rgeo.Store(rg)
-		log.Println("rgeo ready — city fallback active")
-	}()
+	if enableRgeo {
+		go func() {
+			rg, err := rgeo.New(rgeo.Cities10, rgeo.Provinces10)
+			if err != nil {
+				log.Printf("rgeo init failed (city fallback disabled): %v", err)
+				return
+			}
+			rg.Build() // pre-build S2 index so first lookup is fast
+			g.rgeo.Store(rg)
+			log.Println("rgeo ready — city fallback active")
+		}()
+	} else {
+		log.Println("rgeo disabled by flag — city fallback inactive")
+	}
 
 	return g, nil
 }
