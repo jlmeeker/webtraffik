@@ -14,6 +14,7 @@ webTraffik is a real-time network traffic sensor and visualization tool. It bind
 - **Persistence**: SQLite via `modernc.org/sqlite` (pure-Go driver)
 - **Firewall**: nftables (Linux only), configured by `firewall.sh`
 - **Process manager**: systemd, running as a dedicated low-privilege user
+- **eBPF**: XDP program via `github.com/cilium/ebpf` v0.16.0; optional hybrid/ebpf-only capture modes; requires Linux kernel ≥5.10 and `CAP_BPF`+`CAP_NET_ADMIN`
 
 ---
 
@@ -53,6 +54,56 @@ handleCapture(srcIP, dstPort)
         - dirty counters flushed to SQLite every 5 seconds
 ```
 
+### eBPF Capture (`internal/ebpf` package)
+
+webTraffik supports three runtime-configurable capture modes via `-capture-mode`:
+
+| Mode | eBPF XDP | Go Listeners | Use Case |
+|------|----------|--------------|----------|
+| `hybrid` (default) | Attached — ban enforcement via `XDP_DROP` | All ports active | Balanced: kernel-level ban enforcement + Go protocol handling |
+| `ebpf-only` | Attached — telemetry + ban enforcement | Not spawned | Max performance; service emulation (FTP/SSH banners) unavailable |
+| `go-only` | Not attached | All ports active | Legacy/fallback; pure userspace (original behavior) |
+
+**eBPF event flow (hybrid / ebpf-only modes):**
+
+```
+NIC driver (XDP hook)
+  |
+  v
+xdp_capture() — parse Ethernet→IPv4→TCP/UDP headers
+  |
+  +-- mgmt_ports_map lookup (8999, 22): XDP_PASS immediately (no telemetry)
+  |
+  +-- ban_map lookup {src_ip, dst_port}:
+  |     expires_at > bpf_ktime_get_ns() → XDP_DROP + emit event(dropped=1)
+  |
+  +-- XDP_PASS + emit event(dropped=0)
+        |
+        v
+perf.Reader (internal/ebpf/events.go)
+  - parseEvent(): LE uint32 src_ip → net.IP, uint16 dst_port, bool dropped
+  - pumpEBPFEvents() (main.go): geo.Lookup → ConnectionEvent → hub.broadcast
+```
+
+**Manager lifecycle (`internal/ebpf/manager.go`):**
+- `New(mode, iface, mgmtPorts, allowFile)` — constructs manager; no kernel state touched
+- `Start()` — loads compiled eBPF bytecode, populates maps, attaches XDP to interface, opens perf reader
+- `Stop()` — detaches XDP, closes maps and perf reader (called on SIGTERM/graceful shutdown)
+- `Ban(ip, port, duration)` / `Unban(ip, port)` — sync bans to `ban_map`; `expires_at` uses `bpf_ktime_get_ns()` epoch (ns since boot, not Unix time)
+- `ReloadAllowFile()` — clears and repopulates `mgmt_allow_ips_map`; triggered by SIGHUP
+- `IsActive()` — atomic bool; false until `Start()` succeeds or in go-only mode
+- `Snapshot()` / `StatsHandler()` — serve `/api/ebpf/stats` endpoint
+
+**Fallback:** If `Start()` fails (no `CAP_BPF`, incompatible driver, kernel <5.10), the app automatically falls back to `go-only` mode and continues — never crashes.
+
+**eBPF Maps:**
+- `ban_map` (`BPF_MAP_TYPE_HASH`, 65536 entries): key=`{src_ip [4]byte, dst_port [2]byte}`; value=`{expires_at uint64}` (ktime ns)
+- `mgmt_ports_map` (`BPF_MAP_TYPE_HASH`, 64 entries): ports that bypass all eBPF logic (default: 22, 8999)
+- `mgmt_allow_ips_map` (`BPF_MAP_TYPE_HASH`, 256 entries): optional IP allowlist from `-mgmt-allow-file`
+- `telemetry_map` (`BPF_MAP_TYPE_PERCPU_ARRAY`, 2 entries): per-CPU `[0]=passed`, `[1]=dropped` counters; aggregated every 5 seconds
+
+**SIGHUP behavior:** Re-reads `-mgmt-allow-file` and repopulates `mgmt_allow_ips_map` without restart (zero downtime for allowlist changes). Other eBPF config (`-capture-mode`, `-ebpf-iface`, `-mgmt-ports`) requires a restart.
+
 ### The hub (`main.go`)
 
 - `hub` struct: mutex-protected map of subscriber channels + a `[]ConnectionEvent` ring buffer
@@ -91,24 +142,31 @@ handleCapture(srcIP, dstPort)
 
 | File | Owns |
 |------|------|
-| `main.go` | `ConnectionEvent` struct, `hub` (ring buffer + fan-out), HTTP capture listeners, dashboard server, `/ws` handler, `/api/self` endpoint, `capturePorts` var (HTTP-only ports), `/api/traceroute` SSE endpoint, CLI flags (`-disable-ports`, `-disable-rgeo`) |
-| `services.go` | TCP service port emulation (`tcpServices` with banners for FTP, SSH, Teltel, SMTP, etc.) and UDP port capture (`udpServicePorts`) |
+| `cmd/webtraffik/main.go` | `ConnectionEvent` struct, `hub` (ring buffer + fan-out), HTTP capture listeners, dashboard server, `/ws` handler, `/api/self` endpoint, `capturePorts` var (HTTP-only ports), `/api/traceroute` SSE endpoint, `/api/ebpf/stats` endpoint, CLI flags (`-disable-ports`, `-disable-rgeo`, `-capture-mode`, `-ebpf-iface`, `-mgmt-ports`, `-mgmt-allow-file`), `pumpEBPFEvents()`, SIGHUP handler |
+| `cmd/webtraffik/services.go` | TCP service port emulation (`tcpServices` with banners for FTP, SSH, Telnet, SMTP, etc.) and UDP port capture (`udpServicePorts`) |
 | `SERVICES.md` | Detailed reference of all emulated TCP/UDP services and their protocol banners; must be kept in sync with `services.go` |
-| `db.go` | SQLite open/close, schema creation, `insert()`, `loadHistory()`, metrics table schema, `upsertMetrics()`, `queryMetrics()`, `backfillMetrics()` |
-| `metrics.go` | `metricsCache` struct, in-memory hourly-bucketed metrics aggregation, `Record()`, `RecordBan()`, `flushLoop()` (5-second interval), `/api/metrics` and `/metrics` (Prometheus) handlers |
+| `cmd/webtraffik/db.go` | SQLite open/close, schema creation, `insert()`, `loadHistory()`, metrics table schema, `upsertMetrics()`, `queryMetrics()`, `backfillMetrics()` |
+| `cmd/webtraffik/metrics.go` | `metricsCache` struct, in-memory hourly-bucketed metrics aggregation, `Record()`, `RecordBan()`, `flushLoop()` (5-second interval), `/api/metrics` and `/metrics` (Prometheus) handlers |
+| `internal/ebpf/manager.go` | `Manager` struct, `CaptureMode` type (`ModeHybrid`/`ModeEBPFOnly`/`ModeGoOnly`), XDP attach/detach lifecycle, `Ban()`/`Unban()` map sync, `ReloadAllowFile()`, `makeBanKey()` big-endian encoding |
+| `internal/ebpf/events.go` | `Event`/`RawEvent` structs, `parseEvent()` (LE uint32→net.IP conversion), `startEventReader()` perf buffer pump |
+| `internal/ebpf/stats.go` | `Stats` struct, `statsCache` (atomic counters), `aggregateTelemetry()` per-CPU aggregation, `Snapshot()`, `StatsHandler()` (`/api/ebpf/stats`) |
+| `internal/ebpf/iface.go` | `DefaultInterface()` — detects default route interface; `InterfaceIndex()` — resolves interface name to index |
+| `internal/ebpf/rlimit.go` | `allowUnlimitedLocked()` — raises `RLIMIT_MEMLOCK` for eBPF map allocation |
+| `internal/ebpf/bpf/programs/capture.bpf.c` | XDP C program: `ban_map`, `mgmt_ports_map`, `mgmt_allow_ips_map`, `telemetry_map`, `events` perf array; `xdp_capture()` entry point |
 | `internal/ratelimit/scanner.go` | Port scan detection tracker; `ScannerEntry` struct; `scanTracker` with per-IP port-hit tracking; 5-port/10-minute threshold; 1-hour display window; 2-minute GC loop; `ActiveScanners()` for `/api/scanners` endpoint |
 | `internal/traceroute/traceroute.go` | `Hop` struct, `Run()` function (streams traceroute/tracepath hops incrementally), `GeoFunc` callback type, `buildCmd()` tool detection (prefers `traceroute`, falls back to `tracepath`), private/loopback IP filtering, hop de-duplication |
-| `internal/ratelimit/ratelimit.go` | Auto-ban rate limiter; `Limiter` struct; dual-threshold detection (flood + volume-window); per-IP+port ban tracking; SQLite persistence; `IsBanned()` fast read-lock check; `ManualBan()`/`ManualUnban()` API handlers; 64-shard FNV32a hash design |
+| `internal/ratelimit/ratelimit.go` | Auto-ban rate limiter; `Limiter` struct; dual-threshold detection (flood + volume-window); per-IP+port ban tracking; SQLite persistence; `IsBanned()` fast read-lock check; `ManualBan()`/`ManualUnban()` API handlers; 64-shard FNV32a hash design; `ebpfBanner` interface + `SetEBPFManager()` for eBPF ban sync |
 | `internal/geo/geo.go` | `GeoLocator` (GeoLite2 reader + rgeo fallback), `NewGeoLocator(dbPath, enableRgeo)`, `Lookup()`, `Location` struct |
-| `geodb.go` | `ensureGeoDB()` — auto-download of `GeoLite2-City.mmdb` from GitHub mirror |
-| `iputil.go` | `discoverPublicIP()` — queries external APIs to find the server's public IP |
-| `static_embed.go` | `//go:embed static` directive; exposes `staticFiles fs.FS` |
-| `static/index.html` | Entire browser UI: D3.js map, WebSocket client, arc animation, tooltips, corner panels, log, traceroute visualization |
+| `cmd/webtraffik/geodb.go` | `ensureGeoDB()` — auto-download of `GeoLite2-City.mmdb` from GitHub mirror |
+| `cmd/webtraffik/iputil.go` | `discoverPublicIP()` — queries external APIs to find the server's public IP |
+| `cmd/webtraffik/static_embed.go` | `//go:embed static` directive; exposes `staticFiles fs.FS` |
+| `cmd/webtraffik/static/index.html` | Entire browser UI: D3.js map, WebSocket client, arc animation, tooltips, corner panels, log, traceroute visualization, `#panel-ebpf` capture mode panel |
+| `cmd/webtraffik/static/index.js` | Frontend JS: `fetchEBPFStats()`, `renderEBPFPanel()`, `fmtNum()` formatter |
 | `firewall.sh` | nftables ruleset installer; auto-detects interface/subnet; substitutes tokens into `nftables.conf` |
 | `nftables.conf` | Ruleset template; contains `__SUBNET__`, `__CAPTURE_PORTS_TCP__`, and `__CAPTURE_PORTS_UDP__` tokens |
 | `install.sh` | Standalone deployer: creates user, data dir, copies binary, writes systemd unit, calls `firewall.sh` |
 | `webtraffik.service` | systemd unit template (also written inline by `install.sh`) |
-| `Makefile` | All build, cross-compile, deploy, firewall, and uninstall targets |
+| `Makefile` | All build, cross-compile, deploy, firewall, uninstall, `ebpf-gen`, and `ebpf-clean` targets |
 
 ---
 
@@ -860,6 +918,40 @@ The metrics system will automatically:
 - Aggregate into hourly buckets
 - Include in backfill operations
 
+### 7. Changing capture mode or eBPF configuration
+
+The capture mode is set at startup via the `-capture-mode` flag. To change the default or add eBPF-specific config:
+
+**Edit the systemd service** (`webtraffik.service` or `install.sh`):
+```systemd
+ExecStart=/usr/local/bin/webtraffik -capture-mode=hybrid -ebpf-iface=eth0 -mgmt-ports=22,8999 -mgmt-allow-file=/etc/webtraffik/allow.txt
+```
+
+**Available flags:**
+- `-capture-mode` — `hybrid` (default), `ebpf-only`, `go-only`
+- `-ebpf-iface` — network interface for XDP attach (default: auto-detect via default route)
+- `-mgmt-ports` — comma-separated ports that bypass eBPF bans/telemetry (default: `22,8999`)
+- `-mgmt-allow-file` — path to file with one IPv4 per line; reloaded on SIGHUP without restart
+
+**Reloading the allow file at runtime (zero downtime):**
+```bash
+systemctl reload webtraffik
+# or
+kill -HUP $(pidof webtraffik)
+```
+
+**Fallback:** If XDP attach fails (missing `CAP_BPF`, incompatible driver, kernel <5.10), the app automatically falls back to `go-only` mode. Check logs:
+```bash
+journalctl -u webtraffik -e | grep ebpf
+```
+
+**Systemd capabilities:** eBPF modes require additional capabilities beyond `CAP_NET_BIND_SERVICE`:
+```systemd
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_BPF CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_BPF CAP_NET_ADMIN
+```
+These are **not** added by default — add them only if deploying in hybrid or ebpf-only mode.
+
 ---
 
 ## Notes for Agents
@@ -878,3 +970,8 @@ The metrics system will automatically:
 - The `internal/traceroute` package spawns an external `traceroute` or `tracepath` process and parses its stdout line-by-line. It requires one of these tools to be installed on the server (no Go-native ICMP implementation). The `/api/traceroute` SSE endpoint has a 60-second context timeout and validates that the target IP is public. The frontend suppresses live arc rendering while a traceroute animation is active (`tracerouteActive` flag). Only one traceroute can be active at a time — starting a new one cancels the previous via `cancelTrace()`.
 - The traceroute RTT extraction (`extractRTT()` in `internal/traceroute/traceroute.go`) handles both `traceroute` output format (`1.234 ms` with space) and `tracepath` output format (`1.085ms` without space) via regex matching. The frontend `correctImplausibleGeo()` runs before hop reversal and modifies hops in-place to clamp geo-implausible positions (where great-circle distance exceeds the RTT-derived speed-of-light budget) to the previous hop's coordinates. The 300 km/ms budget is intentionally generous (3× overhead) to avoid false positives on legitimate transcontinental fiber routes while still catching GeoIP database errors that would place a router on the wrong continent.
 - The traceroute pipeline includes country-level centroid filtering (`filterCountryLevelHops()` in `static/index.js`) that removes hops with `accuracy_km >= 200` before animation. This prevents misleading visualizations where MaxMind returns country-centroid coordinates (e.g., US centroid at 37.75, -97.82 with accuracy=1000km) instead of actual router locations. The filter runs after hop collection but before RTT plausibility correction, ensuring only city-level hops (accuracy typically 1-50km) remain in the trace. This is distinct from RTT plausibility correction — filtering removes low-confidence hops entirely, while plausibility correction clamps high-confidence hops that are physically implausible given measured RTT.
+- The `internal/ebpf` package owns all eBPF lifecycle. The `Manager` zero value is valid and safe to call `IsActive()` on (returns false). `Start()` must be called explicitly. All `Ban()`/`Unban()` methods are no-ops when `IsActive()` is false — never nil-check the manager before calling them. The `clearMap()` helper in `manager.go` uses typed `banKey`/`banEntry` iteration (not `interface{}`).
+- `banKey.DstPort` is `[2]byte` stored in big-endian (network byte order) to match the XDP C struct. `Ban()` expiry uses `bpf_ktime_get_ns()` epoch (nanoseconds since boot), NOT Unix time — the value passed to `ban_map` is `kernelUptime() + duration`, not `time.Now() + duration`.
+- The `ebpfBanner` interface in `internal/ratelimit/ratelimit.go` breaks the otherwise circular import between `internal/ratelimit` and `internal/ebpf`. The `Limiter` holds an `ebpfBanner` field (not `*ebpf.Manager`). `SetEBPFManager()` assigns the concrete manager after both packages are initialized in `main.go`.
+- `pumpEBPFEvents()` in `cmd/webtraffik/main.go` consumes `appEBPF.EventCh` and routes events into `handleCapture()` for geo lookup, hub broadcast, DB insert, and metrics — the same pipeline as Go-captured events. In `ebpf-only` mode this is the only event source.
+- The Makefile `build` target runs `ebpf-gen` first (via `go generate ./internal/ebpf/...`) to regenerate `capture_bpfel.go`/`capture_bpfeb.go` from `capture.bpf.c`. The generated files are committed; `vmlinux.h` is machine-specific and `.gitignore`d. `ebpf-clean` removes all generated eBPF artifacts.
