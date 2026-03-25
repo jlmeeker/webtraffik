@@ -977,14 +977,26 @@
       if (!prev.rtt || !curr.rtt) continue;
 
       // Use the signed delta — if RTT is non-monotonic (curr <= prev), the
-      // delta provides no meaningful distance budget, so skip correction.
-      // Using Math.abs here would produce a near-zero or wrong budget and
-      // incorrectly clamp geographically valid hops.
+      // delta provides no meaningful distance budget for a speed-of-light
+      // check.  However, we still apply a generous absolute distance clamp
+      // (3000 km) to catch GeoIP errors that place a hop on the wrong
+      // continent.  Legitimate RTT regressions (ECMP, out-of-order ICMP)
+      // never move more than a few hundred km from the previous hop.
       const deltaRTT = curr.rtt - prev.rtt;
-      if (deltaRTT <= 0) continue;
+      const actualKm = haversineKm(prev.lat, prev.lon, curr.lat, curr.lon);
+
+      if (deltaRTT <= 0) {
+        // Can't use RTT budget — fall back to absolute distance guard only.
+        if (actualKm > 3000) {
+          curr.lat = prev.lat;
+          curr.lon = prev.lon;
+          curr.city = prev.city;
+          curr.cc = prev.cc;
+        }
+        continue;
+      }
 
       const maxKm = deltaRTT * RTT_KM_PER_MS;
-      const actualKm = haversineKm(prev.lat, prev.lon, curr.lat, curr.lon);
 
       if (actualKm > maxKm) {
         // GeoIP is implausible — place this hop at the previous hop's location.
