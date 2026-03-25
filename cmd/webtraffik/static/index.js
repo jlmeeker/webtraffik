@@ -947,8 +947,17 @@
   }
 
   // Maximum plausible one-way distance per ms of RTT delta.
-  // 100 km/ms (speed of light in fiber) * 3x routing overhead margin.
-  const RTT_KM_PER_MS = 100 * 3; // 300 km per ms of RTT delta
+  // 100 km/ms (speed of light in fiber) * 5x routing overhead margin.
+  // US backbone can achieve ~400 km/ms (e.g. KC→LA in 6ms ≈ 2400km),
+  // so 3x is too tight.  500 km/ms catches continent-scale GeoIP errors
+  // while allowing real high-speed backbone hops.
+  const RTT_KM_PER_MS = 100 * 5; // 500 km per ms of RTT delta
+
+  // Minimum RTT delta (ms) between consecutive hops to consider them
+  // geographically distinct.  Hops closer than this are same-location
+  // routers (e.g. two routers in the same datacenter) — not worth drawing
+  // an arc for.
+  const MIN_HOP_DELTA_MS = 3;
 
   // Accuracy radius threshold (km) for filtering country-level centroid hops.
   // MaxMind returns ~1000km for country-level, ~1-50km for city-level.
@@ -964,48 +973,38 @@
     return hops.filter(h => !h.accuracy_km || h.accuracy_km < GEO_ACCURACY_THRESHOLD);
   }
 
-  // Given hops in traceroute order (from our server outward, with ascending
-  // RTTs), clamp any hop whose geo jump is implausible for the RTT delta
-  // to the previous hop's position.  Mutates hops in place.
-  // Should be called AFTER filterCountryLevelHops() so only city-level hops remain.
-  function correctImplausibleGeo(hops) {
+  // Filter hops to build a plausible geographic path.  Returns a new array.
+  // Two rules, applied sequentially against the last *kept* hop:
+  //   1. deltaRTT <= MIN_HOP_DELTA_MS  → drop (same location, different router)
+  //   2. deltaRTT > MIN_HOP_DELTA_MS   → keep only if the geo distance is
+  //      plausible for the RTT budget (deltaRTT * RTT_KM_PER_MS).  If the
+  //      distance is too large, the GeoIP database is wrong — drop the hop
+  //      rather than drawing a misleading arc.
+  // Should be called AFTER filterCountryLevelHops().
+  function filterImplausibleHops(hops) {
+    if (hops.length === 0) return [];
+    const kept = [hops[0]];
     for (let i = 1; i < hops.length; i++) {
-      const prev = hops[i - 1];
+      const prev = kept[kept.length - 1];
       const curr = hops[i];
 
-      // Skip if either hop has no RTT (can't judge plausibility)
-      if (!prev.rtt || !curr.rtt) continue;
+      // If either hop has no RTT we can't judge — keep it to avoid
+      // dropping potentially useful geo data.
+      if (!prev.rtt || !curr.rtt) { kept.push(curr); continue; }
 
-      // Use the signed delta — if RTT is non-monotonic (curr <= prev), the
-      // delta provides no meaningful distance budget for a speed-of-light
-      // check.  However, we still apply a generous absolute distance clamp
-      // (3000 km) to catch GeoIP errors that place a hop on the wrong
-      // continent.  Legitimate RTT regressions (ECMP, out-of-order ICMP)
-      // never move more than a few hundred km from the previous hop.
       const deltaRTT = curr.rtt - prev.rtt;
-      const actualKm = haversineKm(prev.lat, prev.lon, curr.lat, curr.lon);
 
-      if (deltaRTT <= 0) {
-        // Can't use RTT budget — fall back to absolute distance guard only.
-        if (actualKm > 3000) {
-          curr.lat = prev.lat;
-          curr.lon = prev.lon;
-          curr.city = prev.city;
-          curr.cc = prev.cc;
-        }
-        continue;
-      }
+      // Rule 1: tiny or negative delta → same location, skip.
+      if (deltaRTT <= MIN_HOP_DELTA_MS) continue;
 
+      // Rule 2: check geo distance against RTT budget.
       const maxKm = deltaRTT * RTT_KM_PER_MS;
+      const actualKm = haversineKm(prev.lat, prev.lon, curr.lat, curr.lon);
+      if (actualKm > maxKm) continue; // GeoIP is wrong — drop silently
 
-      if (actualKm > maxKm) {
-        // GeoIP is implausible — place this hop at the previous hop's location.
-        curr.lat = prev.lat;
-        curr.lon = prev.lon;
-        curr.city = prev.city;
-        curr.cc = prev.cc;
-      }
+      kept.push(curr);
     }
+    return kept;
   }
 
   // ── Traceroute state ─────────────────────────────────────────────────────
@@ -1390,19 +1389,37 @@
       activeTraceES = null;
       traceIndicator.classList.remove('visible');
 
-      // Filter out country-level centroid hops (accuracy >= 200km) — their
-      // coordinates are meaningless geographic centers, not real router locations.
-      const cityHops = filterCountryLevelHops(hops);
+      // Remove the destination IP from the hop list — if traceroute reached
+      // the target, it appears as a hop with the same IP we're tracing.
+      // srcGeo already handles placing the source's known location after
+      // reversal, so including it here with rtt=0 poisons the RTT delta
+      // logic and creates duplicate waypoints.
+      const intermediateHops = hops.filter(h => h.ip !== srcIP);
 
-      // Correct implausible geo before reversing — hops are in traceroute
-      // order (from our server outward) with ascending cumulative RTTs.
-      correctImplausibleGeo(cityHops);
+      // Filter out country-level centroid hops (accuracy >= 500km) — their
+      // coordinates are meaningless geographic centers, not real router locations.
+      const cityHops = filterCountryLevelHops(intermediateHops);
+
+      // Drop hops that are either same-location routers (deltaRTT <= 3ms)
+      // or whose GeoIP distance is implausible for the measured RTT delta.
+      // This produces a clean geographic path with no back-and-forth arcs.
+      const plausibleHops = filterImplausibleHops(cityHops);
+
+      // // DEBUG: log pipeline stages to diagnose trace path issues
+      // console.group('Traceroute pipeline');
+      // console.log('Raw hops:', hops.length);
+      // console.table(hops.map((h,i) => ({ hop: i, ip: h.ip, rtt: h.rtt, lat: h.lat?.toFixed(2), lon: h.lon?.toFixed(2), city: h.city, cc: h.cc, accuracy_km: h.accuracy_km })));
+      // console.log('After removing destination IP:', intermediateHops.length, 'hops');
+      // console.log('After country filter:', cityHops.length, 'hops');
+      // console.table(cityHops.map((h,i) => ({ hop: i, ip: h.ip, rtt: h.rtt, lat: h.lat?.toFixed(2), lon: h.lon?.toFixed(2), city: h.city, cc: h.cc, accuracy_km: h.accuracy_km })));
+      // console.log('After plausibility filter:', plausibleHops.length, 'hops');
+      // console.table(plausibleHops.map((h,i) => ({ hop: i, ip: h.ip, rtt: h.rtt, lat: h.lat?.toFixed(2), lon: h.lon?.toFixed(2), city: h.city, cc: h.cc })));
 
       // traceroute runs FROM us TO them: hop 1 = our first upstream router,
       // last hop ≈ their IP.  Reverse the list so the animation flows
       // from their location inward toward our server — matching the mental
       // model of "their request travelling to us".
-      const reversedHops = [...cityHops].reverse();
+      const reversedHops = [...plausibleHops].reverse();
 
       // Prepend the source IP's known geolocation so the animation always
       // starts from the actual origin — not from the last traceroute hop
@@ -1419,6 +1436,9 @@
       if (selfPos) {
         reversedHops.push({ lat: selfPos.lat, lon: selfPos.lon, ip: selfPos.ip, city: selfPos.city, cc: selfPos.cc });
       }
+      // console.log('Final animation path:', reversedHops.length, 'hops');
+      // console.table(reversedHops.map((h,i) => ({ dot: i+1, ip: h.ip, lat: h.lat?.toFixed(2), lon: h.lon?.toFixed(2), city: h.city, cc: h.cc })));
+      // console.groupEnd();
       animateTraceHops(reversedHops);
     });
 
