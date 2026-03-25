@@ -91,7 +91,7 @@ handleCapture(srcIP, dstPort)
 
 | File | Owns |
 |------|------|
-| `main.go` | `ConnectionEvent` struct, `hub` (ring buffer + fan-out), HTTP capture listeners, dashboard server, `/ws` handler, `/api/self` endpoint, `capturePorts` var (HTTP-only ports), `/api/traceroute` SSE endpoint |
+| `main.go` | `ConnectionEvent` struct, `hub` (ring buffer + fan-out), HTTP capture listeners, dashboard server, `/ws` handler, `/api/self` endpoint, `capturePorts` var (HTTP-only ports), `/api/traceroute` SSE endpoint, CLI flags (`-disable-ports`, `-disable-rgeo`) |
 | `services.go` | TCP service port emulation (`tcpServices` with banners for FTP, SSH, Teltel, SMTP, etc.) and UDP port capture (`udpServicePorts`) |
 | `SERVICES.md` | Detailed reference of all emulated TCP/UDP services and their protocol banners; must be kept in sync with `services.go` |
 | `db.go` | SQLite open/close, schema creation, `insert()`, `loadHistory()`, metrics table schema, `upsertMetrics()`, `queryMetrics()`, `backfillMetrics()` |
@@ -99,7 +99,7 @@ handleCapture(srcIP, dstPort)
 | `internal/ratelimit/scanner.go` | Port scan detection tracker; `ScannerEntry` struct; `scanTracker` with per-IP port-hit tracking; 5-port/10-minute threshold; 1-hour display window; 2-minute GC loop; `ActiveScanners()` for `/api/scanners` endpoint |
 | `internal/traceroute/traceroute.go` | `Hop` struct, `Run()` function (streams traceroute/tracepath hops incrementally), `GeoFunc` callback type, `buildCmd()` tool detection (prefers `traceroute`, falls back to `tracepath`), private/loopback IP filtering, hop de-duplication |
 | `internal/ratelimit/ratelimit.go` | Auto-ban rate limiter; `Limiter` struct; dual-threshold detection (flood + volume-window); per-IP+port ban tracking; SQLite persistence; `IsBanned()` fast read-lock check; `ManualBan()`/`ManualUnban()` API handlers; 64-shard FNV32a hash design |
-| `geo.go` | `GeoLocator` (GeoLite2 reader + rgeo fallback), `Lookup()`, `Location` struct |
+| `internal/geo/geo.go` | `GeoLocator` (GeoLite2 reader + rgeo fallback), `NewGeoLocator(dbPath, enableRgeo)`, `Lookup()`, `Location` struct |
 | `geodb.go` | `ensureGeoDB()` — auto-download of `GeoLite2-City.mmdb` from GitHub mirror |
 | `iputil.go` | `discoverPublicIP()` — queries external APIs to find the server's public IP |
 | `static_embed.go` | `//go:embed static` directive; exposes `staticFiles fs.FS` |
@@ -865,7 +865,7 @@ The metrics system will automatically:
 ## Notes for Agents
 
 - The `modernc.org/sqlite` driver requires no CGo. Do not substitute it with a CGo-based driver — it will break cross-compilation.
-- `geo.go` uses an `atomic.Pointer[rgeo.Rgeo]` for the fallback geocoder. This is intentionally lock-free; do not add a mutex around `rgeo` access. The `geo.Location` struct now includes `AccuracyRadius` from MaxMind — this is the geolocation accuracy in kilometers and is propagated through the traceroute pipeline to enable country-level centroid filtering on the frontend.
+- `internal/geo/geo.go` uses an `atomic.Pointer[rgeo.Rgeo]` for the fallback geocoder. This is intentionally lock-free; do not add a mutex around `rgeo` access. The `geo.Location` struct now includes `AccuracyRadius` from MaxMind — this is the geolocation accuracy in kilometers and is propagated through the traceroute pipeline to enable country-level centroid filtering on the frontend. The `-disable-rgeo` CLI flag skips loading the rgeo reverse geocoder (NaturalEarth datasets + S2 spatial index), saving ~2.5 minutes of startup time on slow hardware like Raspberry Pi — city names will be missing for ~5-10% of IPs where MaxMind has coordinates but no city data (those will show country code only). `NewGeoLocator(dbPath, enableRgeo)` now accepts a second boolean parameter to control whether the rgeo background goroutine is launched.
 - The `hub.broadcast()` method snapshots subscribers under lock, then releases the lock before fan-out. Subscriber channel sends are non-blocking (`select/default`). This pattern keeps subscribe/unsubscribe operations fast even during high-traffic fan-out. Do not add blocking operations to the snapshot-and-send logic.
 - `insert()` queues events into a buffered channel and never blocks. A dedicated `writeLoop()` goroutine drains the channel and batches writes into SQLite for high throughput. The `database/sql` pool handles concurrent reads safely.
 - Static files are embedded at compile time via `static_embed.go`. Changes to `static/index.html` require a rebuild to take effect.

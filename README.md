@@ -330,6 +330,8 @@ webTraffik uses **zero-config defaults**:
 
 - **`-disable-ports=<port1,port2,...>`**: Comma-separated list of port numbers to skip at startup. Use this to exclude ports that are already in use by other services on the host (e.g., `-disable-ports=22,80,443`). When disabling ports, you must also pass `DISABLE_PORTS=` to `firewall.sh` to exclude them from the firewall ruleset.
 
+- **`-disable-rgeo`**: Skip loading the rgeo reverse geocoder (NaturalEarth datasets + S2 spatial index). This saves ~2.5 minutes of startup time on slow hardware like Raspberry Pi. Trade-off: city names will be missing for ~5-10% of IPs where MaxMind GeoLite2 has coordinates but no city data — those connections will show country code only. Example usage: `./webtraffik -disable-rgeo`
+
 To customize ports or buffer size, edit `main.go` and rebuild. If you change capture ports, also update `firewall.sh` and re-apply the firewall.
 
 ## Cross-Compilation
@@ -418,6 +420,10 @@ If your host runs a real SSH server on port 22:
    Change the `ExecStart` line to:
    ```
    ExecStart=/usr/local/bin/webtraffik -disable-ports=22
+   ```
+   Or, to also skip rgeo loading for faster startup on slow hardware:
+   ```
+   ExecStart=/usr/local/bin/webtraffik -disable-ports=22 -disable-rgeo
    ```
    Save and reload:
    ```bash

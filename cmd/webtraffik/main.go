@@ -139,6 +139,9 @@ func main() {
 	disablePortsFlag := flag.String("disable-ports", "",
 		"Comma-separated list of ports to skip binding (e.g. 22,80,443). "+
 			"These ports will not be listened on. Update your firewall rules accordingly.")
+	disableRgeo := flag.Bool("disable-rgeo", false,
+		"Skip loading the rgeo reverse geocoder (saves ~2 min startup on slow hardware). "+
+			"City names will be missing for ~5-10%% of IPs where MaxMind has no city data.")
 	flag.Parse()
 
 	// Build a set of disabled ports from the flag value.
@@ -214,7 +217,7 @@ func main() {
 		log.Fatalf("Failed to obtain GeoLite2 database: %v", err)
 	}
 
-	appGeo, err = geo.NewGeoLocator(dbPath)
+	appGeo, err = geo.NewGeoLocator(dbPath, !*disableRgeo)
 	if err != nil {
 		log.Fatalf("Failed to open GeoLite2 database: %v", err)
 	}
