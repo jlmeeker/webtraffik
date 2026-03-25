@@ -852,6 +852,65 @@
   fetchScanners();
   setInterval(fetchScanners, 10000);
 
+  // ── eBPF Capture Mode panel ───────────────────────────────────────────────
+  const ebpfRowsEl = document.getElementById('ebpf-rows');
+
+  function renderEBPFPanel(stats) {
+    if (!ebpfRowsEl) return;
+    if (!stats) {
+      ebpfRowsEl.innerHTML = '<div class="ebpf-row"><span class="ebpf-label">unavailable</span></div>';
+      return;
+    }
+
+    // Human-readable mode labels
+    const modeLabels = {
+      'ebpf-only': 'eBPF Only',
+      'hybrid':    'Hybrid',
+      'go-only':   'Go Only',
+    };
+    const modeClass = {
+      'ebpf-only': 'mode-ebpf-only',
+      'hybrid':    'mode-hybrid',
+      'go-only':   'mode-go-only',
+    };
+    const modeLabel = modeLabels[stats.mode] || stats.mode;
+    const modeCls   = modeClass[stats.mode]  || '';
+
+    const rows = [
+      { label: 'Mode',     value: modeLabel,                               cls: modeCls },
+      { label: 'Interface', value: stats.enabled ? (stats.interface || '—') : '—', cls: '' },
+      { label: 'Passed',   value: stats.enabled ? fmtNum(stats.packets_passed)  : '—', cls: '' },
+      { label: 'Dropped',  value: stats.enabled ? fmtNum(stats.packets_dropped) : '—', cls: '' },
+      { label: 'Bans',     value: stats.enabled ? String(stats.bans_active)     : '—', cls: '' },
+    ];
+
+    ebpfRowsEl.innerHTML = rows.map(r =>
+      `<div class="ebpf-row">` +
+        `<span class="ebpf-label">${r.label}</span>` +
+        `<span class="ebpf-value ${r.cls}">${r.value}</span>` +
+      `</div>`
+    ).join('');
+  }
+
+  function fmtNum(n) {
+    if (n === undefined || n === null) return '—';
+    if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+    return String(n);
+  }
+
+  function fetchEBPFStats() {
+    fetch('/api/ebpf/stats')
+      .then(r => r.json())
+      .then(stats => renderEBPFPanel(stats))
+      .catch(() => renderEBPFPanel(null));
+  }
+
+  // Fetch immediately then poll every 30 seconds (stats change slowly).
+  fetchEBPFStats();
+  setInterval(fetchEBPFStats, 30000);
+
   // ── Log/arc rendering stays on rAF for low-latency display ──
   function scheduleLogRender() {
     if (logRafScheduled) return;
