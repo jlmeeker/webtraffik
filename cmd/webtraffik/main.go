@@ -10,15 +10,18 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"nhooyr.io/websocket"
 	"nhooyr.io/websocket/wsjson"
 
 	"webtraffik/internal/db"
+	"webtraffik/internal/ebpf"
 	"webtraffik/internal/event"
 	"webtraffik/internal/geo"
 	"webtraffik/internal/iputil"
@@ -101,6 +104,7 @@ var (
 	appGeo     *geo.GeoLocator
 	appMetrics *metrics.Cache
 	appLimiter *ratelimit.Limiter
+	appEBPF    *ebpf.Manager
 	selfIP     string
 	selfLat    float64
 	selfLon    float64
@@ -142,6 +146,16 @@ func main() {
 	disableRgeo := flag.Bool("disable-rgeo", false,
 		"Skip loading the rgeo reverse geocoder (saves ~2 min startup on slow hardware). "+
 			"City names will be missing for ~5-10%% of IPs where MaxMind has no city data.")
+	captureModeFlag := flag.String("capture-mode", "hybrid",
+		`Capture mode: "hybrid" (default, eBPF bans + Go listeners), `+
+			`"ebpf-only" (XDP telemetry, no Go listeners), `+
+			`"go-only" (pure userspace, no eBPF).`)
+	ebpfIfaceFlag := flag.String("ebpf-iface", "",
+		"Network interface for eBPF XDP attach (default: auto-detect from default route).")
+	mgmtPortsFlag := flag.String("mgmt-ports", "8999,22",
+		"Comma-separated management ports that bypass eBPF ban enforcement and telemetry.")
+	mgmtAllowFileFlag := flag.String("mgmt-allow-file", "",
+		"Path to file listing allowed management IPs, one IPv4 per line (optional).")
 	flag.Parse()
 
 	// Build a set of disabled ports from the flag value.
@@ -159,6 +173,28 @@ func main() {
 			disabledPorts[p] = true
 			log.Printf("Port %d disabled by flag", p)
 		}
+	}
+
+	// Parse capture mode.
+	captureMode, err := ebpf.ParseCaptureMode(*captureModeFlag)
+	if err != nil {
+		log.Printf("Warning: %v — defaulting to go-only", err)
+		captureMode = ebpf.ModeGoOnly
+	}
+
+	// Parse management ports for eBPF bypass map.
+	var mgmtPorts []uint16
+	for _, tok := range strings.Split(*mgmtPortsFlag, ",") {
+		tok = strings.TrimSpace(tok)
+		if tok == "" {
+			continue
+		}
+		p, err := strconv.ParseUint(tok, 10, 16)
+		if err != nil {
+			log.Printf("Warning: invalid mgmt-port %q, skipping: %v", tok, err)
+			continue
+		}
+		mgmtPorts = append(mgmtPorts, uint16(p))
 	}
 
 	// Determine working directory for persistent storage.
@@ -190,6 +226,36 @@ func main() {
 	)
 	appLimiter.SetDB(appDB)
 	appLimiter.LoadBans()
+
+	// ── eBPF manager ──────────────────────────────────────────────────────────
+	// Create and start the eBPF XDP capture manager. On any attach failure
+	// (missing CAP_BPF, old kernel, incompatible driver) we fall back to
+	// go-only mode transparently — the application continues normally.
+	appEBPF = ebpf.New(captureMode, *ebpfIfaceFlag, mgmtPorts, *mgmtAllowFileFlag)
+	if err := appEBPF.Start(); err != nil {
+		log.Printf("ebpf: WARNING: failed to attach XDP program: %v", err)
+		log.Printf("ebpf: falling back to go-only mode")
+		appEBPF = ebpf.New(ebpf.ModeGoOnly, "", nil, "")
+	} else if captureMode != ebpf.ModeGoOnly {
+		log.Printf("ebpf: running in %s mode on interface %q", captureMode, *ebpfIfaceFlag)
+	}
+	defer appEBPF.Stop()
+
+	// Wire eBPF ban sync into the rate limiter so every Go-triggered ban/unban
+	// is immediately reflected in the XDP ban_map.
+	appLimiter.SetEBPFManager(appEBPF)
+
+	// SIGHUP handler: reload mgmt allow file without restarting.
+	go func() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGHUP)
+		for range sigCh {
+			log.Printf("ebpf: SIGHUP received — reloading mgmt allow file")
+			if err := appEBPF.ReloadAllowFile(); err != nil {
+				log.Printf("ebpf: allow file reload failed: %v", err)
+			}
+		}
+	}()
 
 	// Backfill metrics from events table (idempotent — skipped if table is not empty).
 	if err := appDB.BackfillMetrics(services.PortServiceName); err != nil {
@@ -241,40 +307,47 @@ func main() {
 	}
 
 	// ── Start listeners ────────────────────────────────────────────────────
-
-	// HTTP capture ports.
-	for _, port := range capturePorts {
-		if disabledPorts[port] {
-			continue
+	// In ebpf-only mode the XDP program handles telemetry; no Go listeners
+	// are spawned (service emulation / banners are unavailable in this mode).
+	if captureMode != ebpf.ModeEBPFOnly {
+		// HTTP capture ports.
+		for _, port := range capturePorts {
+			if disabledPorts[port] {
+				continue
+			}
+			go startCaptureListener(port)
 		}
-		go startCaptureListener(port)
-	}
 
-	// TCP service emulation listeners (non-HTTP protocols with banners).
-	for _, svc := range services.TCPServices {
-		if disabledPorts[svc.Port] {
-			continue
+		// TCP service emulation listeners (non-HTTP protocols with banners).
+		for _, svc := range services.TCPServices {
+			if disabledPorts[svc.Port] {
+				continue
+			}
+			go services.StartTCPServiceListener(svc, appLimiter.IsBanned, handleCapture)
 		}
-		go services.StartTCPServiceListener(svc, appLimiter.IsBanned, handleCapture)
-	}
 
-	// UDP service listeners.
-	for _, port := range services.UDPServicePorts {
-		if disabledPorts[port] {
-			continue
+		// UDP service listeners.
+		for _, port := range services.UDPServicePorts {
+			if disabledPorts[port] {
+				continue
+			}
+			go services.StartUDPServiceListener(port, handleCapture)
 		}
-		go services.StartUDPServiceListener(port, handleCapture)
-	}
 
-	// Special protocol emulators.
-	if !disabledPorts[services.MinecraftPort] {
-		go services.StartMinecraftListener(appLimiter.IsBanned, handleCapture)
-	}
-	if !disabledPorts[services.LightningPort] {
-		go services.StartLightningListener(appLimiter.IsBanned, handleCapture)
-	}
-	if !disabledPorts[services.VNCPort] {
-		go services.StartVNCListener(appLimiter.IsBanned, handleCapture)
+		// Special protocol emulators.
+		if !disabledPorts[services.MinecraftPort] {
+			go services.StartMinecraftListener(appLimiter.IsBanned, handleCapture)
+		}
+		if !disabledPorts[services.LightningPort] {
+			go services.StartLightningListener(appLimiter.IsBanned, handleCapture)
+		}
+		if !disabledPorts[services.VNCPort] {
+			go services.StartVNCListener(appLimiter.IsBanned, handleCapture)
+		}
+	} else {
+		log.Printf("ebpf-only mode: Go listeners not started (service emulation unavailable)")
+		// In ebpf-only mode, pump eBPF perf events into the hub pipeline.
+		go pumpEBPFEvents()
 	}
 
 	// Dashboard server.
@@ -579,6 +652,9 @@ func startDashboardServer() {
 	mux.HandleFunc("/api/metrics", appMetrics.HandleMetrics)
 	mux.HandleFunc("/metrics", appMetrics.HandleMetricsPrometheus)
 
+	// eBPF stats endpoint.
+	mux.HandleFunc("/api/ebpf/stats", appEBPF.StatsHandler())
+
 	// WebSocket endpoint.
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
@@ -636,7 +712,19 @@ func startDashboardServer() {
 	}
 }
 
-// extractIP extracts the host from a "host:port" remote address string.
+// pumpEBPFEvents drains appEBPF.EventCh and routes each event into the
+// standard handleCapture pipeline. Used in ebpf-only mode where no Go
+// listeners are spawned and all connection events come from the XDP perf buffer.
+func pumpEBPFEvents() {
+	for ev := range appEBPF.EventCh {
+		if ev.Dropped {
+			// Dropped packets were already blocked at XDP_DROP; skip capture pipeline
+			// but we could log them in future if desired.
+			continue
+		}
+		go handleCapture(ev.SrcIP.String(), fmt.Sprintf("%d", ev.DstPort), "tcp", nil)
+	}
+}
 func extractIP(remoteAddr string) string {
 	host, _, err := net.SplitHostPort(remoteAddr)
 	if err != nil {

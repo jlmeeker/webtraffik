@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
-	"unsafe"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -65,9 +64,11 @@ func ParseCaptureMode(s string) (CaptureMode, error) {
 
 // banKey mirrors the C struct ban_key layout used as the eBPF map key.
 // Must match the C struct layout exactly (8 bytes total with padding).
+// Both SrcIP and DstPort are stored in network byte order (big-endian)
+// to match how the XDP program builds the key from packet headers.
 type banKey struct {
 	SrcIP   [4]byte
-	DstPort uint16
+	DstPort [2]byte
 	_       [2]byte // padding to match C struct
 }
 
@@ -281,19 +282,18 @@ func (m *Manager) Ban(ipStr, portStr string, duration time.Duration) error {
 		return fmt.Errorf("ebpf: Ban: %w", err)
 	}
 
-	// Build the map key (network byte order for both fields).
-	key := banKey{}
-	copy(key.SrcIP[:], ip)
-	// Store port in network byte order (big-endian).
-	binary.BigEndian.PutUint16((*[2]byte)(unsafe.Pointer(&key.DstPort))[:], port)
+	key, err := makeBanKey(ip, port)
+	if err != nil {
+		return fmt.Errorf("ebpf: Ban: %w", err)
+	}
 
-	// expires_at uses bpf_ktime_get_ns() which is nanoseconds since boot.
-	// We approximate boot time as: now - kernel uptime.
+	// expires_at must use bpf_ktime_get_ns() epoch (nanoseconds since boot).
+	// ktime_now ≈ kernel uptime in nanoseconds.
 	uptime, err := kernelUptime()
 	if err != nil {
 		return fmt.Errorf("ebpf: Ban: get uptime: %w", err)
 	}
-	expiresNS := uint64(time.Now().Add(duration).UnixNano()) - uint64(time.Now().UnixNano()) + uint64(uptime.Nanoseconds()) + uint64(duration.Nanoseconds())
+	expiresNS := uint64(uptime.Nanoseconds()) + uint64(duration.Nanoseconds())
 
 	val := banEntry{ExpiresAt: expiresNS}
 	if err := m.objs.BanMap.Put(key, val); err != nil {
@@ -319,9 +319,10 @@ func (m *Manager) Unban(ipStr, portStr string) error {
 		return fmt.Errorf("ebpf: Unban: %w", err)
 	}
 
-	key := banKey{}
-	copy(key.SrcIP[:], ip)
-	binary.BigEndian.PutUint16((*[2]byte)(unsafe.Pointer(&key.DstPort))[:], port)
+	key, err := makeBanKey(ip, port)
+	if err != nil {
+		return fmt.Errorf("ebpf: Unban: %w", err)
+	}
 
 	// Delete is idempotent — no error if the key does not exist.
 	if err := m.objs.BanMap.Delete(key); err != nil && !isNotFound(err) {
@@ -344,6 +345,22 @@ func (m *Manager) ReloadAllowFile() error {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+// makeBanKey constructs a banKey from a parsed net.IP (must be 4-byte IPv4)
+// and a parsed uint16 port. The key matches the C struct ban_key layout:
+// src_ip is stored in network byte order (as raw bytes), dst_port is stored
+// in network byte order (big-endian uint16).
+func makeBanKey(ip net.IP, port uint16) (banKey, error) {
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return banKey{}, fmt.Errorf("makeBanKey: not an IPv4 address: %v", ip)
+	}
+	k := banKey{}
+	copy(k.SrcIP[:], ip4)
+	// Store port in network byte order to match the C XDP key construction.
+	binary.BigEndian.PutUint16(k.DstPort[:], port)
+	return k, nil
+}
 
 // loadAllowFile reads one IPv4 address per line from path and populates the
 // mgmt_allow_ips_map in objs.
@@ -380,16 +397,17 @@ func (m *Manager) loadAllowFile(objs *captureObjects, path string) error {
 	return nil
 }
 
-// clearMap deletes all entries from an eBPF hash map by iterating and deleting.
+// clearMap deletes all entries from an eBPF hash map by iterating keys then deleting.
 func clearMap(m *ebpf.Map) error {
-	var key interface{}
-	var val interface{}
+	var key banKey
+	var val banEntry
 	iter := m.Iterate()
-	var keys []interface{}
+	var keys []banKey
 	for iter.Next(&key, &val) {
 		keys = append(keys, key)
 	}
 	for _, k := range keys {
+		k := k
 		if err := m.Delete(k); err != nil && !isNotFound(err) {
 			return err
 		}

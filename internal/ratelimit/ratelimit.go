@@ -9,6 +9,14 @@ import (
 	"webtraffik/internal/db"
 )
 
+// ebpfBanner is a minimal interface so ratelimit can call Ban/Unban on the
+// eBPF manager without importing the ebpf package (avoids a circular dep).
+type ebpfBanner interface {
+	IsActive() bool
+	Ban(ip, port string, duration time.Duration) error
+	Unban(ip, port string) error
+}
+
 // ── Rate-limiter / abuse-ban constants ──────────────────────────────────────
 const (
 	// High-rate (flood) ban: >2 events/sec sustained for 10 minutes.
@@ -72,6 +80,7 @@ type Limiter struct {
 
 	scanner *scanTracker // port-scan detection
 
+	ebpfMgr         ebpfBanner // optional eBPF ban sync (nil = go-only)
 	db              *db.EventDB
 	onChange        func()
 	onBan           func(banType string) // callback to record ban metrics
@@ -142,6 +151,13 @@ func (rl *Limiter) SetDB(d *db.EventDB) {
 // SetOnChange registers a callback invoked whenever the ban set changes.
 func (rl *Limiter) SetOnChange(fn func()) {
 	rl.onChange = fn
+}
+
+// SetEBPFManager wires an eBPF manager so every ban/unban is synced to the
+// XDP ban_map. Call once from main() after the eBPF manager is started.
+// Passing nil is safe (disables eBPF sync).
+func (rl *Limiter) SetEBPFManager(mgr ebpfBanner) {
+	rl.ebpfMgr = mgr
 }
 
 // LoadBans seeds the in-memory ban set from the database.
@@ -298,6 +314,16 @@ func (rl *Limiter) ban(ip, port string) {
 		}()
 	}
 
+	// Sync to eBPF ban_map so the XDP program can enforce this ban at the
+	// kernel level (XDP_DROP) without a TCP handshake.
+	if rl.ebpfMgr != nil && rl.ebpfMgr.IsActive() {
+		go func() {
+			if err := rl.ebpfMgr.Ban(ip, port, BanCooldown); err != nil {
+				log.Printf("ratelimit: eBPF ban sync failed for %s:%s: %v", ip, port, err)
+			}
+		}()
+	}
+
 	if rl.onChange != nil {
 		go rl.onChange()
 	}
@@ -324,6 +350,15 @@ func (rl *Limiter) scheduleUnban(key ipPortKey, after time.Duration) {
 		go func() {
 			if err := rl.db.ExpireBan(entry.IP, entry.Port); err != nil {
 				log.Printf("ratelimit: failed to expire ban for %s:%s: %v", entry.IP, entry.Port, err)
+			}
+		}()
+	}
+
+	// Remove from eBPF ban_map so the XDP program stops dropping packets.
+	if rl.ebpfMgr != nil && rl.ebpfMgr.IsActive() {
+		go func() {
+			if err := rl.ebpfMgr.Unban(key.ip, key.port); err != nil {
+				log.Printf("ratelimit: eBPF unban sync failed for %s:%s: %v", key.ip, key.port, err)
 			}
 		}()
 	}
@@ -401,6 +436,16 @@ func (rl *Limiter) ManualUnban(ip, port string) bool {
 			}
 		}()
 	}
+
+	// Remove from eBPF ban_map.
+	if rl.ebpfMgr != nil && rl.ebpfMgr.IsActive() {
+		go func() {
+			if err := rl.ebpfMgr.Unban(key.ip, key.port); err != nil {
+				log.Printf("ratelimit: eBPF unban sync failed for %s:%s: %v", key.ip, key.port, err)
+			}
+		}()
+	}
+
 	if rl.onChange != nil {
 		go rl.onChange()
 	}
