@@ -952,7 +952,9 @@
 
   // Accuracy radius threshold (km) for filtering country-level centroid hops.
   // MaxMind returns ~1000km for country-level, ~1-50km for city-level.
-  const GEO_ACCURACY_THRESHOLD = 200;
+  // ISP backbone/transit routers often resolve to 150–400km accuracy, so
+  // use 500km to retain those while still dropping true country centroids.
+  const GEO_ACCURACY_THRESHOLD = 500;
 
   // Remove hops whose geolocation is only country-level (centroid coordinates).
   // These have large accuracy radii and add no real geographic information —
@@ -974,11 +976,17 @@
       // Skip if either hop has no RTT (can't judge plausibility)
       if (!prev.rtt || !curr.rtt) continue;
 
-      const deltaRTT = Math.abs(curr.rtt - prev.rtt);
+      // Use the signed delta — if RTT is non-monotonic (curr <= prev), the
+      // delta provides no meaningful distance budget, so skip correction.
+      // Using Math.abs here would produce a near-zero or wrong budget and
+      // incorrectly clamp geographically valid hops.
+      const deltaRTT = curr.rtt - prev.rtt;
+      if (deltaRTT <= 0) continue;
+
       const maxKm = deltaRTT * RTT_KM_PER_MS;
       const actualKm = haversineKm(prev.lat, prev.lon, curr.lat, curr.lon);
 
-      if (actualKm > maxKm && maxKm > 0) {
+      if (actualKm > maxKm) {
         // GeoIP is implausible — place this hop at the previous hop's location.
         curr.lat = prev.lat;
         curr.lon = prev.lon;
