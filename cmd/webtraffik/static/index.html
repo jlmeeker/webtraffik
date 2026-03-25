@@ -125,6 +125,20 @@
     .top-left     { top: 10px; left: 10px; }
     .top-right    { top: 10px; right: 10px; }
 
+    /* Stack for left-side panels — services above eBPF status */
+    #left-panels {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      z-index: 5;
+    }
+    #left-panels .corner-panel {
+      position: static; /* override absolute; parent handles positioning */
+    }
+
     /* Stack for right-side panels — banned stacks above scanners */
     #right-panels {
       position: absolute;
@@ -298,6 +312,33 @@
       padding: 6px 10px;
       font-style: italic;
     }
+
+    /* ── eBPF Capture Mode panel ── */
+    .ebpf-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 3px 10px;
+      gap: 6px;
+    }
+    .ebpf-label {
+      font-size: 0.62rem;
+      color: #6a8aaa;
+      white-space: nowrap;
+    }
+    .ebpf-value {
+      font-size: 0.68rem;
+      color: #4fc3f7;
+      text-align: right;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 100px;
+    }
+    .ebpf-value.mode-go-only  { color: #6a8aaa; }
+    .ebpf-value.mode-hybrid   { color: #66bb6a; }
+    .ebpf-value.mode-ebpf-only { color: #4fc3f7; }
+    #panel-ebpf h2 { color: #4fc3f7; border-bottom-color: rgba(79,195,247,0.25); }
 
     #ws-status {
       width: 8px; height: 8px;
@@ -498,9 +539,15 @@
   <!-- Zoom level indicator -->
   <div id="zoom-level">1.0x</div>
   <!-- Corner overlay panels -->
-  <div id="panel-service" class="corner-panel top-left">
-    <h2>Top Services</h2>
-    <div id="service-rows"></div>
+  <div id="left-panels">
+    <div id="panel-service" class="corner-panel">
+      <h2>Top Services</h2>
+      <div id="service-rows"></div>
+    </div>
+    <div id="panel-ebpf" class="corner-panel">
+      <h2>Capture Mode</h2>
+      <div id="ebpf-rows"></div>
+    </div>
   </div>
   <div id="right-panels">
     <div id="panel-banned" class="corner-panel">
