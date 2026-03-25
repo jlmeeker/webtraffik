@@ -11,7 +11,18 @@ PLATFORMS := \
 	windows/amd64 \
 	windows/arm64
 
-.PHONY: build run cap cap-dist install uninstall clean dist remote-install firewall $(PLATFORMS) linux/armv6 linux/armv7
+.PHONY: build run cap cap-dist install uninstall clean dist remote-install firewall ebpf-gen ebpf-clean $(PLATFORMS) linux/armv6 linux/armv7
+
+# Regenerate eBPF Go bindings from C source via bpf2go.
+# Requires: clang >= 10, llvm-strip, linux-libc-dev, bpftool (for vmlinux.h)
+# Run after editing internal/ebpf/bpf/programs/capture.bpf.c
+ebpf-gen:
+	go generate ./internal/ebpf/...
+
+# Remove generated eBPF artifacts (force regeneration on next build)
+ebpf-clean:
+	rm -f internal/ebpf/capture_bpfel.go internal/ebpf/capture_bpfeb.go
+	rm -f internal/ebpf/capture_bpfel.o  internal/ebpf/capture_bpfeb.o
 
 # Build for the current host OS/arch
 build:
@@ -66,7 +77,7 @@ cap-dist: dist
 	done
 	@echo "Done — capabilities set on all Linux dist binaries"
 
-clean:
+clean: ebpf-clean
 	rm -f $(BINARY)
 	rm -rf $(OUTDIR)
 	rm -f GeoLite2-City.mmdb
