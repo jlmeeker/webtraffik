@@ -13,6 +13,10 @@ Group=webtraffik
 # CLI flags always override config file values. Examples:
 #   ExecStart=/usr/local/bin/webtraffik -disable-ports=22,80,443
 #   ExecStart=/usr/local/bin/webtraffik -config=/etc/webtraffik/config.yaml
+# Generate /sys/kernel/btf/vmlinux from DWARF debug info if missing.
+# Required for eBPF CO-RE on kernels without built-in BTF (e.g. Raspberry Pi OS).
+# Runs as root (+), exits 0 always — failure is non-fatal (app falls back to go-only).
+ExecStartPre=+/usr/local/lib/webtraffik/gen-btf.sh
 ExecStart=/usr/local/bin/webtraffik
 WorkingDirectory=/var/lib/webtraffik
 
