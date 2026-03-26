@@ -16,6 +16,8 @@ set -euo pipefail
 BINARY_SRC="${1:-./webtraffik}"
 INSTALL_BIN="/usr/local/bin/webtraffik"
 DATA_DIR="/var/lib/webtraffik"
+CONFIG_DIR="/etc/webtraffik"
+CONFIG_FILE="$CONFIG_DIR/config.yaml"
 SERVICE_FILE="/etc/systemd/system/webtraffik.service"
 SERVICE_USER="webtraffik"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -55,10 +57,54 @@ fi
 install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 755 "$DATA_DIR"
 echo "data directory: $DATA_DIR"
 
+# ── Config directory ──────────────────────────────────────────────────────────
+
+install -d -o root -g root -m 755 "$CONFIG_DIR"
+if [[ ! -f "$CONFIG_FILE" ]]; then
+  cat > "$CONFIG_FILE" <<'CONFIGEOF'
+# webTraffik configuration file
+# All settings are optional. CLI flags always override values set here.
+# Reload with: systemctl reload webtraffik (for mgmt-allow-file changes only).
+# All other changes require a service restart: systemctl restart webtraffik
+
+# capture-mode: "hybrid" (default), "ebpf-only", or "go-only"
+# capture-mode: hybrid
+
+# ebpf-iface: network interface for XDP attach (auto-detected if omitted)
+# ebpf-iface: eth0
+
+# mgmt-ports: ports that bypass eBPF ban enforcement (never dropped)
+# mgmt-ports: "8999,22"
+
+# mgmt-allow-file: path to a file with one allowed management IPv4 per line
+# mgmt-allow-file: /etc/webtraffik/allow.txt
+
+# disable-ports: comma-separated ports to skip binding (e.g. if in use by real services)
+# disable-ports: ""
+
+# disable-rgeo: skip rgeo reverse geocoder (faster startup on slow hardware like Raspberry Pi)
+# disable-rgeo: false
+CONFIGEOF
+  echo "wrote default config: $CONFIG_FILE"
+else
+  echo "config already exists — skipping: $CONFIG_FILE"
+fi
+
 # ── Install binary ────────────────────────────────────────────────────────────
 
 install -m 755 "$BINARY_SRC" "$INSTALL_BIN"
 echo "installed binary: $INSTALL_BIN"
+
+# ── Install helper scripts ────────────────────────────────────────────────────
+
+install -d -o root -g root -m 755 /usr/local/lib/webtraffik
+SCRIPT_SRC="${SCRIPT_DIR}/gen-btf.sh"
+if [[ -f "$SCRIPT_SRC" ]]; then
+  install -m 755 "$SCRIPT_SRC" /usr/local/lib/webtraffik/gen-btf.sh
+  echo "installed helper: /usr/local/lib/webtraffik/gen-btf.sh"
+else
+  echo "warning: gen-btf.sh not found alongside install.sh — BTF auto-generation will not run" >&2
+fi
 
 # ── Write systemd service unit ────────────────────────────────────────────────
 
@@ -73,11 +119,16 @@ Type=simple
 User=webtraffik
 Group=webtraffik
 
+ExecStartPre=+/usr/local/lib/webtraffik/gen-btf.sh
 ExecStart=/usr/local/bin/webtraffik
+# Config file is auto-loaded from /etc/webtraffik/config.yaml if present.
+# To override individual flags: ExecStart=/usr/local/bin/webtraffik -disable-ports=22
 WorkingDirectory=/var/lib/webtraffik
 
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_BPF CAP_NET_ADMIN CAP_SYS_ADMIN
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_BPF CAP_NET_ADMIN CAP_SYS_ADMIN
+
+LimitMEMLOCK=infinity
 
 Restart=on-failure
 RestartSec=5s

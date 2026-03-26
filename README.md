@@ -231,6 +231,56 @@ The dashboard port **8999** is intentionally excluded from the capture-port list
 nft list ruleset
 ```
 
+## Configuration
+
+webTraffik can be configured via a YAML file at `/etc/webtraffik/config.yaml` (created automatically by `install.sh` with all keys commented out). All CLI flags can be set here; **CLI flags always override config file values**.
+
+### Config file keys
+
+```yaml
+# Capture mode: "hybrid" (default), "ebpf-only", or "go-only"
+# capture-mode: hybrid
+
+# Network interface for eBPF XDP attach (default: auto-detect)
+# ebpf-iface: eth0
+
+# Management ports that bypass eBPF ban enforcement and telemetry
+# mgmt-ports: "8999,22"
+
+# Path to file listing allowed management IPs, one IPv4 per line
+# mgmt-allow-file: /etc/webtraffik/allow.txt
+
+# Comma-separated ports to skip binding entirely
+# disable-ports: ""
+
+# Skip loading the rgeo reverse geocoder (saves ~2 min on slow hardware)
+# disable-rgeo: false
+```
+
+### Using an alternate config file
+
+```bash
+webtraffik -config=/path/to/config.yaml
+```
+
+### Precedence
+
+CLI flags > config file values > compiled-in defaults
+
+### Hot-reloading
+
+The `mgmt-allow-file` setting can be reloaded at runtime without a restart:
+
+```bash
+systemctl reload webtraffik   # sends SIGHUP
+```
+
+All other config changes require a service restart:
+
+```bash
+systemctl restart webtraffik
+```
+
 ## File Structure
 
 ```
@@ -401,8 +451,9 @@ Binaries appear in `dist/` as `webtraffik_<os>_<arch>[.exe]`.
 The service runs as a dedicated `webtraffik` system user with minimal privileges:
 
 - **User/Group**: `webtraffik:webtraffik`
-- **Capabilities**: `CAP_NET_BIND_SERVICE` (bind ports <1024)
-- **eBPF Capabilities** (optional): `CAP_BPF` + `CAP_NET_ADMIN` are required for hybrid or ebpf-only modes. These are **not** set by default — add them to `AmbientCapabilities` and `CapabilityBoundingSet` in the service unit if deploying with eBPF enabled.
+- **Capabilities**: `CAP_NET_BIND_SERVICE` (bind ports <1024), `CAP_BPF` + `CAP_NET_ADMIN` + `CAP_SYS_ADMIN` (eBPF hybrid/ebpf-only modes)
+- **Memory lock**: `LimitMEMLOCK=infinity` — required for eBPF map allocation under systemd hardening
+- **Note**: `CAP_SYS_ADMIN` is required when `kernel.unprivileged_bpf_disabled=2` (the default on most hardened kernels), as the BPF verifier restricts pointer arithmetic to processes with this capability
 - **Sandboxing**: `ProtectSystem=strict`, `ProtectHome=true`, `PrivateTmp=true`, `NoNewPrivileges=true`
 - **Working Directory**: `/var/lib/webtraffik` (writable for GeoLite2 DB download and SQLite database)
 - **Auto-Restart**: `Restart=on-failure` with 5s delay
@@ -530,11 +581,67 @@ sudo DISABLE_PORTS=22,80,443 bash firewall.sh
 ### eBPF XDP fails to attach
 
 - **Check kernel version**: XDP requires Linux ≥5.10. Check with `uname -r`.
-- **Check capabilities**: The binary needs `CAP_BPF` + `CAP_NET_ADMIN`. Add to the systemd unit or grant via `sudo setcap cap_bpf,cap_net_admin+eip /usr/local/bin/webtraffik`.
+- **Check capabilities**: The service unit must include `CAP_BPF`, `CAP_NET_ADMIN`, and `CAP_SYS_ADMIN` in both `AmbientCapabilities` and `CapabilityBoundingSet`, plus `LimitMEMLOCK=infinity`. The default `install.sh` sets all of these.
+- **Check `unprivileged_bpf_disabled`**: Run `sysctl kernel.unprivileged_bpf_disabled`. A value of `1` or `2` means the BPF verifier requires `CAP_SYS_ADMIN` in addition to `CAP_BPF`.
 - **Check interface**: Ensure `-ebpf-iface` matches an active interface: `ip link show`. If unset, auto-detection uses the default route interface.
 - **Automatic fallback**: On attach failure, webTraffik automatically falls back to `go-only` mode (all Go listeners still work). Check logs: `journalctl -u webtraffik -e | grep ebpf`
 - **Driver compatibility**: Some virtual/cloud NICs do not support XDP native mode. The app uses generic (SKB) mode as fallback — it always works but has slightly higher overhead.
-- **Docker/container**: Requires `--cap-add=BPF --cap-add=NET_ADMIN` and `--network=host` (XDP does not work with bridged container networking in most CNI setups).
+- **Docker/container**: Requires `--cap-add=BPF --cap-add=NET_ADMIN --cap-add=SYS_ADMIN` and `--network=host` (XDP does not work with bridged container networking in most CNI setups).
+
+### eBPF on Raspberry Pi 4 (Raspberry Pi OS)
+
+Raspberry Pi OS kernels ship without BTF (`CONFIG_DEBUG_INFO_BTF`) and with `kernel.unprivileged_bpf_disabled=2`, which means extra steps are required to run eBPF in hybrid mode.
+
+#### Step 1: Install a BTF-enabled kernel
+
+The Debian arm64 kernel has BTF built in. Install it alongside the Pi kernel (the Pi kernel remains available as a fallback):
+
+```bash
+sudo apt install linux-image-arm64 linux-image-6.12.74+deb13+1-arm64
+```
+
+#### Step 2: Copy kernel files to the firmware partition
+
+```bash
+sudo cp /boot/vmlinuz-6.12.74+deb13+1-arm64 /boot/firmware/vmlinuz-debian
+sudo cp /boot/initrd.img-6.12.74+deb13+1-arm64 /boot/firmware/initramfs-debian
+sudo cp /usr/lib/linux-image-6.12.74+deb13+1-arm64/broadcom/bcm2711-rpi-4-b.dtb \
+        /boot/firmware/bcm2711-rpi-4-b-debian.dtb
+```
+
+#### Step 3: Configure the bootloader
+
+Append to `/boot/firmware/config.txt`:
+
+```
+[all]
+kernel=vmlinuz-debian
+initramfs initramfs-debian followkernel
+device_tree=bcm2711-rpi-4-b-debian.dtb
+```
+
+Reboot:
+
+```bash
+sudo reboot
+```
+
+#### Step 4: Verify
+
+After reboot:
+
+```bash
+uname -r                        # should show deb13 kernel
+ls /sys/kernel/btf/vmlinux      # should exist
+journalctl -u webtraffik -e | grep ebpf  # should show "XDP program attached"
+```
+
+#### Notes
+
+- The original Pi kernel (`kernel8.img`) is untouched — remove the `kernel=` lines from `config.txt` to revert.
+- `gen-btf.sh` (installed to `/usr/local/lib/webtraffik/gen-btf.sh`) runs as `ExecStartPre` on each boot. On the Debian kernel it detects that `/sys/kernel/btf/vmlinux` already exists and skips — no overhead.
+- The Debian kernel works on Pi 4 (bcm2711). Pi 5 uses bcm2712 — use `bcm2712-rpi-5-b.dtb` instead of `bcm2711-rpi-4-b.dtb`.
+- `kernel.unprivileged_bpf_disabled=2` is permanent once set — `CAP_SYS_ADMIN` in the service unit is the correct fix (already included in the default `install.sh`).
 
 ## Development
 

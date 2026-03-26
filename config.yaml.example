@@ -1,0 +1,72 @@
+# webTraffik configuration file
+#
+# Default location: /etc/webtraffik/config.yaml
+# This file is auto-detected on startup. No flag required.
+# To use a custom path: webtraffik -config=/path/to/config.yaml
+#
+# All settings are optional. Omitted keys use the compiled-in defaults.
+# CLI flags always override values set in this file.
+#
+# Hot-reload (no restart needed):
+#   systemctl reload webtraffik     # reloads mgmt-allow-file only
+#
+# Full restart required for all other changes:
+#   systemctl restart webtraffik
+
+# ── Capture mode ──────────────────────────────────────────────────────────────
+#
+# "hybrid"    (default) — eBPF XDP for ban enforcement + Go listeners for all
+#             ports. Best balance of kernel-speed banning and protocol emulation.
+# "ebpf-only" — XDP handles all traffic; Go listeners are not started.
+#             Ban enforcement and telemetry at line rate. FTP/SSH/etc. banners
+#             are NOT sent (no Go-side connection handling).
+# "go-only"   — Pure userspace; no eBPF. Original behavior, always available
+#             even on kernels < 5.10 or without CAP_BPF.
+#
+# capture-mode: hybrid
+
+# ── eBPF interface ────────────────────────────────────────────────────────────
+#
+# Network interface to attach the XDP program to.
+# Omit to auto-detect from the default route (works in most cases).
+# Example: eth0, ens3, enp3s0
+#
+# ebpf-iface: eth0
+
+# ── Management ports ──────────────────────────────────────────────────────────
+#
+# Comma-separated ports that are never touched by eBPF ban enforcement or
+# telemetry. These ports remain fully accessible even when an IP is banned.
+# Always include your SSH port and the dashboard port.
+#
+# mgmt-ports: "8999,22"
+
+# ── Management IP allowlist ───────────────────────────────────────────────────
+#
+# Path to a plain-text file containing one IPv4 address per line.
+# IPs in this file bypass all eBPF-level restrictions.
+# The file is re-read on SIGHUP (systemctl reload webtraffik) — no restart needed.
+#
+# Example file contents:
+#   192.168.1.10
+#   10.0.0.5
+#
+# mgmt-allow-file: /etc/webtraffik/allow.txt
+
+# ── Disable specific ports ────────────────────────────────────────────────────
+#
+# Comma-separated list of capture ports to skip binding entirely.
+# Useful when a port is already in use by a real service on the host
+# (e.g. a real SSH daemon on 22, or a real web server on 80).
+# Update your firewall rules accordingly after disabling ports.
+#
+# disable-ports: ""
+
+# ── Disable rgeo reverse geocoder ────────────────────────────────────────────
+#
+# The rgeo library (NaturalEarth datasets + S2 spatial index) provides city
+# names for the ~5-10% of IPs where MaxMind has coordinates but no city data.
+# Loading it takes ~2.5 minutes on slow hardware (e.g. Raspberry Pi).
+# Set to true to skip it and accept missing city names on those IPs.
+#
+# disable-rgeo: false

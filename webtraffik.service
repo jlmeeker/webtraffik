@@ -8,19 +8,29 @@ Type=simple
 User=webtraffik
 Group=webtraffik
 
-# Binary and working directory (GeoLite2 DB stored here)
-# To disable specific ports (e.g. if they conflict with real services), add
-# -disable-ports to ExecStart. Update firewall.sh with DISABLE_PORTS= to match.
-# Example: ExecStart=/usr/local/bin/webtraffik -disable-ports=22,80,443
+# Binary and working directory (GeoLite2 DB stored here).
+# Config is auto-loaded from /etc/webtraffik/config.yaml if present.
+# CLI flags always override config file values. Examples:
+#   ExecStart=/usr/local/bin/webtraffik -disable-ports=22,80,443
+#   ExecStart=/usr/local/bin/webtraffik -config=/etc/webtraffik/config.yaml
+# Generate /sys/kernel/btf/vmlinux from DWARF debug info if missing.
+# Required for eBPF CO-RE on kernels without built-in BTF (e.g. Raspberry Pi OS).
+# Runs as root (+), exits 0 always — failure is non-fatal (app falls back to go-only).
+ExecStartPre=+/usr/local/lib/webtraffik/gen-btf.sh
 ExecStart=/usr/local/bin/webtraffik
 WorkingDirectory=/var/lib/webtraffik
 
+# Allow the service to read the config directory.
+ReadOnlyPaths=/etc/webtraffik
+
 # Allow binding to ports <1024 without root.
-# For eBPF hybrid/ebpf-only modes, also add CAP_BPF and CAP_NET_ADMIN:
-#   AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_BPF CAP_NET_ADMIN
-#   CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_BPF CAP_NET_ADMIN
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+# CAP_BPF and CAP_NET_ADMIN are required for eBPF hybrid/ebpf-only modes.
+# The app automatically falls back to go-only if eBPF is unavailable.
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_BPF CAP_NET_ADMIN CAP_SYS_ADMIN
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_BPF CAP_NET_ADMIN CAP_SYS_ADMIN
+
+# Required for eBPF map allocation on kernels < 5.11
+LimitMEMLOCK=infinity
 
 # Restart on failure
 Restart=on-failure

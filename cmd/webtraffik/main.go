@@ -139,23 +139,66 @@ var capturePorts = []int{
 func main() {
 	log.Println("webTraffik starting...")
 
-	// Parse CLI flags.
-	disablePortsFlag := flag.String("disable-ports", "",
+	// -config flag must be parsed before flag.Parse() so we can load the config
+	// file and use it as the default source for all other flags.
+	// We do a lightweight pre-scan of os.Args rather than registering -config
+	// with the flag package (which would require two Parse passes).
+	configPath := ""
+	args := os.Args[1:]
+	for i, arg := range args {
+		if arg == "-config" || arg == "--config" {
+			if i+1 < len(args) {
+				configPath = args[i+1]
+			}
+		} else if len(arg) > 8 && arg[:8] == "-config=" {
+			configPath = arg[8:]
+		} else if len(arg) > 9 && arg[:9] == "--config=" {
+			configPath = arg[9:]
+		}
+	}
+
+	// Load config file (silent no-op if the file does not exist).
+	cfgPath := resolveConfigPath(configPath)
+	var cfg Config
+	if cfgPath != "" {
+		var cfgErr error
+		cfg, cfgErr = loadConfig(cfgPath)
+		if cfgErr != nil {
+			log.Fatalf("config: failed to load %q: %v", cfgPath, cfgErr)
+		}
+	}
+
+	// Register CLI flags. Defaults come from the config file where set.
+	captureModeDef := "hybrid"
+	if cfg.CaptureMode != "" {
+		captureModeDef = cfg.CaptureMode
+	}
+	disablePortsDef := cfg.DisablePorts
+	mgmtPortsDef := "8999,22"
+	if cfg.MgmtPorts != "" {
+		mgmtPortsDef = cfg.MgmtPorts
+	}
+
+	disablePortsFlag := flag.String("disable-ports", disablePortsDef,
 		"Comma-separated list of ports to skip binding (e.g. 22,80,443). "+
 			"These ports will not be listened on. Update your firewall rules accordingly.")
-	disableRgeo := flag.Bool("disable-rgeo", false,
+	disableRgeo := flag.Bool("disable-rgeo", cfg.DisableRgeo,
 		"Skip loading the rgeo reverse geocoder (saves ~2 min startup on slow hardware). "+
 			"City names will be missing for ~5-10%% of IPs where MaxMind has no city data.")
-	captureModeFlag := flag.String("capture-mode", "hybrid",
+	captureModeFlag := flag.String("capture-mode", captureModeDef,
 		`Capture mode: "hybrid" (default, eBPF bans + Go listeners), `+
 			`"ebpf-only" (XDP telemetry, no Go listeners), `+
 			`"go-only" (pure userspace, no eBPF).`)
-	ebpfIfaceFlag := flag.String("ebpf-iface", "",
+	ebpfIfaceFlag := flag.String("ebpf-iface", cfg.EBPFIface,
 		"Network interface for eBPF XDP attach (default: auto-detect from default route).")
-	mgmtPortsFlag := flag.String("mgmt-ports", "8999,22",
+	mgmtPortsFlag := flag.String("mgmt-ports", mgmtPortsDef,
 		"Comma-separated management ports that bypass eBPF ban enforcement and telemetry.")
-	mgmtAllowFileFlag := flag.String("mgmt-allow-file", "",
+	mgmtAllowFileFlag := flag.String("mgmt-allow-file", cfg.MgmtAllowFile,
 		"Path to file listing allowed management IPs, one IPv4 per line (optional).")
+	// -config is documented here so it appears in -help output.
+	flag.String("config", "",
+		"Path to YAML config file (default: /etc/webtraffik/config.yaml if it exists). "+
+			"CLI flags always override config file values.")
 	flag.Parse()
 
 	// Build a set of disabled ports from the flag value.
@@ -310,6 +353,34 @@ func main() {
 	// In ebpf-only mode the XDP program handles telemetry; no Go listeners
 	// are spawned (service emulation / banners are unavailable in this mode).
 	if captureMode != ebpf.ModeEBPFOnly {
+		// Build the set of ports covered by Go listeners so pumpEBPFEvents
+		// can skip them and avoid double-counting in hybrid mode.
+		listenedPorts := make(map[int]bool)
+		for _, port := range capturePorts {
+			if !disabledPorts[port] {
+				listenedPorts[port] = true
+			}
+		}
+		for _, svc := range services.TCPServices {
+			if !disabledPorts[svc.Port] {
+				listenedPorts[svc.Port] = true
+			}
+		}
+		for _, port := range services.UDPServicePorts {
+			if !disabledPorts[port] {
+				listenedPorts[port] = true
+			}
+		}
+		if !disabledPorts[services.MinecraftPort] {
+			listenedPorts[services.MinecraftPort] = true
+		}
+		if !disabledPorts[services.LightningPort] {
+			listenedPorts[services.LightningPort] = true
+		}
+		if !disabledPorts[services.VNCPort] {
+			listenedPorts[services.VNCPort] = true
+		}
+
 		// HTTP capture ports.
 		for _, port := range capturePorts {
 			if disabledPorts[port] {
@@ -344,10 +415,16 @@ func main() {
 		if !disabledPorts[services.VNCPort] {
 			go services.StartVNCListener(appLimiter.IsBanned, handleCapture)
 		}
+
+		// In hybrid mode, also pump eBPF events for ports without Go listeners
+		// (unknown/unlisted ports that XDP sees but no listener handles).
+		if appEBPF.IsActive() {
+			go pumpEBPFEvents(listenedPorts)
+		}
 	} else {
 		log.Printf("ebpf-only mode: Go listeners not started (service emulation unavailable)")
-		// In ebpf-only mode, pump eBPF perf events into the hub pipeline.
-		go pumpEBPFEvents()
+		// In ebpf-only mode all events come from XDP — forward everything.
+		go pumpEBPFEvents(nil)
 	}
 
 	// Dashboard server.
@@ -713,13 +790,20 @@ func startDashboardServer() {
 }
 
 // pumpEBPFEvents drains appEBPF.EventCh and routes each event into the
-// standard handleCapture pipeline. Used in ebpf-only mode where no Go
-// listeners are spawned and all connection events come from the XDP perf buffer.
-func pumpEBPFEvents() {
+// standard handleCapture pipeline.
+//
+// listenedPorts is the set of ports that already have Go listeners — events
+// for those ports are handled by the listener itself and must be skipped here
+// to avoid double-counting. Pass a nil or empty map to forward all events
+// (ebpf-only mode).
+func pumpEBPFEvents(listenedPorts map[int]bool) {
 	for ev := range appEBPF.EventCh {
 		if ev.Dropped {
-			// Dropped packets were already blocked at XDP_DROP; skip capture pipeline
-			// but we could log them in future if desired.
+			// Dropped packets were blocked at XDP_DROP; nothing to record.
+			continue
+		}
+		if listenedPorts[int(ev.DstPort)] {
+			// Go listener will handle this event — skip to avoid double-counting.
 			continue
 		}
 		go handleCapture(ev.SrcIP.String(), fmt.Sprintf("%d", ev.DstPort), "tcp", nil)
