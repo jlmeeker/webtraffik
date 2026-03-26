@@ -402,6 +402,82 @@ function renderCharts(metrics, events) {
   }
 }
 
+/* ─────────────────────────────────────── eBPF stats ── */
+async function renderEBPFStats() {
+  const row = document.getElementById('ebpf-stats-row');
+  let stats;
+  try {
+    const resp = await fetch('/api/ebpf/stats');
+    if (!resp.ok) return;
+    stats = await resp.json();
+  } catch(e) { return; }
+
+  if (!stats || !stats.enabled) { row.style.display = 'none'; return; }
+
+  row.style.display = '';
+
+  // ── Doughnut: passed vs dropped ──
+  if (charts.ebpfDisposition) { charts.ebpfDisposition.destroy(); delete charts.ebpfDisposition; }
+  const total = stats.packets_passed + stats.packets_dropped;
+  charts.ebpfDisposition = new Chart(document.getElementById('chart-ebpf-disposition'), {
+    type: 'doughnut',
+    data: {
+      labels: ['Passed', 'Dropped (banned)'],
+      datasets: [{
+        data: [stats.packets_passed, stats.packets_dropped],
+        backgroundColor: ['rgba(79,195,247,0.7)', 'rgba(239,83,80,0.7)'],
+        borderColor: ['#4fc3f7', '#ef5350'],
+        borderWidth: 2,
+      }]
+    },
+    options: {
+      ...CHART_DEFAULTS,
+      scales: {},
+      cutout: '60%',
+      plugins: {
+        ...CHART_DEFAULTS.plugins,
+        tooltip: {
+          ...CHART_DEFAULTS.plugins.tooltip,
+          callbacks: {
+            label: ctx => {
+              const val = ctx.parsed;
+              const pct = total > 0 ? ((val / total) * 100).toFixed(1) : '0.0';
+              return ` ${val.toLocaleString()} (${pct}%)`;
+            }
+          }
+        }
+      }
+    }
+  });
+
+  // ── Key-value rows ──
+  function fmtNum(n) {
+    if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+    return String(n);
+  }
+  function fmtUptime(s) {
+    if (s < 60)   return s + 's';
+    if (s < 3600) return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+    return h + 'h ' + m + 'm';
+  }
+  const dropPct = total > 0 ? ((stats.packets_dropped / total) * 100).toFixed(2) + '%' : '0.00%';
+  const rows = [
+    ['Mode',        stats.mode.replace('ebpf-only','eBPF Only').replace('hybrid','Hybrid').replace('go-only','Go Only')],
+    ['Interface',   stats.interface || '—'],
+    ['Uptime',      fmtUptime(stats.uptime_seconds)],
+    ['Passed',      fmtNum(stats.packets_passed)],
+    ['Dropped',     fmtNum(stats.packets_dropped) + ' (' + dropPct + ')'],
+    ['Active Bans', String(stats.bans_active)],
+  ];
+  const container = document.getElementById('ebpf-kv-rows');
+  container.innerHTML = rows.map(([k, v]) =>
+    `<div class="ebpf-row"><span class="ebpf-label">${k}</span><span class="ebpf-val">${v}</span></div>`
+  ).join('');
+}
+
 /* ─────────────────────────────────────────── Result table ── */
 function renderTable(events) {
   const tbody = document.getElementById('result-tbody');
@@ -469,7 +545,7 @@ async function runQuery() {
   if (to)   metricParams.set('to',   localDateTimeToUTC(to));
 
   try {
-    // Fetch both endpoints in parallel
+    // Fetch all endpoints in parallel
     const [histResp, metricResp] = await Promise.all([
       fetch('/api/history?' + histParams.toString()),
       fetch('/api/metrics?' + metricParams.toString()),
@@ -480,6 +556,9 @@ async function runQuery() {
 
     const events  = await histResp.json();
     const metrics = await metricResp.json();
+
+    // eBPF stats rendered independently (non-fatal if unavailable)
+    renderEBPFStats();
 
     // Compute total connections from metrics
     const totalConns = (metrics.connections || []).reduce((s, c) => s + c.value, 0);
