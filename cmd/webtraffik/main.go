@@ -353,6 +353,34 @@ func main() {
 	// In ebpf-only mode the XDP program handles telemetry; no Go listeners
 	// are spawned (service emulation / banners are unavailable in this mode).
 	if captureMode != ebpf.ModeEBPFOnly {
+		// Build the set of ports covered by Go listeners so pumpEBPFEvents
+		// can skip them and avoid double-counting in hybrid mode.
+		listenedPorts := make(map[int]bool)
+		for _, port := range capturePorts {
+			if !disabledPorts[port] {
+				listenedPorts[port] = true
+			}
+		}
+		for _, svc := range services.TCPServices {
+			if !disabledPorts[svc.Port] {
+				listenedPorts[svc.Port] = true
+			}
+		}
+		for _, port := range services.UDPServicePorts {
+			if !disabledPorts[port] {
+				listenedPorts[port] = true
+			}
+		}
+		if !disabledPorts[services.MinecraftPort] {
+			listenedPorts[services.MinecraftPort] = true
+		}
+		if !disabledPorts[services.LightningPort] {
+			listenedPorts[services.LightningPort] = true
+		}
+		if !disabledPorts[services.VNCPort] {
+			listenedPorts[services.VNCPort] = true
+		}
+
 		// HTTP capture ports.
 		for _, port := range capturePorts {
 			if disabledPorts[port] {
@@ -387,10 +415,16 @@ func main() {
 		if !disabledPorts[services.VNCPort] {
 			go services.StartVNCListener(appLimiter.IsBanned, handleCapture)
 		}
+
+		// In hybrid mode, also pump eBPF events for ports without Go listeners
+		// (unknown/unlisted ports that XDP sees but no listener handles).
+		if appEBPF.IsActive() {
+			go pumpEBPFEvents(listenedPorts)
+		}
 	} else {
 		log.Printf("ebpf-only mode: Go listeners not started (service emulation unavailable)")
-		// In ebpf-only mode, pump eBPF perf events into the hub pipeline.
-		go pumpEBPFEvents()
+		// In ebpf-only mode all events come from XDP — forward everything.
+		go pumpEBPFEvents(nil)
 	}
 
 	// Dashboard server.
@@ -756,13 +790,20 @@ func startDashboardServer() {
 }
 
 // pumpEBPFEvents drains appEBPF.EventCh and routes each event into the
-// standard handleCapture pipeline. Used in ebpf-only mode where no Go
-// listeners are spawned and all connection events come from the XDP perf buffer.
-func pumpEBPFEvents() {
+// standard handleCapture pipeline.
+//
+// listenedPorts is the set of ports that already have Go listeners — events
+// for those ports are handled by the listener itself and must be skipped here
+// to avoid double-counting. Pass a nil or empty map to forward all events
+// (ebpf-only mode).
+func pumpEBPFEvents(listenedPorts map[int]bool) {
 	for ev := range appEBPF.EventCh {
 		if ev.Dropped {
-			// Dropped packets were already blocked at XDP_DROP; skip capture pipeline
-			// but we could log them in future if desired.
+			// Dropped packets were blocked at XDP_DROP; nothing to record.
+			continue
+		}
+		if listenedPorts[int(ev.DstPort)] {
+			// Go listener will handle this event — skip to avoid double-counting.
 			continue
 		}
 		go handleCapture(ev.SrcIP.String(), fmt.Sprintf("%d", ev.DstPort), "tcp", nil)
