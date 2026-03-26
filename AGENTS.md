@@ -146,6 +146,7 @@ perf.Reader (internal/ebpf/events.go)
 | `cmd/webtraffik/services.go` | TCP service port emulation (`tcpServices` with banners for FTP, SSH, Telnet, SMTP, etc.) and UDP port capture (`udpServicePorts`) |
 | `SERVICES.md` | Detailed reference of all emulated TCP/UDP services and their protocol banners; must be kept in sync with `services.go` |
 | `cmd/webtraffik/db.go` | SQLite open/close, schema creation, `insert()`, `loadHistory()`, metrics table schema, `upsertMetrics()`, `queryMetrics()`, `backfillMetrics()` |
+| `cmd/webtraffik/config.go` | `Config` struct (YAML config file schema), `loadConfig()` (reads `/etc/webtraffik/config.yaml`), `resolveConfigPath()` (auto-detect or explicit `-config` flag) |
 | `cmd/webtraffik/metrics.go` | `metricsCache` struct, in-memory hourly-bucketed metrics aggregation, `Record()`, `RecordBan()`, `flushLoop()` (5-second interval), `/api/metrics` and `/metrics` (Prometheus) handlers |
 | `internal/ebpf/manager.go` | `Manager` struct, `CaptureMode` type (`ModeHybrid`/`ModeEBPFOnly`/`ModeGoOnly`), XDP attach/detach lifecycle, `Ban()`/`Unban()` map sync, `ReloadAllowFile()`, `makeBanKey()` big-endian encoding |
 | `internal/ebpf/events.go` | `Event`/`RawEvent` structs, `parseEvent()` (LE uint32→net.IP conversion), `startEventReader()` perf buffer pump |
@@ -952,6 +953,36 @@ CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_BPF CAP_NET_ADMIN
 ```
 These are **not** added by default — add them only if deploying in hybrid or ebpf-only mode.
 
+### 8. Changing config file settings
+
+The app reads `/etc/webtraffik/config.yaml` on startup (if it exists). All CLI flags can be set here; CLI flags always override config file values.
+
+**Config file location (default):** `/etc/webtraffik/config.yaml`
+
+**All supported keys:**
+```yaml
+# capture-mode: hybrid          # "hybrid", "ebpf-only", or "go-only"
+# ebpf-iface: eth0              # Network interface for XDP attach
+# mgmt-ports: "8999,22"         # Ports that bypass eBPF ban enforcement
+# mgmt-allow-file: /etc/webtraffik/allow.txt  # Allowed management IPs file
+# disable-ports: ""             # Comma-separated ports to skip binding
+# disable-rgeo: false           # Skip rgeo reverse geocoder
+```
+
+**Using an alternate config file:**
+```bash
+webtraffik -config=/path/to/config.yaml
+```
+
+**Precedence:** CLI flags > config file values > compiled-in defaults
+
+**After changing the config file**, restart the service:
+```bash
+systemctl restart webtraffik
+```
+
+Note: `mgmt-allow-file` changes can be reloaded without restart via SIGHUP (see task 7).
+
 ---
 
 ## Notes for Agents
@@ -975,3 +1006,4 @@ These are **not** added by default — add them only if deploying in hybrid or e
 - The `ebpfBanner` interface in `internal/ratelimit/ratelimit.go` breaks the otherwise circular import between `internal/ratelimit` and `internal/ebpf`. The `Limiter` holds an `ebpfBanner` field (not `*ebpf.Manager`). `SetEBPFManager()` assigns the concrete manager after both packages are initialized in `main.go`.
 - `pumpEBPFEvents()` in `cmd/webtraffik/main.go` consumes `appEBPF.EventCh` and routes events into `handleCapture()` for geo lookup, hub broadcast, DB insert, and metrics — the same pipeline as Go-captured events. In `ebpf-only` mode this is the only event source.
 - The Makefile `build` target runs `ebpf-gen` first (via `go generate ./internal/ebpf/...`) to regenerate `capture_bpfel.go`/`capture_bpfeb.go` from `capture.bpf.c`. The generated files are committed; `vmlinux.h` is machine-specific and `.gitignore`d. `ebpf-clean` removes all generated eBPF artifacts.
+- `cmd/webtraffik/config.go` defines the `Config` struct and two functions: `loadConfig(path)` reads a YAML file (silent no-op if missing), and `resolveConfigPath(explicit)` returns either the explicit path or the first existing path from `defaultConfigPaths` (`/etc/webtraffik/config.yaml`). Config file values are used as flag *defaults* — they are applied when constructing `flag.String()`/`flag.Bool()` calls in `main()`, before `flag.Parse()`. This means CLI flags naturally win without any special override logic. The `-config` flag value is pre-scanned from `os.Args` manually (before `flag.Parse()`) so config defaults are in place when `flag.Parse()` runs.

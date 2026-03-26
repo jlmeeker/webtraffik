@@ -231,6 +231,56 @@ The dashboard port **8999** is intentionally excluded from the capture-port list
 nft list ruleset
 ```
 
+## Configuration
+
+webTraffik can be configured via a YAML file at `/etc/webtraffik/config.yaml` (created automatically by `install.sh` with all keys commented out). All CLI flags can be set here; **CLI flags always override config file values**.
+
+### Config file keys
+
+```yaml
+# Capture mode: "hybrid" (default), "ebpf-only", or "go-only"
+# capture-mode: hybrid
+
+# Network interface for eBPF XDP attach (default: auto-detect)
+# ebpf-iface: eth0
+
+# Management ports that bypass eBPF ban enforcement and telemetry
+# mgmt-ports: "8999,22"
+
+# Path to file listing allowed management IPs, one IPv4 per line
+# mgmt-allow-file: /etc/webtraffik/allow.txt
+
+# Comma-separated ports to skip binding entirely
+# disable-ports: ""
+
+# Skip loading the rgeo reverse geocoder (saves ~2 min on slow hardware)
+# disable-rgeo: false
+```
+
+### Using an alternate config file
+
+```bash
+webtraffik -config=/path/to/config.yaml
+```
+
+### Precedence
+
+CLI flags > config file values > compiled-in defaults
+
+### Hot-reloading
+
+The `mgmt-allow-file` setting can be reloaded at runtime without a restart:
+
+```bash
+systemctl reload webtraffik   # sends SIGHUP
+```
+
+All other config changes require a service restart:
+
+```bash
+systemctl restart webtraffik
+```
+
 ## File Structure
 
 ```
