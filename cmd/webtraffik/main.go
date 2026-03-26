@@ -268,7 +268,6 @@ func main() {
 		},
 	)
 	appLimiter.SetDB(appDB)
-	appLimiter.LoadBans()
 
 	// ── eBPF manager ──────────────────────────────────────────────────────────
 	// Create and start the eBPF XDP capture manager. On any attach failure
@@ -285,8 +284,10 @@ func main() {
 	defer appEBPF.Stop()
 
 	// Wire eBPF ban sync into the rate limiter so every Go-triggered ban/unban
-	// is immediately reflected in the XDP ban_map.
+	// is immediately reflected in the XDP ban_map. Must be set before LoadBans
+	// so that bans restored from the DB are also pushed into the eBPF map.
 	appLimiter.SetEBPFManager(appEBPF)
+	appLimiter.LoadBans()
 
 	// SIGHUP handler: reload mgmt allow file without restarting.
 	go func() {

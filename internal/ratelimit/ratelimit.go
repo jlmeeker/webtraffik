@@ -192,6 +192,26 @@ func (rl *Limiter) LoadBans() {
 	}
 	rl.banMu.Unlock()
 	log.Printf("ratelimit: loaded %d active ban(s) from DB", len(entries))
+
+	// Sync all loaded bans into the eBPF ban_map so XDP enforces them
+	// immediately after daemon restart.
+	if rl.ebpfMgr != nil && rl.ebpfMgr.IsActive() {
+		synced := 0
+		rl.banMu.RLock()
+		for _, e := range rl.bans {
+			remaining := time.Until(e.ExpiresAt)
+			if remaining <= 0 {
+				continue
+			}
+			if err := rl.ebpfMgr.Ban(e.IP, e.Port, remaining); err != nil {
+				log.Printf("ratelimit: failed to sync ban %s:%s to eBPF: %v", e.IP, e.Port, err)
+			} else {
+				synced++
+			}
+		}
+		rl.banMu.RUnlock()
+		log.Printf("ratelimit: synced %d ban(s) to eBPF map", synced)
+	}
 }
 
 // IsBanned returns true if the given IP is currently banned on the given port.
