@@ -125,7 +125,7 @@
     .top-left     { top: 10px; left: 10px; }
     .top-right    { top: 10px; right: 10px; }
 
-    /* Stack for left-side panels — services only */
+    /* Stack for left-side panels — services above eBPF status */
     #left-panels {
       position: absolute;
       top: 10px;
@@ -139,7 +139,7 @@
       position: static; /* override absolute; parent handles positioning */
     }
 
-    /* Stack for right-side panels — eBPF above scanners above last seen */
+    /* Stack for right-side panels — scanners above last seen */
     #right-panels {
       position: absolute;
       top: 10px;
@@ -540,12 +540,12 @@
       <h2>Top Services</h2>
       <div id="service-rows"></div>
     </div>
-  </div>
-  <div id="right-panels">
     <div id="panel-ebpf" class="corner-panel">
       <h2>Capture Mode</h2>
       <div id="ebpf-rows"></div>
     </div>
+  </div>
+  <div id="right-panels">
     <div id="panel-scanners" class="corner-panel">
       <h2>Port Scanners</h2>
       <div id="scanner-rows"></div>
