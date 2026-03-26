@@ -125,7 +125,7 @@
     .top-left     { top: 10px; left: 10px; }
     .top-right    { top: 10px; right: 10px; }
 
-    /* Stack for left-side panels — services above eBPF status */
+    /* Stack for left-side panels — services only */
     #left-panels {
       position: absolute;
       top: 10px;
@@ -139,7 +139,7 @@
       position: static; /* override absolute; parent handles positioning */
     }
 
-    /* Stack for right-side panels — banned stacks above scanners */
+    /* Stack for right-side panels — eBPF above scanners above last seen */
     #right-panels {
       position: absolute;
       top: 10px;
@@ -241,36 +241,32 @@
     .log-entry:hover { background: rgba(79,195,247,0.08); }
     .log-entry.arc-flash { background: rgba(79,195,247,0.22); transition: background 0.15s; }
 
-    /* ── Banned IPs panel ── */
-    .ban-row {
+    /* ── Last Seen IPs panel ── */
+    .lastseen-row {
       display: flex;
-      flex-direction: column;
-      padding: 4px 10px;
-      gap: 1px;
-      border-bottom: 1px solid rgba(239,83,80,0.12);
-      animation: fadeIn 0.3s ease;
+      align-items: center;
+      padding: 3px 10px;
+      cursor: pointer;
+      transition: background 0.15s;
     }
-    .ban-row:last-child { border-bottom: none; }
-    .ban-ip {
-      font-size: 0.68rem;
-      color: #ef5350;
+    .lastseen-row:hover { background: rgba(79,195,247,0.10); }
+    .lastseen-ip {
+      font-size: 0.66rem;
+      color: #a0bcd8;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      flex: 1;
+      font-family: 'Courier New', monospace;
     }
-    .ban-meta {
+    .lastseen-cc {
       font-size: 0.62rem;
       color: #6a8aaa;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+      margin-left: 6px;
+      flex-shrink: 0;
     }
-    .ban-expire {
-      font-size: 0.60rem;
-      color: #4a6a88;
-    }
-    #panel-banned h2 { color: #ef5350; border-bottom-color: rgba(239,83,80,0.25); }
-    #panel-banned .ban-empty {
+    #panel-lastseen h2 { color: #4fc3f7; border-bottom-color: rgba(79,195,247,0.25); }
+    #panel-lastseen .lastseen-empty {
       font-size: 0.65rem;
       color: #4a6a88;
       padding: 6px 10px;
@@ -544,19 +540,19 @@
       <h2>Top Services</h2>
       <div id="service-rows"></div>
     </div>
+  </div>
+  <div id="right-panels">
     <div id="panel-ebpf" class="corner-panel">
       <h2>Capture Mode</h2>
       <div id="ebpf-rows"></div>
     </div>
-  </div>
-  <div id="right-panels">
-    <div id="panel-banned" class="corner-panel">
-      <h2>Banned IPs</h2>
-      <div id="banned-rows"></div>
-    </div>
     <div id="panel-scanners" class="corner-panel">
       <h2>Port Scanners</h2>
       <div id="scanner-rows"></div>
+    </div>
+    <div id="panel-lastseen" class="corner-panel">
+      <h2>Last Seen</h2>
+      <div id="lastseen-rows"></div>
     </div>
   </div>
   <!-- Magnifier inset -->
