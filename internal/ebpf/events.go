@@ -14,18 +14,40 @@ import (
 // It mirrors the C `struct event` exactly (8 bytes, host byte order after
 // bpf_perf_event_output which copies raw bytes).
 type RawEvent struct {
-	SrcIP   uint32 // IPv4 source address (host byte order)
-	DstPort uint16 // destination port (host byte order)
-	Dropped uint8  // 1 = XDP_DROP (banned), 0 = XDP_PASS
-	_       uint8  // padding
+	SrcIP    uint32 // IPv4 source address (host byte order)
+	DstPort  uint16 // destination port (host byte order)
+	Dropped  uint8  // 1 = XDP_DROP (banned), 0 = XDP_PASS
+	Protocol uint8  // IPPROTO_TCP (6), IPPROTO_UDP (17), or IPPROTO_ICMP (1)
+}
+
+// IP protocol numbers used by the XDP program.
+const (
+	ProtoICMP = 1
+	ProtoTCP  = 6
+	ProtoUDP  = 17
+)
+
+// protoString converts an IP protocol number to a lowercase string.
+func protoString(p uint8) string {
+	switch p {
+	case ProtoTCP:
+		return "tcp"
+	case ProtoUDP:
+		return "udp"
+	case ProtoICMP:
+		return "icmp"
+	default:
+		return fmt.Sprintf("proto-%d", p)
+	}
 }
 
 // Event is the Go-idiomatic parsed representation of a RawEvent.
 type Event struct {
-	SrcIP   net.IP
-	DstPort uint16
-	Dropped bool
-	Time    time.Time
+	SrcIP    net.IP
+	DstPort  uint16
+	Dropped  bool
+	Protocol string // "tcp", "udp", or "icmp"
+	Time     time.Time
 }
 
 // parseEvent converts a raw perf.Record into an Event.
@@ -36,23 +58,25 @@ func parseEvent(rec perf.Record) (Event, error) {
 	}
 	b := rec.RawSample
 	// Little-endian layout (x86/arm host byte order):
-	//   bytes 0-3: src_ip  (uint32 LE)
+	//   bytes 0-3: src_ip   (uint32 LE)
 	//   bytes 4-5: dst_port (uint16 LE)
 	//   byte  6:   dropped  (uint8)
-	//   byte  7:   _pad
+	//   byte  7:   protocol (uint8: 6=TCP, 17=UDP, 1=ICMP)
 	srcIPInt := binary.LittleEndian.Uint32(b[0:4])
 	dstPort := binary.LittleEndian.Uint16(b[4:6])
 	dropped := b[6] != 0
+	proto := b[7]
 
 	// Convert uint32 to net.IP (big-endian byte slice).
 	ip := make(net.IP, 4)
 	binary.BigEndian.PutUint32(ip, srcIPInt)
 
 	return Event{
-		SrcIP:   ip,
-		DstPort: dstPort,
-		Dropped: dropped,
-		Time:    time.Now(),
+		SrcIP:    ip,
+		DstPort:  dstPort,
+		Dropped:  dropped,
+		Protocol: protoString(proto),
+		Time:     time.Now(),
 	}, nil
 }
 

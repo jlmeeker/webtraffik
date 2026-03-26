@@ -10,6 +10,8 @@ import (
 // and the /api/services dropdown. It covers TCP service ports, UDP ports,
 // HTTP capture ports, and the Minecraft port.
 var tcpServiceNames = map[int]string{
+	// Special (no port — protocol-level events)
+	0: "ICMP",
 	// TCP service ports (banner emulation)
 	21:    "FTP",
 	22:    "SSH",

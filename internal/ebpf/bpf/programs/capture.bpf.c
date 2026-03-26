@@ -39,10 +39,10 @@ struct ban_entry {
 
 // event: emitted to userspace via the perf event array.
 struct event {
-    __u32 src_ip;   // IPv4 source address (host byte order)
-    __u16 dst_port; // destination port (host byte order)
-    __u8  dropped;  // 1 = XDP_DROP (banned), 0 = XDP_PASS
-    __u8  _pad;
+    __u32 src_ip;    // IPv4 source address (host byte order)
+    __u16 dst_port;  // destination port (host byte order)
+    __u8  dropped;   // 1 = XDP_DROP (banned), 0 = XDP_PASS
+    __u8  protocol;  // IPPROTO_TCP (6), IPPROTO_UDP (17), or IPPROTO_ICMP (1)
 };
 
 // ── eBPF Maps ────────────────────────────────────────────────────────────────
@@ -146,8 +146,22 @@ int xdp_capture(struct xdp_md *ctx) {
             return XDP_PASS;
         dst_port_net  = udp->dest;
         dst_port_host = bpf_ntohs(dst_port_net);
+    } else if (proto == IPPROTO_ICMP) {
+        // ICMP — emit telemetry event with dst_port=0, then pass.
+        // No ban or management-port check (ICMP has no port).
+        telemetry_inc(0);
+
+        struct event icmp_ev = {
+            .src_ip   = src_ip_host,
+            .dst_port = 0,
+            .dropped  = 0,
+            .protocol = proto,
+        };
+        bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
+                              &icmp_ev, sizeof(icmp_ev));
+        return XDP_PASS;
     } else {
-        // Non-TCP/UDP (ICMP etc.) — pass without telemetry
+        // Other protocols (IGMP, GRE, etc.) — pass without telemetry.
         return XDP_PASS;
     }
 
@@ -184,6 +198,7 @@ int xdp_capture(struct xdp_md *ctx) {
             .src_ip   = src_ip_host,
             .dst_port = dst_port_host,
             .dropped  = 1,
+            .protocol = proto,
         };
         bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &ev, sizeof(ev));
 
@@ -198,6 +213,7 @@ int xdp_capture(struct xdp_md *ctx) {
         .src_ip   = src_ip_host,
         .dst_port = dst_port_host,
         .dropped  = 0,
+        .protocol = proto,
     };
     bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &ev, sizeof(ev));
 

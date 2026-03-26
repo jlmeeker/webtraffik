@@ -487,8 +487,8 @@ func startCaptureListener(port int) {
 // handleCapture is the central event handler. It is called from every listener
 // type (HTTP, TCP service, UDP, special protocols).
 func handleCapture(srcIP, dstPort, protocol string, clientData []byte) {
-	// Rate-limit check: only meaningful for TCP — UDP is stateless.
-	if protocol != "udp" && !appLimiter.Record(srcIP, dstPort) {
+	// Rate-limit check: only meaningful for TCP — UDP and ICMP are stateless.
+	if protocol != "udp" && protocol != "icmp" && !appLimiter.Record(srcIP, dstPort) {
 		return
 	}
 
@@ -816,7 +816,7 @@ func pumpEBPFEvents(listenedPorts map[int]bool) {
 			// Go listener will handle this event — skip to avoid double-counting.
 			continue
 		}
-		go handleCapture(ev.SrcIP.String(), fmt.Sprintf("%d", ev.DstPort), "tcp", nil)
+		go handleCapture(ev.SrcIP.String(), fmt.Sprintf("%d", ev.DstPort), ev.Protocol, nil)
 	}
 }
 func extractIP(remoteAddr string) string {

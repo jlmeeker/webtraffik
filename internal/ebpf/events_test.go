@@ -9,13 +9,14 @@ import (
 )
 
 // buildRawRecord constructs a perf.Record with the given 8-byte wire payload.
-func buildRawRecord(srcIPInt uint32, dstPort uint16, dropped uint8) perf.Record {
+// protocol is the IP protocol number (6=TCP, 17=UDP, 1=ICMP).
+func buildRawRecord(srcIPInt uint32, dstPort uint16, dropped uint8, protocol uint8) perf.Record {
 	b := make([]byte, 8)
 	// Little-endian layout matching the C struct event:
-	//   bytes 0-3: src_ip  (uint32 LE)
+	//   bytes 0-3: src_ip   (uint32 LE)
 	//   bytes 4-5: dst_port (uint16 LE)
 	//   byte  6:   dropped
-	//   byte  7:   _pad
+	//   byte  7:   protocol
 	b[0] = byte(srcIPInt)
 	b[1] = byte(srcIPInt >> 8)
 	b[2] = byte(srcIPInt >> 16)
@@ -23,14 +24,14 @@ func buildRawRecord(srcIPInt uint32, dstPort uint16, dropped uint8) perf.Record 
 	b[4] = byte(dstPort)
 	b[5] = byte(dstPort >> 8)
 	b[6] = dropped
-	b[7] = 0
+	b[7] = protocol
 	return perf.Record{RawSample: b}
 }
 
 func TestParseEventBasic(t *testing.T) {
 	// 1.2.3.4 in little-endian uint32 = 0x04030201
 	srcIPInt := uint32(0x04030201) // LE: bytes are 01 02 03 04
-	rec := buildRawRecord(srcIPInt, 80, 0)
+	rec := buildRawRecord(srcIPInt, 80, 0, ProtoTCP)
 
 	ev, err := parseEvent(rec)
 	if err != nil {
@@ -47,6 +48,9 @@ func TestParseEventBasic(t *testing.T) {
 	if ev.Dropped {
 		t.Error("Dropped should be false")
 	}
+	if ev.Protocol != "tcp" {
+		t.Errorf("Protocol = %q, want \"tcp\"", ev.Protocol)
+	}
 	// Timestamp must be recent.
 	if time.Since(ev.Time) > 5*time.Second {
 		t.Errorf("Time is stale: %v", ev.Time)
@@ -54,7 +58,7 @@ func TestParseEventBasic(t *testing.T) {
 }
 
 func TestParseEventDropped(t *testing.T) {
-	rec := buildRawRecord(0x01020304, 443, 1)
+	rec := buildRawRecord(0x01020304, 443, 1, ProtoTCP)
 	ev, err := parseEvent(rec)
 	if err != nil {
 		t.Fatalf("parseEvent: %v", err)
@@ -66,7 +70,7 @@ func TestParseEventDropped(t *testing.T) {
 
 func TestParseEventDroppedNonZero(t *testing.T) {
 	// Any non-zero value for the dropped byte should be treated as dropped.
-	rec := buildRawRecord(0x01020304, 22, 0xFF)
+	rec := buildRawRecord(0x01020304, 22, 0xFF, ProtoTCP)
 	ev, err := parseEvent(rec)
 	if err != nil {
 		t.Fatalf("parseEvent: %v", err)
@@ -88,7 +92,7 @@ func TestParseEventTooShort(t *testing.T) {
 }
 
 func TestParseEventExactlyEightBytes(t *testing.T) {
-	rec := buildRawRecord(0xC0A80101, 8080, 0) // 192.168.1.1
+	rec := buildRawRecord(0xC0A80101, 8080, 0, ProtoTCP) // 192.168.1.1
 	ev, err := parseEvent(rec)
 	if err != nil {
 		t.Fatalf("parseEvent: %v", err)
@@ -112,7 +116,7 @@ func TestParseEventExtraBytes(t *testing.T) {
 func TestParseEventIPConversion(t *testing.T) {
 	// Verify IP conversion for a well-known address: 8.8.8.8
 	// In LE uint32: 0x08080808 (symmetric, same in both orderings)
-	rec := buildRawRecord(0x08080808, 53, 0)
+	rec := buildRawRecord(0x08080808, 53, 0, ProtoUDP)
 	ev, err := parseEvent(rec)
 	if err != nil {
 		t.Fatalf("parseEvent: %v", err)
@@ -125,12 +129,48 @@ func TestParseEventIPConversion(t *testing.T) {
 
 func TestParseEventHighPort(t *testing.T) {
 	// Port 65535 = 0xFFFF, LE bytes: FF FF
-	rec := buildRawRecord(0x7F000001, 65535, 0)
+	rec := buildRawRecord(0x7F000001, 65535, 0, ProtoTCP)
 	ev, err := parseEvent(rec)
 	if err != nil {
 		t.Fatalf("parseEvent: %v", err)
 	}
 	if ev.DstPort != 65535 {
 		t.Errorf("DstPort = %d, want 65535", ev.DstPort)
+	}
+}
+
+func TestParseEventProtocolUDP(t *testing.T) {
+	rec := buildRawRecord(0x01020304, 53, 0, ProtoUDP)
+	ev, err := parseEvent(rec)
+	if err != nil {
+		t.Fatalf("parseEvent: %v", err)
+	}
+	if ev.Protocol != "udp" {
+		t.Errorf("Protocol = %q, want \"udp\"", ev.Protocol)
+	}
+}
+
+func TestParseEventProtocolICMP(t *testing.T) {
+	rec := buildRawRecord(0x01020304, 0, 0, ProtoICMP)
+	ev, err := parseEvent(rec)
+	if err != nil {
+		t.Fatalf("parseEvent: %v", err)
+	}
+	if ev.Protocol != "icmp" {
+		t.Errorf("Protocol = %q, want \"icmp\"", ev.Protocol)
+	}
+	if ev.DstPort != 0 {
+		t.Errorf("DstPort = %d, want 0 for ICMP", ev.DstPort)
+	}
+}
+
+func TestParseEventProtocolUnknown(t *testing.T) {
+	rec := buildRawRecord(0x01020304, 80, 0, 47) // GRE = 47
+	ev, err := parseEvent(rec)
+	if err != nil {
+		t.Fatalf("parseEvent: %v", err)
+	}
+	if ev.Protocol != "proto-47" {
+		t.Errorf("Protocol = %q, want \"proto-47\"", ev.Protocol)
 	}
 }
