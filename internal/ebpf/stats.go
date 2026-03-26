@@ -82,8 +82,10 @@ func (m *Manager) Snapshot() Stats {
 
 	activeBans := 0
 	if m.objs != nil {
-		// Count entries in ban_map.
-		var k, v interface{}
+		// Count entries in ban_map using typed key/value structs.
+		// interface{} does not work with the cilium/ebpf iterator.
+		var k banKey
+		var v banEntry
 		iter := m.objs.BanMap.Iterate()
 		for iter.Next(&k, &v) {
 			activeBans++
