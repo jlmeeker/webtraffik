@@ -737,21 +737,15 @@
     incoming.forEach(b => {
       const key = `${b.ip}|${b.port}`;
       seenKeys.add(key);
-      const remaining = formatTimeRemaining(b.expires_at);
       if (existingRows.has(key)) {
-        // Update only the expiry countdown — IP/port/service never change
-        const row = existingRows.get(key);
-        const expireEl = row.querySelector('.ban-expire');
-        if (expireEl) expireEl.textContent = `expires in ${remaining}`;
+        // Nothing to update — IP and CC never change for a ban row
       } else {
         // New row
         const row = document.createElement('div');
         row.className = 'ban-row';
         row.dataset.key = key;
-        row.innerHTML =
-          `<div class="ban-ip">${b.ip}</div>` +
-          `<div class="ban-meta">port ${b.port} &mdash; ${b.service || 'unknown'}</div>` +
-          `<div class="ban-expire">expires in ${remaining}</div>`;
+        const cc = b.cc ? ` (${b.cc})` : '';
+        row.innerHTML = `<div class="ban-ip">${b.ip}${cc}</div>`;
         bannedRowsEl.appendChild(row);
       }
     });

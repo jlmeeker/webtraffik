@@ -268,6 +268,13 @@ func main() {
 		},
 	)
 	appLimiter.SetDB(appDB)
+	appLimiter.SetGeoCC(func(ip string) string {
+		loc, err := appGeo.Lookup(ip)
+		if err != nil {
+			return ""
+		}
+		return loc.CountryCode
+	})
 
 	// ── eBPF manager ──────────────────────────────────────────────────────────
 	// Create and start the eBPF XDP capture manager. On any attach failure
