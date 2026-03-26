@@ -113,8 +113,8 @@ ExecStart=/usr/local/bin/webtraffik
 # To override individual flags: ExecStart=/usr/local/bin/webtraffik -disable-ports=22
 WorkingDirectory=/var/lib/webtraffik
 
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_BPF CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_BPF CAP_NET_ADMIN
 
 Restart=on-failure
 RestartSec=5s
