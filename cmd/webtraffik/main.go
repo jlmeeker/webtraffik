@@ -268,13 +268,6 @@ func main() {
 		},
 	)
 	appLimiter.SetDB(appDB)
-	appLimiter.SetGeoCC(func(ip string) string {
-		loc, err := appGeo.Lookup(ip)
-		if err != nil {
-			return ""
-		}
-		return loc.CountryCode
-	})
 
 	// ── eBPF manager ──────────────────────────────────────────────────────────
 	// Create and start the eBPF XDP capture manager. On any attach failure
@@ -290,11 +283,9 @@ func main() {
 	}
 	defer appEBPF.Stop()
 
-	// Wire eBPF ban sync into the rate limiter so every Go-triggered ban/unban
-	// is immediately reflected in the XDP ban_map. Must be set before LoadBans
-	// so that bans restored from the DB are also pushed into the eBPF map.
+	// Wire eBPF ban sync — must be set before LoadBans (called below after geo
+	// is ready) so that bans restored from DB are pushed into the eBPF map.
 	appLimiter.SetEBPFManager(appEBPF)
-	appLimiter.LoadBans()
 
 	// SIGHUP handler: reload mgmt allow file without restarting.
 	go func() {
@@ -339,6 +330,17 @@ func main() {
 		log.Fatalf("Failed to open GeoLite2 database: %v", err)
 	}
 	defer appGeo.Close()
+
+	// Wire geo CC lookup and load persisted bans now that appGeo is ready.
+	// SetGeoCC must be called before LoadBans so restored bans get annotated.
+	appLimiter.SetGeoCC(func(ip string) string {
+		loc, err := appGeo.Lookup(ip)
+		if err != nil {
+			return ""
+		}
+		return loc.CountryCode
+	})
+	appLimiter.LoadBans()
 
 	// Discover our public IP and geolocate it.
 	selfIP, err = iputil.DiscoverPublicIP()
