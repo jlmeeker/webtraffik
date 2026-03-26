@@ -229,6 +229,19 @@
     .summary-table td.highlight { color: #dce8f8; }
     .summary-table td.num { color: #ffb74d; text-align: right; }
     .summary-table tr:hover td { background: rgba(42, 74, 112, 0.2); }
+
+    /* ── eBPF stats key-value rows ── */
+    .ebpf-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 6px 0;
+      border-bottom: 1px solid #0f1e35;
+      font-size: 0.78rem;
+    }
+    .ebpf-row:last-child { border-bottom: none; }
+    .ebpf-label { color: #6a8aaa; text-transform: uppercase; letter-spacing: 0.06em; font-size: 0.68rem; }
+    .ebpf-val   { color: #4fc3f7; font-weight: 600; }
   </style>
 </head>
 <body>
@@ -355,7 +368,21 @@
       </div>
     </div>
 
-    <!-- Row 6: Summary table -->
+    <!-- Row 6: eBPF capture stats (shown only when eBPF is active) -->
+    <div class="chart-row halves" id="ebpf-stats-row" style="display:none">
+      <div class="chart-card">
+        <h3>eBPF Packet Disposition</h3>
+        <div class="chart-wrap" style="height:220px">
+          <canvas id="chart-ebpf-disposition"></canvas>
+        </div>
+      </div>
+      <div class="chart-card" id="ebpf-kv-card">
+        <h3>eBPF Capture Stats</h3>
+        <div id="ebpf-kv-rows" style="margin-top:12px"></div>
+      </div>
+    </div>
+
+    <!-- Row 7: Summary table -->
     <div class="chart-row full">
       <div class="chart-card" id="summary-section">
         <h3>Result Sample (most recent 200 rows)</h3>
