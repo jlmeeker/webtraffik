@@ -41,6 +41,7 @@ type BanEntry struct {
 	IP        string    `json:"ip"`
 	Port      string    `json:"port"`
 	Service   string    `json:"service"`
+	CC        string    `json:"cc,omitempty"`
 	BannedAt  time.Time `json:"banned_at"`
 	ExpiresAt time.Time `json:"expires_at"`
 }
@@ -83,8 +84,9 @@ type Limiter struct {
 	ebpfMgr         ebpfBanner // optional eBPF ban sync (nil = go-only)
 	db              *db.EventDB
 	onChange        func()
-	onBan           func(banType string) // callback to record ban metrics
-	portServiceName func(string) string  // injected to resolve port → service name
+	onBan           func(banType string)   // callback to record ban metrics
+	portServiceName func(string) string    // injected to resolve port → service name
+	geoCC           func(ip string) string // injected to resolve IP → country code (may be nil)
 }
 
 // New creates a new Limiter. portServiceName resolves a port string to a
@@ -160,6 +162,13 @@ func (rl *Limiter) SetEBPFManager(mgr ebpfBanner) {
 	rl.ebpfMgr = mgr
 }
 
+// SetGeoCC wires a country-code lookup so banned IPs are annotated with their
+// country. fn receives an IP string and returns a 2-letter CC (or "" if
+// unknown). Passing nil is safe (CC field will be empty).
+func (rl *Limiter) SetGeoCC(fn func(ip string) string) {
+	rl.geoCC = fn
+}
+
 // LoadBans seeds the in-memory ban set from the database.
 // Called once from main() after the DB is opened. Expired bans are skipped.
 func (rl *Limiter) LoadBans() {
@@ -179,10 +188,15 @@ func (rl *Limiter) LoadBans() {
 			continue
 		}
 		key := ipPortKey{e.IP, e.Port}
+		cc := ""
+		if rl.geoCC != nil {
+			cc = rl.geoCC(e.IP)
+		}
 		entry := &BanEntry{
 			IP:        e.IP,
 			Port:      e.Port,
 			Service:   e.Service,
+			CC:        cc,
 			BannedAt:  e.BannedAt,
 			ExpiresAt: e.ExpiresAt,
 		}
@@ -307,10 +321,15 @@ func (rl *Limiter) Record(ip, port string) bool {
 func (rl *Limiter) ban(ip, port string) {
 	key := ipPortKey{ip, port}
 	now := time.Now()
+	cc := ""
+	if rl.geoCC != nil {
+		cc = rl.geoCC(ip)
+	}
 	entry := &BanEntry{
 		IP:        ip,
 		Port:      port,
 		Service:   rl.portServiceName(port),
+		CC:        cc,
 		BannedAt:  now,
 		ExpiresAt: now.Add(BanCooldown),
 	}
