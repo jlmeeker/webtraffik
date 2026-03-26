@@ -122,7 +122,7 @@ func New(mode CaptureMode, iface string, mgmtPorts []uint16, allowFile string) *
 		mgmtPorts: mgmtPorts,
 		allowFile: allowFile,
 		stopCh:    make(chan struct{}),
-		EventCh:   make(chan Event, 256),
+		EventCh:   make(chan Event, 4096),
 	}
 }
 
