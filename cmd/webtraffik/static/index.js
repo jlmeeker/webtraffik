@@ -690,88 +690,114 @@
 
   function renderSidebar() {
     renderServiceStats();
+    renderLastSeen();
   }
 
-  // ── Banned IPs panel ─────────────────────────────────────────────────────
-  const bannedRowsEl = document.getElementById('banned-rows');
+  // ── Last Seen IPs panel ───────────────────────────────────────────────────
+  const lastSeenRowsEl = document.getElementById('lastseen-rows');
+  const LAST_SEEN_MAX = 25;
+  // Ordered array of { ip, cc, lat, lon, city }, most recent first.
+  const lastSeenList = [];
+  const lastSeenIndex = new Map(); // ip -> index in lastSeenList
+  let lastSeenDirty = false;
 
-  function formatTimeRemaining(expiresAt) {
-    const ms = new Date(expiresAt) - Date.now();
-    if (ms <= 0) return 'expiring';
-    const totalSec = Math.floor(ms / 1000);
-    const h = Math.floor(totalSec / 3600);
-    const m = Math.floor((totalSec % 3600) / 60);
-    const s = totalSec % 60;
-    if (h > 0) return `${h}h ${m}m`;
-    if (m > 0) return `${m}m ${s}s`;
-    return `${s}s`;
+  function updateLastSeen(ev) {
+    if (!ev.src_ip) return;
+    const ip = ev.src_ip;
+    const idx = lastSeenIndex.get(ip);
+    const entry = { ip, cc: ev.src_cc || '', lat: ev.src_lat, lon: ev.src_lon, city: ev.src_city || '' };
+    if (idx !== undefined) {
+      // Move to front
+      lastSeenList.splice(idx, 1);
+    }
+    lastSeenList.unshift(entry);
+    // Trim to max
+    while (lastSeenList.length > LAST_SEEN_MAX) {
+      const removed = lastSeenList.pop();
+      lastSeenIndex.delete(removed.ip);
+    }
+    // Rebuild index
+    lastSeenIndex.clear();
+    lastSeenList.forEach((e, i) => lastSeenIndex.set(e.ip, i));
+    lastSeenDirty = true;
   }
 
-  function renderBannedPanel(bans) {
-    // Diff against current DOM rows instead of wiping and rebuilding, so the
-    // panel doesn't visibly flash on every 10-second poll.
-    const incoming = bans || [];
+  function renderLastSeen() {
+    if (!lastSeenDirty) return;
+    lastSeenDirty = false;
 
-    // Remove stale "none" placeholder if real rows are coming in
-    const emptyEl = bannedRowsEl.querySelector('.ban-empty');
-    if (emptyEl && incoming.length > 0) emptyEl.remove();
-
-    if (incoming.length === 0) {
-      if (!bannedRowsEl.querySelector('.ban-empty')) {
-        bannedRowsEl.innerHTML = '';
+    if (lastSeenList.length === 0) {
+      if (!lastSeenRowsEl.querySelector('.lastseen-empty')) {
+        lastSeenRowsEl.innerHTML = '';
         const empty = document.createElement('div');
-        empty.className = 'ban-empty';
-        empty.textContent = 'none';
-        bannedRowsEl.appendChild(empty);
+        empty.className = 'lastseen-empty';
+        empty.textContent = 'waiting\u2026';
+        lastSeenRowsEl.appendChild(empty);
       }
       return;
     }
 
-    // Index existing rows by key
-    const existingRows = new Map();
-    bannedRowsEl.querySelectorAll('.ban-row[data-key]').forEach(el => {
-      existingRows.set(el.dataset.key, el);
+    // Index existing rows
+    const existing = new Map();
+    lastSeenRowsEl.querySelectorAll('.lastseen-row[data-ip]').forEach(el => {
+      existing.set(el.dataset.ip, el);
     });
 
-    const seenKeys = new Set();
-    incoming.forEach(b => {
-      const key = `${b.ip}|${b.port}`;
-      seenKeys.add(key);
-      if (existingRows.has(key)) {
-        // Nothing to update — IP and CC never change for a ban row
+    // Remove empty placeholder
+    const emptyEl = lastSeenRowsEl.querySelector('.lastseen-empty');
+    if (emptyEl) emptyEl.remove();
+
+    // Build new order: reuse existing rows or create new ones
+    const frag = document.createDocumentFragment();
+    const seenIps = new Set();
+    lastSeenList.forEach(entry => {
+      seenIps.add(entry.ip);
+      let row = existing.get(entry.ip);
+      if (!row) {
+        row = document.createElement('div');
+        row.className = 'lastseen-row';
+        row.dataset.ip = entry.ip;
+        row.innerHTML =
+          `<span class="lastseen-ip">${entry.ip}</span>` +
+          `<span class="lastseen-cc">${entry.cc}</span>`;
+        row.addEventListener('click', () => {
+          startTraceroute(entry.ip, { lat: entry.lat, lon: entry.lon, city: entry.city, cc: entry.cc });
+        });
       } else {
-        // New row
-        const row = document.createElement('div');
-        row.className = 'ban-row';
-        row.dataset.key = key;
-        const cc = b.cc ? ` (${b.cc})` : '';
-        row.innerHTML = `<div class="ban-ip">${b.ip}${cc}</div>`;
-        bannedRowsEl.appendChild(row);
+        // Update CC in case it changed (unlikely but safe)
+        const ccEl = row.querySelector('.lastseen-cc');
+        if (ccEl) ccEl.textContent = entry.cc;
       }
+      frag.appendChild(row);
     });
 
     // Remove rows no longer in the list
-    existingRows.forEach((el, key) => {
-      if (!seenKeys.has(key)) el.remove();
+    existing.forEach((el, ip) => {
+      if (!seenIps.has(ip)) el.remove();
     });
+
+    lastSeenRowsEl.innerHTML = '';
+    lastSeenRowsEl.appendChild(frag);
   }
 
+  // ── Banned IPs (dot styling only — no panel) ─────────────────────────────
   function fetchBanned() {
     fetch('/api/banned')
       .then(r => r.json())
-      .then(bans => { renderBannedPanel(bans); syncBannedSet(bans); })
+      .then(bans => syncBannedSet(bans))
       .catch(() => {});
   }
 
-  // Poll every 10 seconds to refresh ban list and countdown labels.
+  // Poll every 10 seconds to keep ban state current for dot styling.
   fetchBanned();
   setInterval(fetchBanned, 10000);
 
   // ── Port Scanners panel ───────────────────────────────────────────────────
   const scannerRowsEl = document.getElementById('scanner-rows');
+  const scannerIPs = new Set(); // IPs currently classified as scanners
 
   function renderScannerPanel(scanners) {
-    // Diff against current DOM rows — same approach as renderBannedPanel.
+    // Diff against current DOM rows — same approach as other panels.
     const incoming = scanners || [];
 
     const emptyEl = scannerRowsEl.querySelector('.scan-empty');
@@ -838,7 +864,11 @@
   function fetchScanners() {
     fetch('/api/scanners')
       .then(r => r.json())
-      .then(scanners => renderScannerPanel(scanners))
+      .then(scanners => {
+        scannerIPs.clear();
+        (scanners || []).forEach(s => scannerIPs.add(s.ip));
+        renderScannerPanel(scanners);
+      })
       .catch(() => {});
   }
 
@@ -2103,6 +2133,12 @@
     serviceRowMap.clear();
     serviceDirty = true;
 
+    // Clear last-seen panel
+    lastSeenList.length = 0;
+    lastSeenIndex.clear();
+    lastSeenRowsEl.innerHTML = '';
+    lastSeenDirty = true;
+
     // Clear dots
     dotRing.length = 0;
     historyDotMap.clear();
@@ -2337,10 +2373,17 @@
 
       ensurePortColor(ev.dst_port || 'unknown');
       updateServiceStats(ev.dst_port || 'unknown');
-      addLog(ev);
+
+      // Suppress visual activity from IPs flagged as port scanners —
+      // they still count in metrics/stats but don't clutter the map or log.
+      const isScanner = scannerIPs.has(ev.src_ip);
+      if (!isScanner) {
+        updateLastSeen(ev);
+        addLog(ev);
+      }
 
       if (ev.replay) {
-        drawHistoryDot(ev);
+        if (!isScanner) drawHistoryDot(ev);
         // Flush log every 200 replay events so the log panel
         // populates progressively instead of staying empty.
         if (connCount % 200 === 0) flushLog();
@@ -2352,7 +2395,7 @@
           renderSidebar();
           flushLog();
         }
-        handleArc(ev);  // instant at low rate, batched during floods
+        if (!isScanner) handleArc(ev);  // instant at low rate, batched during floods
       }
     };
 
