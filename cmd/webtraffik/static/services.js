@@ -4,6 +4,8 @@
 
 /* global window */
 window.PORT_SERVICE_NAMES = {
+  // ── Special (no port) ──────────────────────────────────────────────────────
+  '0':   'ICMP',
   // ── TCP service ports (banner emulation) ────────────────────────────────
   '21':  'FTP',
   '22':  'SSH',
