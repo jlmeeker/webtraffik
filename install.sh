@@ -90,16 +90,8 @@ fi
 install -m 755 "$BINARY_SRC" "$INSTALL_BIN"
 echo "installed binary: $INSTALL_BIN"
 
-# ── Install helper scripts ────────────────────────────────────────────────────
-
-install -d -o root -g root -m 755 /usr/local/lib/webtraffik
-SCRIPT_SRC="${SCRIPT_DIR}/gen-btf.sh"
-if [[ -f "$SCRIPT_SRC" ]]; then
-  install -m 755 "$SCRIPT_SRC" /usr/local/lib/webtraffik/gen-btf.sh
-  echo "installed helper: /usr/local/lib/webtraffik/gen-btf.sh"
-else
-  echo "warning: gen-btf.sh not found alongside install.sh — BTF auto-generation will not run" >&2
-fi
+# Older versions installed a BTF helper that is no longer needed.
+rm -rf /usr/local/lib/webtraffik
 
 # ── Install systemd service unit ──────────────────────────────────────────────
 

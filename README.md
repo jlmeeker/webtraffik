@@ -283,7 +283,7 @@ webtraffik/
 │   ├── hub/ event/ metrics/ traceroute/ iputil/ testutil/
 ├── web/                     # frontend source
 ├── docs/PORTS.md            # generated port reference
-├── firewall.sh, nftables.conf, install.sh, webtraffik.service, gen-btf.sh
+├── firewall.sh, nftables.conf, install.sh, webtraffik.service
 ├── config.yaml.example, Makefile
 └── README.md, SERVICES.md, AGENTS.md
 ```
@@ -497,60 +497,9 @@ sudo DISABLE_PORTS=22,80,443 bash firewall.sh
 - **Driver compatibility**: Some virtual/cloud NICs do not support XDP native mode. The app uses generic (SKB) mode as fallback — it always works but has slightly higher overhead.
 - **Docker/container**: Requires `--cap-add=BPF --cap-add=NET_ADMIN --cap-add=PERFMON` and `--network=host` (XDP does not work with bridged container networking in most CNI setups).
 
-### eBPF on Raspberry Pi 4 (Raspberry Pi OS)
+### eBPF on Raspberry Pi / kernels without BTF
 
-Raspberry Pi OS kernels ship without BTF (`CONFIG_DEBUG_INFO_BTF`) and with `kernel.unprivileged_bpf_disabled=2`, which means extra steps are required to run eBPF in hybrid mode.
-
-#### Step 1: Install a BTF-enabled kernel
-
-The Debian arm64 kernel has BTF built in. Install it alongside the Pi kernel (the Pi kernel remains available as a fallback):
-
-```bash
-sudo apt install linux-image-arm64 linux-image-6.12.74+deb13+1-arm64
-```
-
-#### Step 2: Copy kernel files to the firmware partition
-
-```bash
-sudo cp /boot/vmlinuz-6.12.74+deb13+1-arm64 /boot/firmware/vmlinuz-debian
-sudo cp /boot/initrd.img-6.12.74+deb13+1-arm64 /boot/firmware/initramfs-debian
-sudo cp /usr/lib/linux-image-6.12.74+deb13+1-arm64/broadcom/bcm2711-rpi-4-b.dtb \
-        /boot/firmware/bcm2711-rpi-4-b-debian.dtb
-```
-
-#### Step 3: Configure the bootloader
-
-Append to `/boot/firmware/config.txt`:
-
-```
-[all]
-kernel=vmlinuz-debian
-initramfs initramfs-debian followkernel
-device_tree=bcm2711-rpi-4-b-debian.dtb
-```
-
-Reboot:
-
-```bash
-sudo reboot
-```
-
-#### Step 4: Verify
-
-After reboot:
-
-```bash
-uname -r                        # should show deb13 kernel
-ls /sys/kernel/btf/vmlinux      # should exist
-journalctl -u webtraffik -e | grep ebpf  # should show "XDP program attached"
-```
-
-#### Notes
-
-- The original Pi kernel (`kernel8.img`) is untouched — remove the `kernel=` lines from `config.txt` to revert.
-- `gen-btf.sh` (installed to `/usr/local/lib/webtraffik/gen-btf.sh`) runs as `ExecStartPre` on each boot. On the Debian kernel it detects that `/sys/kernel/btf/vmlinux` already exists and skips — no overhead.
-- The Debian kernel works on Pi 4 (bcm2711). Pi 5 uses bcm2712 — use `bcm2712-rpi-5-b.dtb` instead of `bcm2711-rpi-4-b.dtb`.
-- With `kernel.unprivileged_bpf_disabled` set, the service needs `CAP_BPF` + `CAP_NET_ADMIN` + `CAP_PERFMON` (already in the shipped unit).
+The XDP program is built against the stable kernel UAPI headers (no `vmlinux.h`, no CO-RE relocations), so it does **not** need `/sys/kernel/btf/vmlinux`. Stock Raspberry Pi OS kernels (no `CONFIG_DEBUG_INFO_BTF`) work without swapping kernels or generating BTF — this was verified on a kernel with an empty `/sys/kernel/btf/`. What is required is Linux ≥ 5.10 and the capabilities listed under *Systemd Service Details*.
 
 ## Development
 

@@ -109,6 +109,7 @@ func New(opts Options) (*App, error) {
 	if err := a.EBPF.Start(); err != nil {
 		slog.Warn("ebpf: XDP attach failed, falling back to go-only", "err", err)
 		a.EBPF = ebpf.New(ebpf.ModeGoOnly, "", nil, "")
+		a.Opts.CaptureMode = ebpf.ModeGoOnly // report (and behave as) go-only from here on
 	}
 	a.Limiter.SetEBPFManager(a.EBPF)
 

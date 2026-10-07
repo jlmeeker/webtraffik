@@ -12,9 +12,6 @@ WorkingDirectory=/var/lib/webtraffik
 
 # Config is auto-loaded from /etc/webtraffik/config.yaml. CLI flags override it:
 #   ExecStart=/usr/local/bin/webtraffik -disable-ports=22,80
-# Generate /sys/kernel/btf/vmlinux if the kernel lacks it (non-fatal; the app
-# falls back to go-only if eBPF cannot load). Runs as root (+).
-ExecStartPre=+/usr/local/lib/webtraffik/gen-btf.sh
 ExecStart=/usr/local/bin/webtraffik
 # SIGHUP reloads the eBPF management allow-list without a restart.
 ExecReload=/bin/kill -HUP $MAINPID

@@ -143,15 +143,14 @@ remote-install:
 	@echo "building for $(REMOTE_GOARCH)..."
 	@$(MAKE) $(REMOTE_GOARCH)
 	$(eval REMOTE_BIN := $(OUTDIR)/$(BINARY)_$(subst /,_,$(REMOTE_GOARCH)))
-	@echo "copying $(REMOTE_BIN), install.sh, firewall.sh, nftables.conf, gen-btf.sh, service unit and config example to $(USER)@$(IP)..."
+	@echo "copying $(REMOTE_BIN), install.sh, firewall.sh, nftables.conf, service unit and config example to $(USER)@$(IP)..."
 	@scp $(REMOTE_BIN)  $(USER)@$(IP):~/webtraffik
 	@scp install.sh     $(USER)@$(IP):~/install.sh
 	@scp firewall.sh    $(USER)@$(IP):~/firewall.sh
 	@scp nftables.conf  $(USER)@$(IP):~/nftables.conf
-	@scp gen-btf.sh     $(USER)@$(IP):~/gen-btf.sh
 	@scp webtraffik.service config.yaml.example $(USER)@$(IP):~/
 	@echo "running install.sh on remote..."
-	@ssh -t $(USER)@$(IP) 'sudo bash ~/install.sh ~/webtraffik && rm ~/webtraffik ~/install.sh ~/firewall.sh ~/nftables.conf ~/gen-btf.sh ~/webtraffik.service ~/config.yaml.example'
+	@ssh -t $(USER)@$(IP) 'sudo bash ~/install.sh ~/webtraffik && rm ~/webtraffik ~/install.sh ~/firewall.sh ~/nftables.conf ~/webtraffik.service ~/config.yaml.example'
 
 # Remove binary, service, and data directory
 uninstall:
