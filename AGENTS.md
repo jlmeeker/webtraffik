@@ -53,7 +53,9 @@ cross-compilation trivial). eBPF via `github.com/cilium/ebpf`. Frontend in `web/
    `.o`/`.go`** (CI diffs them). The program must keep passing `TestProgramLoads`
    (kernel verifier) and works unprivileged with `CAP_BPF+CAP_NET_ADMIN+CAP_PERFMON`
    — `CAP_SYS_ADMIN` is not needed (verified). Events fire per SYN/UDP/ICMP, not
-   per packet. `Manager` methods are no-ops when inactive; don't nil-check.
+   per packet; multicast/broadcast destinations (mDNS, SSDP, DHCP, IPv6 ND…) are
+   ignored entirely (`TestXDPIgnoresMulticastAndBroadcast` runs real packets via
+   `BPF_PROG_TEST_RUN`). `Manager` methods are no-ops when inactive; don't nil-check.
 6. **Security defaults.** The dashboard may be exposed: keep the Basic-auth path,
    the Origin check on POST/WebSocket, JSON-only POST bodies, input validation in
    `parseBanRequest`, the traceroute concurrency cap and public-IP check, and the

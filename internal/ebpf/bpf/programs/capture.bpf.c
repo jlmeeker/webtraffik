@@ -134,6 +134,11 @@ int xdp_capture(struct xdp_md *ctx) {
             return XDP_PASS;
         if (ip->ihl < 5)
             return XDP_PASS;
+        // Multicast (224.0.0.0/4) and limited broadcast are LAN chatter
+        // (mDNS, SSDP, LLMNR, DHCP…), never internet scanning: ignore.
+        if ((bpf_ntohl(ip->daddr) & 0xf0000000) == 0xe0000000 ||
+            ip->daddr == 0xffffffff)
+            return XDP_PASS;
         proto = ip->protocol;
         l4 = (void *)ip + ip->ihl * 4;
         // v4-mapped: ::ffff:a.b.c.d
@@ -143,6 +148,9 @@ int xdp_capture(struct xdp_md *ctx) {
     } else if (eth_proto == ETH_P_IPV6) {
         struct ipv6hdr *ip6 = (void *)(eth + 1);
         if ((void *)(ip6 + 1) > data_end)
+            return XDP_PASS;
+        // IPv6 multicast (ff00::/8) is LAN chatter (mDNS, ND, MLD…): ignore.
+        if (ip6->daddr.in6_u.u6_addr8[0] == 0xff)
             return XDP_PASS;
         // Extension headers are not walked: such packets pass untouched.
         proto = ip6->nexthdr;

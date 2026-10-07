@@ -13,7 +13,7 @@ A network traffic sensor and low-interaction honeypot. It listens on the ports i
 - **Enrichment**: MaxMind GeoLite2 City + ASN (auto-downloaded, validated and refreshed in the background) with an `rgeo` city fallback
 - **Live world map**: animated great-circle arcs, history replay, ban/unban and traceroute from the dashboard
 - **Auto-ban + port-scan detection**: flood and volume-window bans per IP+port, scanner panel, persistent bans
-- **eBPF/XDP (optional)**: banned IPs are dropped in the kernel (IPv4 and IPv6); per-SYN events and telemetry; automatic fallback to pure userspace if XDP cannot attach
+- **eBPF/XDP (optional)**: banned IPs are dropped in the kernel (IPv4 and IPv6); per-SYN events and telemetry (multicast/broadcast LAN chatter such as mDNS is ignored); automatic fallback to pure userspace if XDP cannot attach
 - **Secure by default install**: dashboard Basic auth with a generated password, Origin/CSRF checks, hardened systemd unit, nftables DMZ policy
 - **Operations**: graceful shutdown, bounded queues and connection limits, versioned DB migrations, event retention, Prometheus `/metrics`, JSON-lines export, structured (`slog`) logs, `/api/status`
 - **Single binary**: pure Go (no CGo), SQLite persistence, embedded UI; linux/amd64, arm64, armv6, armv7, darwin and windows
