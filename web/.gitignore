@@ -1,0 +1,7 @@
+node_modules/
+# The built bundle IS committed so `go build` works without Node.
+# The repo root ignores `dist/`; re-include ours.
+!dist/
+playwright-report/
+test-results/
+*.local

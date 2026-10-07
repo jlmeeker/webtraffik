@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <title>webTraffik — History</title>
+    <script type="module" crossorigin src="/assets/history-CssCgTi4.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/services-DI3OThoC.js">
+    <link rel="modulepreload" crossorigin href="/assets/vendor-d3-CGlmpUUv.js">
+    <link rel="modulepreload" crossorigin href="/assets/ebpf-B7ygrIKj.js">
+    <link rel="stylesheet" crossorigin href="/assets/services-D72H18LU.css">
+    <link rel="stylesheet" crossorigin href="/assets/history-Co2aerAK.css">
+  </head>
+  <body class="page-history">
+    <a class="skip-link" href="#content">Skip to results</a>
+    <header class="app-header">
+      <a class="brand" href="/" aria-label="webTraffik home">webTraffik</a>
+      <div class="self-info">My IP: <b id="my-ip">&mdash;</b> &nbsp;|&nbsp; <b id="my-loc">&mdash;</b></div>
+      <div class="toolbar" style="margin-left:auto">
+        <button class="btn icon" type="button" data-theme-toggle title="Toggle theme">
+          <span class="icon-sun" aria-hidden="true">&#9728;</span>
+          <span class="icon-moon" aria-hidden="true">&#9790;</span>
+        </button>
+      </div>
+      <nav class="app-nav" aria-label="Pages" style="margin-left:0">
+        <a href="/">Live</a>
+        <a href="/history.html">History</a>
+        <a href="/recent.html">Recent</a>
+      </nav>
+    </header>
+
+    <form id="filter-panel" class="filter-panel" aria-label="Query filters" autocomplete="off">
+      <div class="field">
+        <label for="f-country">Country (CC)</label>
+        <input class="input" type="text" id="f-country" placeholder="US, CN, RU" maxlength="8" />
+      </div>
+      <div class="field">
+        <label for="f-ip">Source IP</label>
+        <input class="input" type="text" id="f-ip" placeholder="1.2.3 or 192.168" />
+      </div>
+      <div class="field">
+        <label for="f-port">Port</label>
+        <input class="input" type="text" id="f-port" placeholder="22" maxlength="10" inputmode="numeric" />
+      </div>
+      <div class="field">
+        <label for="f-service">Service</label>
+        <select class="select" id="f-service"><option value="">— Any —</option></select>
+      </div>
+      <div class="field">
+        <label for="f-date-from">From</label>
+        <input class="input" type="datetime-local" id="f-date-from" step="1" />
+      </div>
+      <div class="field">
+        <label for="f-date-to">To</label>
+        <input class="input" type="datetime-local" id="f-date-to" step="1" />
+      </div>
+      <div class="field presets">
+        <label for="f-preset">Range</label>
+        <select class="select" id="f-preset">
+          <option value="">Custom</option>
+          <option value="1">Last hour</option>
+          <option value="6">Last 6 hours</option>
+          <option value="24">Last 24 hours</option>
+          <option value="168">Last 7 days</option>
+          <option value="720">Last 30 days</option>
+        </select>
+      </div>
+      <button id="btn-query" class="btn primary" type="submit">Query</button>
+      <button id="btn-clear" class="btn ghost" type="button">Clear</button>
+    </form>
+
+    <div id="status-bar" class="status-bar" role="status" aria-live="polite">
+      <span class="loading" id="loading-indicator"><span class="spinner"></span> Querying…</span>
+      <span id="result-summary"></span>
+    </div>
+
+    <main id="content" class="content">
+      <div id="empty-state" class="empty-state">
+        <div class="icon" aria-hidden="true">&#9783;</div>
+        <div id="empty-text">Set filters above and press Query to explore connection history</div>
+      </div>
+
+      <div id="results" class="results" hidden>
+        <section class="tiles" id="kpi-tiles" aria-label="Summary"></section>
+
+        <section class="card">
+          <h3>Connections over time</h3>
+          <div class="chart-wrap" id="chart-timeline"></div>
+        </section>
+
+        <div class="grid halves" id="row-ips-bans">
+          <section class="card" id="card-unique-ips">
+            <h3>Unique source IPs per hour</h3>
+            <div class="chart-wrap" id="chart-unique-ips"></div>
+          </section>
+          <section class="card" id="card-bans">
+            <h3>Bans over time</h3>
+            <div class="chart-wrap" id="chart-bans"></div>
+          </section>
+        </div>
+
+        <div class="grid halves">
+          <section class="card">
+            <h3>Top ports</h3>
+            <div class="chart-wrap" id="chart-ports"></div>
+          </section>
+          <section class="card">
+            <h3>Top countries</h3>
+            <div class="chart-wrap" id="chart-countries"></div>
+          </section>
+        </div>
+
+        <div class="grid halves">
+          <section class="card">
+            <h3>Top services</h3>
+            <div class="chart-wrap" id="chart-services"></div>
+          </section>
+          <section class="card">
+            <h3>Top source IPs</h3>
+            <div class="chart-wrap" id="chart-ips"></div>
+          </section>
+        </div>
+
+        <section class="card" id="card-port-timeline" hidden>
+          <h3>Connections over time by port</h3>
+          <div class="chart-wrap" id="chart-port-timeline"></div>
+        </section>
+
+        <section class="card" id="card-country-timeline" hidden>
+          <h3>Connections over time by country</h3>
+          <div class="chart-wrap" id="chart-country-timeline"></div>
+        </section>
+
+        <section class="card" id="card-ebpf" hidden>
+          <h3>eBPF capture</h3>
+          <div class="grid halves ebpf-grid">
+            <div>
+              <div class="tiles" id="ebpf-tiles"></div>
+              <div id="ebpf-meter" style="margin-top:12px"></div>
+            </div>
+            <div id="ebpf-kv" class="kv-list"></div>
+          </div>
+        </section>
+
+        <section class="card" id="card-table">
+          <h3>Result sample <span class="muted">(most recent 200 rows)</span></h3>
+          <div class="table-scroll">
+            <table class="data-table" id="result-table">
+              <thead>
+                <tr>
+                  <th scope="col">Time</th>
+                  <th scope="col">Source IP</th>
+                  <th scope="col">City</th>
+                  <th scope="col">CC</th>
+                  <th scope="col">Port</th>
+                  <th scope="col">Service</th>
+                  <th scope="col">Protocol</th>
+                </tr>
+              </thead>
+              <tbody id="result-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </main>
+  </body>
+</html>
