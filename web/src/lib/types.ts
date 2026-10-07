@@ -19,8 +19,18 @@ export interface ConnectionEvent {
   client_data?: string; // hex-encoded, optional / ephemeral
   asn?: string | number;
   tags?: string[];
+  /** "session" = honeypot conversation captured, "probe" = no payload, "observed" = XDP only. */
+  kind?: EventKind | string;
+  class?: EventClass | string;
+  /** Known research scanner name (e.g. "Shodan"). */
+  scanner?: string;
+  detail?: string;
+  meta?: Record<string, unknown>;
   [extra: string]: unknown;
 }
+
+export type EventKind = 'session' | 'probe' | 'observed';
+export type EventClass = 'exploit' | 'bruteforce' | 'scan' | 'research' | 'unknown';
 
 export interface SelfInfo {
   ip: string;
@@ -106,6 +116,16 @@ export interface HistoryFilters {
   ip?: string;
   port?: string;
   service?: string;
+  /** Free-text search query (see lib/query.ts for the grammar). */
+  q?: string;
+  kind?: string;
+  class?: string;
+  scanner?: string;
+  proto?: string;
+  tag?: string;
+  asn?: string;
+  limit?: number;
+  offset?: number;
   date_from?: string; // ISO UTC
   date_to?: string; // ISO UTC
 }
@@ -119,3 +139,40 @@ export interface GeoPoint {
 
 /** [lon, lat] tuple as used by d3-geo. */
 export type LonLat = [number, number];
+
+export interface TopItem {
+  key: string;
+  count: number;
+  ips?: number;
+  prev?: number;
+  /** null/absent when prev == 0 (render "new"). */
+  delta_pct?: number | null;
+}
+
+export interface TopResponse {
+  by: string;
+  hours: number;
+  items: TopItem[];
+}
+
+export interface Campaign {
+  id: string;
+  label: string;
+  ips?: string[];
+  ip_count?: number;
+  events?: number;
+  ports?: number[];
+  countries?: string[];
+  tags?: string[];
+  first_seen?: string;
+  last_seen?: string;
+}
+
+export interface IntelInfo {
+  ip?: string;
+  rdns?: string;
+  scanner?: string;
+  greynoise?: string;
+  abuse_score?: number;
+  updated?: string;
+}

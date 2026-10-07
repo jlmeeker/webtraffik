@@ -73,3 +73,12 @@ body.page-recent {
 [data-theme-toggle][data-theme='light'] .icon-moon {
   display: inline;
 }
+
+.search-bar {
+  padding: 10px 16px;
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border);
+}
+.log-badges .badge {
+  font-size: 0.58rem;
+}

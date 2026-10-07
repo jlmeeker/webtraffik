@@ -4,12 +4,13 @@ import '../styles/live.css';
 import { initChrome } from '../lib/chrome';
 import { otherColor, SERIES_SLOTS, seriesColors } from '../lib/palette';
 import { ServiceRegistry } from '../lib/services';
+import { isObservedOnly } from '../lib/match';
 import { createLiveState, recordEvent, resetLiveState, updateLastSeen } from '../lib/store';
 import { cssVar, onThemeChange } from '../lib/theme';
 import type { ConnectionEvent, LonLat } from '../lib/types';
 import { $, prefersReducedMotion } from '../lib/utils/dom';
 import { ensureInt } from '../lib/utils/format';
-import { getPref, setPref } from '../lib/utils/prefs';
+import { getPref, lsGet, lsSet, setPref } from '../lib/utils/prefs';
 import { LiveStream, type StreamStatus } from '../lib/ws';
 import { LogPanel } from '../log';
 import { ArcLayer } from '../map/arcs';
@@ -25,15 +26,22 @@ import { ScannersPanel } from '../panels/scanners';
 import { PanelScheduler } from '../panels/scheduler';
 import { ServicesPanel } from '../panels/services';
 import { TraceLayer } from '../traceroute/animate';
+import { isTraceMode, type TraceMode } from '../traceroute/filter';
 
 const HOURS_PREF = 'wt_live_hours';
 const PAUSE_BUFFER_MAX = 5000;
+const NOISE_PREF = 'wt_hide_observed';
+const TRACE_MODE_PREF = 'wt_trace_mode';
 
 function main(): void {
   const self = initChrome();
   const services = new ServiceRegistry();
   const state = createLiveState(ensureInt(getPref(HOURS_PREF), 1, 24, 1));
   const reduced = prefersReducedMotion();
+  // XDP-only observations are hidden by default; the choice persists per browser.
+  let hideNoise = lsGet(NOISE_PREF) !== '0';
+  const storedMode = lsGet(TRACE_MODE_PREF);
+  let traceMode: TraceMode = isTraceMode(storedMode) ? storedMode : 'default';
 
   // ── Colours follow the theme ──────────────────────────────────────────────
   let series = seriesColors();
@@ -61,6 +69,7 @@ function main(): void {
   const trace = new TraceLayer(view, {
     indicator: $('#trace-indicator'),
     reducedMotion: () => reduced,
+    getMode: () => traceMode,
     getSelf: () => {
       const s = self.value;
       return s ? { lat: s.lat, lon: s.lon, city: s.city, cc: s.cc, ip: s.ip } : null;
@@ -196,6 +205,7 @@ function main(): void {
 
   // ── Event pipeline ────────────────────────────────────────────────────────
   function process(ev: ConnectionEvent, asReplay: boolean): void {
+    if (hideNoise && isObservedOnly(ev)) return;
     recordEvent(state, ev);
     connCountEl.textContent = String(state.events.length);
     servicesPanel.dirty = true;
@@ -267,6 +277,24 @@ function main(): void {
       setPref(HOURS_PREF, String(val));
       stream.setHours(val);
     }, 700);
+  });
+
+  // ── Noise + trace-mode toggles ────────────────────────────────────────────
+  const noiseBtn = $<HTMLButtonElement>('#noise-toggle');
+  noiseBtn.setAttribute('aria-pressed', String(hideNoise));
+  noiseBtn.addEventListener('click', () => {
+    hideNoise = !hideNoise;
+    noiseBtn.setAttribute('aria-pressed', String(hideNoise));
+    lsSet(NOISE_PREF, hideNoise ? '1' : '0');
+    // Replay the window so already-dropped (or already-shown) events are re-evaluated.
+    stream.reload();
+  });
+  const traceBtn = $<HTMLButtonElement>('#trace-mode');
+  traceBtn.setAttribute('aria-pressed', String(traceMode === 'strict'));
+  traceBtn.addEventListener('click', () => {
+    traceMode = traceMode === 'strict' ? 'default' : 'strict';
+    traceBtn.setAttribute('aria-pressed', String(traceMode === 'strict'));
+    lsSet(TRACE_MODE_PREF, traceMode);
   });
 
   // ── Mobile drawers ────────────────────────────────────────────────────────

@@ -93,10 +93,42 @@ tests/e2e           playwright (smoke + screenshots)
   same-location (ΔRTT ≤ 3 ms) or whose haversine distance exceeds
   `ΔRTT × 500 km`. (AGENTS.md documents 300 km/ms with a *clamp*; that variant
   is available as `correctImplausibleGeo()` with `RTT_KM_PER_MS_STRICT = 300`
-  but is not in the default pipeline, matching the previous UI.)
+  and is used by the opt-in strict mode below.)
+
+**Strict mode** (`buildTracePath(..., { mode: 'strict' })`, the "Strict trace"
+toggle in the live header, remembered in `localStorage` key `wt_trace_mode`):
+200 km accuracy cut-off, 300 km/ms, and implausible hops are *clamped* onto the
+previous hop (then co-located duplicates are collapsed) instead of dropped.
+`'default'` behaves exactly as before; explicit `accuracyThresholdKm` /
+`kmPerMs` options override either mode.
 
 Pipeline: drop target IP → country filter → plausibility filter → reverse
 (source → us) → prepend the source's known geo → append our own position.
+
+## Search, Top-N and campaigns
+
+* **Grammar** (`src/lib/query.ts`, pure and unit-tested): whitespace-separated
+  terms; `key:value` for `port ip cc asn tag kind class scanner proto ja3 ja4
+  sni user since until`; a leading `-` negates (`-cc:US`); `"double quotes"`
+  for phrases or values with spaces; bare words are free text. The History page
+  sends the query as `q` to `/api/history` and shows a backend HTTP 400 message
+  inline. The Recent page evaluates the same grammar client-side
+  (`src/lib/match.ts`: same key OR, different keys AND).
+* **Search box** (`src/ui/searchbox.ts`): key/value autocomplete (ARIA
+  combobox, arrows/Enter/Tab/Esc), syntax help, removable filter chips,
+  quick toggles for kind/class and scanners/tags seen in the loaded events, and
+  saved views (name + query in `localStorage` key `wt_saved_views`).
+* **Shareable views**: History keeps the search, filters and range in the URL
+  hash (`#q=…&preset=24`); opening such a link restores and runs it.
+* **Hide XDP-only noise**: on by default on Live and Recent (`kind: observed`
+  events are skipped client-side); stored in `localStorage` (`wt_hide_observed`).
+* **Top / Campaigns** (History): `/api/top` ranked lists with bars, unique IPs
+  and trend arrows versus the preceding period; a row becomes a search filter.
+  `/api/campaigns` lists expandable clusters whose IPs can be searched as
+  repeated `ip:` terms. Each tab hides itself if its endpoint answers 404.
+* **Time scrubber** (History): two-handle range over the loaded events that
+  narrows the table and the top-source-IPs chart.
+* Kind / class / scanner badges always carry a glyph and text, never colour alone.
 
 ## Design notes
 

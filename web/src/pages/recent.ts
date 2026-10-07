@@ -1,14 +1,21 @@
 import '../styles/theme.css';
 import '../styles/recent.css';
+import '../styles/search.css';
 
 import { api } from '../lib/api';
 import { initChrome } from '../lib/chrome';
+import { filterByQuery, hideObserved } from '../lib/match';
 import { ServiceRegistry } from '../lib/services';
 import type { ConnectionEvent } from '../lib/types';
 import { $, el } from '../lib/utils/dom';
+import { lsGet, lsSet } from '../lib/utils/prefs';
+import { readUrlState, writeUrlState } from '../lib/urlstate';
 import { dateShort, hexPreview } from '../lib/utils/format';
 import { buildLogRow } from '../log';
 import { filterRecent } from '../recent/filter';
+import { SearchBox } from '../ui/searchbox';
+
+const NOISE_PREF = 'wt_hide_observed';
 
 function main(): void {
   initChrome();
@@ -27,6 +34,33 @@ function main(): void {
 
   let allExpanded = false;
   let raw: ConnectionEvent[] = [];
+  let hideNoise = lsGet(NOISE_PREF) !== '0';
+
+  const searchbox = new SearchBox($('#searchbox'), {
+    onSubmit: () => apply(),
+    onChange: () => {
+      writeUrlState({ q: searchbox.value });
+      apply();
+    },
+    noiseToggle: {
+      checked: hideNoise,
+      onChange: (on) => {
+        hideNoise = on;
+        lsSet(NOISE_PREF, on ? '1' : '0');
+        apply();
+      },
+    },
+    getDynamicChips: () => {
+      const count = (pick: (e: ConnectionEvent) => string[]) => {
+        const m = new Map<string, number>();
+        for (const e of raw) for (const v of pick(e)) m.set(v, (m.get(v) ?? 0) + 1);
+        return [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([k]) => k);
+      };
+      return { scanners: count((e) => (e.scanner ? [e.scanner] : [])), tags: count((e) => e.tags ?? []) };
+    },
+  });
+  const initial = readUrlState(location.hash, location.search).q;
+  if (initial) searchbox.setValue(initial);
 
   function buildRow(ev: ConnectionEvent): HTMLElement {
     const row = buildLogRow(ev, services, { withDate: dateShort(ev.time) });
@@ -49,7 +83,8 @@ function main(): void {
 
   function apply(): void {
     const svc = serviceSel.value;
-    const filtered = filterRecent(raw, {
+    const searched = hideObserved(filterByQuery(raw, searchbox.value), hideNoise);
+    const filtered = filterRecent(searched, {
       onlyWithData: dataChk.checked,
       ports: svc ? services.portsFor(svc) : undefined,
       limit: parseInt(limitSel.value, 10) || 1000,
@@ -76,6 +111,7 @@ function main(): void {
       const data = await api.recent();
       raw = Array.isArray(data) ? data : [];
       await services.ready;
+      searchbox.refreshQuick();
       apply();
     } catch (err) {
       raw = [];

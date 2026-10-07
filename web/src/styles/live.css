@@ -434,6 +434,12 @@ svg#map:active {
   color: var(--text-3);
   white-space: nowrap;
 }
+.dot-tooltip .tip-badges {
+  display: none;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 0 10px 6px;
+}
 .dot-tooltip button {
   display: block;
   width: 100%;

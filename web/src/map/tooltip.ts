@@ -1,4 +1,5 @@
 import type * as d3 from 'd3';
+import { badgeEls } from '../lib/badges';
 import type { ConnectionEvent } from '../lib/types';
 import { placeLabel } from '../lib/utils/format';
 import { $ } from '../lib/utils/dom';
@@ -14,6 +15,7 @@ export class DotTooltip {
   private readonly root: HTMLElement;
   private readonly labelEl: HTMLElement;
   private readonly ipEl: HTMLElement;
+  private readonly badgesEl: HTMLElement;
   private readonly traceBtn: HTMLButtonElement;
   private readonly banBtn: HTMLButtonElement;
   private hideTimer: ReturnType<typeof setTimeout> | null = null;
@@ -26,6 +28,7 @@ export class DotTooltip {
     this.root = $(rootSelector);
     this.labelEl = $('.tip-label', this.root);
     this.ipEl = $('.tip-ip', this.root);
+    this.badgesEl = $('.tip-badges', this.root);
     this.traceBtn = $<HTMLButtonElement>('.tip-trace', this.root);
     this.banBtn = $<HTMLButtonElement>('.tip-ban', this.root);
 
@@ -57,6 +60,9 @@ export class DotTooltip {
     this.labelEl.textContent = DotTooltip.label(ev, hitCount);
     this.ipEl.textContent = ev.src_ip || '';
     this.ipEl.style.display = ev.src_ip ? 'block' : 'none';
+    const badges = badgeEls(ev);
+    this.badgesEl.replaceChildren(...badges);
+    this.badgesEl.style.display = badges.length > 0 ? 'flex' : 'none';
     this.traceBtn.style.display = ev.src_ip ? 'block' : 'none';
     const banned = this.actions.isBanned(ev.src_ip, ev.dst_port);
     this.banBtn.textContent = banned ? `Unban :${ev.dst_port}` : `Ban :${ev.dst_port}`;

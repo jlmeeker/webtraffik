@@ -43,3 +43,20 @@ export function setPref(key: string, value: string): void {
   }
   setCookie(key, value, 365);
 }
+
+/** localStorage-only preference (no cookie mirror); null when unset or storage is blocked. */
+export function lsGet(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+export function lsSet(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* private mode / blocked storage: the choice just won't persist */
+  }
+}
