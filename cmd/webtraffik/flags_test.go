@@ -91,3 +91,19 @@ func TestPortsCommand(t *testing.T) {
 		t.Errorf("json = %q", out.String())
 	}
 }
+
+// TestPortsDocInSync fails when docs/PORTS.md drifts from the registry.
+// Regenerate with `make docs`.
+func TestPortsDocInSync(t *testing.T) {
+	var out, errb bytes.Buffer
+	if code := portsCommand([]string{"-format", "md"}, &out, &errb); code != 0 {
+		t.Fatal(errb.String())
+	}
+	want, err := os.ReadFile(filepath.Join("..", "..", "docs", "PORTS.md"))
+	if err != nil {
+		t.Fatalf("docs/PORTS.md missing: run `make docs` (%v)", err)
+	}
+	if string(want) != out.String() {
+		t.Error("docs/PORTS.md is out of date: run `make docs`")
+	}
+}

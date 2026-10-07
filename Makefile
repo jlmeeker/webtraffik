@@ -12,7 +12,7 @@ PLATFORMS := \
 	windows/amd64 \
 	windows/arm64
 
-.PHONY: test vet fmt check build run cap cap-dist install uninstall clean dist remote-install firewall ebpf-gen ebpf-check $(PLATFORMS) linux/armv6 linux/armv7
+.PHONY: docs test vet fmt check build run cap cap-dist install uninstall clean dist remote-install firewall ebpf-gen ebpf-check $(PLATFORMS) linux/armv6 linux/armv7
 
 # Regenerate eBPF objects + Go bindings from C source via bpf2go.
 # Requires: clang >= 10, llvm-strip, linux-libc-dev. No vmlinux.h or kernel BTF
@@ -25,6 +25,11 @@ ebpf-gen:
 # Fail if the committed eBPF artifacts are out of date (used by CI).
 ebpf-check: ebpf-gen
 	git diff --exit-code -- internal/ebpf
+
+# Regenerate generated docs (docs/PORTS.md) from the port registry.
+docs:
+	@mkdir -p docs
+	go run $(MAIN) ports -format md > docs/PORTS.md
 
 # Static checks + tests (what CI runs).
 vet:

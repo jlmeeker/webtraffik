@@ -24,6 +24,7 @@ const (
 	MetricConnections = "connections" // labels: port, protocol, service, cc
 	MetricBans        = "bans"        // labels: type (auto/manual)
 	MetricUniqueIPs   = "unique_ips"  // no labels, per-hour unique IP count
+	MetricTags        = "tag_hits"    // labels: tag (classifier label from the honeypot)
 )
 
 // ── eventDB ──────────────────────────────────────────────────────────────────
