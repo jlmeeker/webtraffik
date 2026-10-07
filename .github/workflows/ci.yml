@@ -63,6 +63,22 @@ jobs:
       - name: regenerate and diff
         run: make ebpf-check
 
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: typecheck, lint, unit tests
+        run: make web-check
+      - name: committed dist is up to date
+        run: |
+          make web
+          git diff --exit-code -- web/dist
+
   shell:
     runs-on: ubuntu-latest
     steps:

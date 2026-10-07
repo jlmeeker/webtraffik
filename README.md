@@ -58,16 +58,10 @@ The dashboard shows:
 
 ## History Page
 
-![webTraffik History](history.png)
-
-The history page allows you to filter and visualize stored events:
-- **Filter bar**: country code, source IP prefix, port, service (dropdown), date range, and row limit
-- **Connections Over Time**: bar chart auto-bucketed to 5-min/30-min/3-hour/daily/weekly depending on the queried range
-- **Top Ports / Top Countries**: horizontal bar charts showing the top 15 by hit count
-- **Top Services**: doughnut chart breaking down traffic by service name
-- **Top Source IPs**: horizontal bar chart of the top 15 attacking IPs
-- **Per-Port Timeline** and **Per-Country Timeline**: multi-line charts shown when more than one port or country is present in the results
-- **Result sample table**: first 200 matching rows with timestamp, IP, city, country code, port, service, and protocol
+The history page filters and charts stored events by country, source IP prefix, port, service, tag/ASN (API), and date range (with presets):
+- Stat tiles and a connections / unique-IPs / bans timeline, auto-bucketed to the queried range
+- Top ports, countries, services and source IPs; per-port and per-country timelines
+- A result table with the captured detail and tags; the **Recent** page shows live hex dumps of client payloads with filters
 
 ## Quick Start
 
@@ -299,15 +293,11 @@ webtraffik/
 
 See the diagram under [Architecture](#architecture). Capture is non-blocking end to end: listeners hand a `Capture` to a bounded queue, workers enrich and fan it out, the DB writer batches inserts, and a full queue drops (and counts) rather than stalling the network path.
 
-### Dashboard Components
+### Dashboard
 
-- **Map**: D3.js Natural Earth projection with TopoJSON world-atlas, fills full container width
-- **Arcs**: Great-circle paths using `d3.geoInterpolate` with 20-point sampling (optimized from 60), animated with `stroke-dashoffset`
-- **Dots**: Animated circles; persistent after arc completes; no glow filters on dots (only on self-dot)
-- **Tooltips**: Mouseover on any source dot shows "City, CC" (or just CC if city is unavailable)
-- **Corner Panels**: Two transparent overlay panels (Top Services and Banned IPs), rendered via `requestIdleCallback` on a 2-second interval (decoupled from event processing)
-- **Log Panel**: Scrolling panel showing timestamp, source IP, city, country, port with service name (e.g., `:22 SSH`, `:3306 MySQL`), and protocol; capped at 200 entries; click any entry to replay its arc on the map
-- **Performance**: Gradient pooling (reuses SVG gradients by color pair), arc count capped at 150, dot count capped at 1000, adaptive flood control (batches events above 10/sec)
+The UI is a Vite + TypeScript app in [`web/`](web/README.md) (D3 map, live/history/recent pages). It is built to `web/dist`, which is **committed and embedded** in the binary, so `go build` needs no Node. Everything is self-hosted — no CDN requests, which also lets the strict Content-Security-Policy stay tight. Highlights: dark/light themes, pause/resume, replay-window slider (1–24 h), auto-reconnecting WebSocket, keyboard/ARIA support, mobile drawers, traceroute visualisation with country-level and RTT-implausibility filtering, ban/unban from tooltips and the Banned panel.
+
+Frontend workflow: `make web` rebuilds `web/dist` (commit the result), `make web-check` runs typecheck + lint + unit tests, `cd web && npm run dev` serves with hot reload proxying to a running backend on :8999.
 
 ## Dependencies
 
@@ -321,13 +311,9 @@ See the diagram under [Architecture](#architecture). Capture is non-blocking end
 - `golang.org/x/crypto/ssh` — SSH honeypot handshake
 - `gopkg.in/yaml.v3` — config
 
-### Frontend (CDN)
+### Frontend (bundled from npm, build-time only)
 
-- D3.js v7
-- TopoJSON v3
-- world-atlas v2 (countries-110m.json)
-- Chart.js v4 (history page charts)
-- chartjs-adapter-date-fns v3 (time-series axis)
+D3, topojson-client and the `sane-topojson` world map are bundled into `web/dist`; Vite, TypeScript, Vitest and Playwright are dev dependencies. See [web/README.md](web/README.md).
 
 ## Cross-Compilation
 

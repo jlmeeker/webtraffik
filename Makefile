@@ -12,7 +12,22 @@ PLATFORMS := \
 	windows/amd64 \
 	windows/arm64
 
-.PHONY: docs test vet fmt check build run cap cap-dist install uninstall clean dist remote-install firewall ebpf-gen ebpf-check $(PLATFORMS) linux/armv6 linux/armv7
+.PHONY: docs test vet fmt check build run cap cap-dist install uninstall clean dist remote-install firewall ebpf-gen ebpf-check web web-check web-clean $(PLATFORMS) linux/armv6 linux/armv7
+
+# ── Frontend (web/) ──────────────────────────────────────────────────────────
+# The browser dashboard lives in web/ (Vite + TypeScript). Its build output
+# web/dist is COMMITTED and embedded by web/embed.go, so plain `go build`
+# needs no Node. Run `make web` after changing anything under web/src and
+# commit the regenerated web/dist.
+web:
+	cd web && npm ci && npm run build
+
+# Typecheck + lint + unit tests for the frontend
+web-check:
+	cd web && npm ci && npm run check
+
+web-clean:
+	rm -rf web/node_modules web/dist/assets web/dist/*.html
 
 # Regenerate eBPF objects + Go bindings from C source via bpf2go.
 # Requires: clang >= 10, llvm-strip, linux-libc-dev. No vmlinux.h or kernel BTF
