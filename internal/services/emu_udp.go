@@ -168,12 +168,10 @@ func memcachedUDP(pkt []byte) ([]byte, Result) {
 
 // ── NTP ───────────────────────────────────────────────────────────────────────
 
-const ntpEpochOffset = 2208988800 // seconds between 1900 and 1970
-
-// ntpUDP classifies NTP datagrams. Mode 3 (client) gets a standard 48-byte
-// mode 4 reply — exactly the size of the request, never more. Mode 7
-// (monlist, ntpdc) and mode 6 (ntpq readvar/readstat) are amplification
-// vectors: tagged, and not answered.
+// ntpUDP classifies NTP datagrams and never answers any of them. NTP runs over
+// spoofable UDP, so even a reply the size of the request would reflect traffic
+// at a forged source address. Mode 7 (monlist, ntpdc) and mode 6 (ntpq
+// readvar/readstat) are additionally tagged as amplification vectors.
 func ntpUDP(pkt []byte) ([]byte, Result) {
 	if len(pkt) == 0 {
 		return nil, Result{Detail: "ntp: empty datagram"}
@@ -204,41 +202,11 @@ func ntpUDP(pkt []byte) ([]byte, Result) {
 		res.Detail = fmt.Sprintf("ntp: client request v%d", vn)
 		if len(pkt) < 48 {
 			res.Detail += " (short)"
-			return nil, res
 		}
-		return fit(pkt, ntpServerReply(pkt, time.Now())), res
+		return nil, res
 	}
 	res.Detail = fmt.Sprintf("ntp: mode %d packet", mode)
 	return nil, res
-}
-
-func ntpTimestamp(t time.Time) []byte {
-	b := make([]byte, 8)
-	binary.BigEndian.PutUint32(b, uint32(t.Unix()+ntpEpochOffset))
-	binary.BigEndian.PutUint32(b[4:], uint32(uint64(t.Nanosecond())<<32/1e9))
-	return b
-}
-
-// ntpServerReply builds a stratum-2 mode 4 response to a mode 3 request.
-func ntpServerReply(req []byte, now time.Time) []byte {
-	vn := (req[0] >> 3) & 7
-	if vn < 1 || vn > 4 {
-		vn = 4
-	}
-	r := make([]byte, 48)
-	r[0] = vn<<3 | 4 // LI 0, mode 4 (server)
-	r[1] = 2         // stratum
-	r[2] = req[2]    // poll, echoed
-	r[3] = 0xec      // precision 2^-20
-	binary.BigEndian.PutUint32(r[4:], 0x00000a00)
-	binary.BigEndian.PutUint32(r[8:], 0x00000a00)
-	copy(r[12:], []byte{192, 0, 2, 1}) // reference id (TEST-NET-1)
-	ts := ntpTimestamp(now)
-	copy(r[16:], ts)         // reference
-	copy(r[24:], req[40:48]) // originate = client's transmit
-	copy(r[32:], ts)         // receive
-	copy(r[40:], ts)         // transmit
-	return r
 }
 
 // ── SSDP ──────────────────────────────────────────────────────────────────────

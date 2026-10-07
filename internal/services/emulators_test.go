@@ -717,13 +717,9 @@ func TestMemcachedUDP(t *testing.T) {
 func TestNTPUDP(t *testing.T) {
 	client := make([]byte, 48)
 	client[0] = 0x23 // LI 0, v4, mode 3
-	copy(client[40:], []byte{0xde, 0xad, 0xbe, 0xef, 1, 2, 3, 4})
 	reply, res := ntpUDP(client)
-	if len(reply) != 48 || reply[0]&7 != 4 || (reply[0]>>3)&7 != 4 || reply[1] == 0 {
-		t.Fatalf("client reply = % x", reply)
-	}
-	if !bytes.Equal(reply[24:32], client[40:48]) {
-		t.Error("originate timestamp not echoed")
+	if reply != nil {
+		t.Fatalf("NTP must never be answered (spoofable UDP), got % x", reply)
 	}
 	if hasTag(res.Tags, tagAmplification) {
 		t.Error("plain client request tagged as amplification")
@@ -738,19 +734,14 @@ func TestNTPUDP(t *testing.T) {
 	if reply, res := ntpUDP(readvar); reply != nil || !hasTag(res.Tags, tagAmplification) {
 		t.Errorf("mode 6: reply=%q tags=%v", reply, res.Tags)
 	}
-	// Short client packet, and every truncation of a good one: no reply, no panic.
-	for n := 0; n < 48; n++ {
+	for n := 0; n < 48; n++ { // every truncation: captured, never answered, no panic
 		if reply, _ := ntpUDP(client[:n]); reply != nil {
 			t.Errorf("replied to %d-byte client packet", n)
 		}
 	}
-	// A padded request is answered with exactly 48 bytes, never more.
-	if reply, _ := ntpUDP(append(append([]byte{}, client...), make([]byte, 100)...)); len(reply) != 48 {
-		t.Errorf("padded request reply = %d bytes", len(reply))
-	}
 	for _, in := range hostileInputs() {
-		if reply, _ := ntpUDP(in); len(reply) > len(in) {
-			t.Errorf("reply %d > request %d", len(reply), len(in))
+		if reply, _ := ntpUDP(in); reply != nil {
+			t.Errorf("replied to hostile input of %d bytes", len(in))
 		}
 	}
 }

@@ -1155,7 +1155,7 @@ Many UDP reconnaissance and amplification attacks rely on responses. Capture-onl
 | Port | Service | Protocol |
 |------|---------|----------|
 | 53 | DNS | Domain Name System |
-| 123 | NTP | Network Time Protocol (mode 3 answered with a 48-byte server reply) |
+| 123 | NTP | Network Time Protocol (recorded, never answered; mode 6/7 tagged `amplification-probe`) |
 | 161 | SNMP | Simple Network Management Protocol |
 | 1434 | MSSQL-Mon | MSSQL Browser/Monitor Service |
 | 1900 | SSDP/UPnP | Simple Service Discovery Protocol / Universal Plug and Play (unicast probes recorded, never answered) |
