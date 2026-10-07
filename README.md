@@ -507,15 +507,9 @@ go build -o webtraffik.exe .
 
 Ports <1024 require Administrator privileges on Windows.
 
-### Hot Reload
+### Frontend hot reload
 
-Since static files are embedded via `//go:embed`, changes to `static/index.html` require a rebuild:
-
-```bash
-make build && ./webtraffik
-```
-
-For faster iteration, temporarily serve `static/` via a file server and remove the embed.
+Run a backend (`./webtraffik -capture-mode=go-only -dashboard-listen=127.0.0.1:8999`), then `cd web && npm run dev` — the Vite dev server on :5173 proxies `/api` and `/ws` to it. Run `make web` and commit `web/dist` when done.
 
 ## Uninstall
 

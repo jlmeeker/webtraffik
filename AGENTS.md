@@ -89,6 +89,9 @@ go build ./cmd/webtraffik && ./webtraffik -capture-mode=go-only -dashboard-liste
 - Tests that need geo data build a fake MaxMind DB with `internal/testutil`
   (`WriteCityDB`) — no network. `internal/server/server_test.go` is the end-to-end
   harness (real app + HTTP + WebSocket, no ports bound).
+- Frontend: `make web-check` (tsc, eslint, vitest); Playwright e2e in `web/tests/e2e`.
+  After touching `web/src`, run `make web` and commit the regenerated `web/dist`
+  (CI fails on drift). Traceroute filtering constants live in `web/src/traceroute/filter.ts`.
 - Branches: `feature/*`, `bugfix/*`, `refactor/*`, `docs/*`; merge to `main`.
 - Sandboxes often cannot reach GitHub release mirrors: the GeoLite download will
   fail there; use `testutil` or drop `GeoLite2-City.mmdb` in the data dir.
