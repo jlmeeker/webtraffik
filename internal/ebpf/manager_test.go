@@ -144,9 +144,10 @@ func TestMakeBanKey(t *testing.T) {
 		t.Fatalf("makeBanKey: %v", err)
 	}
 
-	// SrcIP bytes must match the raw IPv4 bytes.
-	if key.SrcIP[0] != 192 || key.SrcIP[1] != 168 || key.SrcIP[2] != 1 || key.SrcIP[3] != 100 {
-		t.Errorf("SrcIP = %v, want [192 168 1 100]", key.SrcIP)
+	// SrcIP must be the v4-mapped form ::ffff:192.168.1.100.
+	if key.SrcIP[10] != 0xff || key.SrcIP[11] != 0xff ||
+		key.SrcIP[12] != 192 || key.SrcIP[13] != 168 || key.SrcIP[14] != 1 || key.SrcIP[15] != 100 {
+		t.Errorf("SrcIP = %v, want v4-mapped 192.168.1.100", key.SrcIP)
 	}
 
 	// DstPort must be big-endian 443 = 0x01BB.
@@ -162,12 +163,14 @@ func TestMakeBanKey(t *testing.T) {
 	}
 }
 
-func TestMakeBanKeyIPv6ReturnsError(t *testing.T) {
-	ipv6 := net.ParseIP("::1") // pure IPv6, To4() returns nil
-	// net.IP("::1").To4() == nil, so makeBanKey should return an error.
-	_, err := makeBanKey(ipv6, 80)
-	if err == nil {
-		t.Error("makeBanKey with IPv6-only address should return error")
+func TestMakeBanKeyIPv6(t *testing.T) {
+	key, err := makeBanKey(net.ParseIP("2001:db8::1"), 80)
+	if err != nil {
+		t.Fatalf("makeBanKey: %v", err)
+	}
+	want := net.ParseIP("2001:db8::1").To16()
+	if !net.IP(key.SrcIP[:]).Equal(want) {
+		t.Errorf("SrcIP = %v, want %v", key.SrcIP, want)
 	}
 }
 

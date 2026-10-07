@@ -15,10 +15,12 @@ import (
 type captureBanEntry struct{ ExpiresAt uint64 }
 
 type captureBanKey struct {
-	SrcIp   [4]uint8
+	SrcIp   [16]uint8
 	DstPort uint16
 	Pad     [2]uint8
 }
+
+type captureIpKey struct{ Addr [16]uint8 }
 
 // loadCapture returns the embedded CollectionSpec for capture.
 func loadCapture() (*ebpf.CollectionSpec, error) {

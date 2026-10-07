@@ -3,6 +3,7 @@ package ebpf
 import (
 	"bufio"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -62,12 +63,18 @@ func ParseCaptureMode(s string) (CaptureMode, error) {
 	}
 }
 
-// banKey mirrors the C struct ban_key layout used as the eBPF map key.
-// Must match the C struct layout exactly (8 bytes total with padding).
-// Both SrcIP and DstPort are stored in network byte order (big-endian)
-// to match how the XDP program builds the key from packet headers.
+// ipKey mirrors the C struct ip_key: a 16-byte address in network order.
+// IPv4 addresses are v4-mapped (::ffff:a.b.c.d).
+type ipKey struct {
+	Addr [16]byte
+}
+
+// banKey mirrors the C struct ban_key layout used as the eBPF map key
+// (20 bytes). SrcIP is a 16-byte v4-mapped/IPv6 address and DstPort is a
+// big-endian uint16, both in network byte order as the XDP program builds
+// the key from packet headers.
 type banKey struct {
-	SrcIP   [4]byte
+	SrcIP   [16]byte
 	DstPort [2]byte
 	_       [2]byte // padding to match C struct
 }
@@ -263,7 +270,7 @@ func (m *Manager) Stop() error {
 // Ban inserts or refreshes an entry in the eBPF ban_map for the given IP and
 // port, expiring after duration.
 //
-// ip should be a dotted-decimal IPv4 string (e.g. "1.2.3.4").
+// ip may be an IPv4 or IPv6 address string.
 // port should be the decimal port string (e.g. "22").
 //
 // No-op if the Manager is inactive.
@@ -272,9 +279,9 @@ func (m *Manager) Ban(ipStr, portStr string, duration time.Duration) error {
 		return nil
 	}
 
-	ip := net.ParseIP(ipStr).To4()
+	ip := net.ParseIP(ipStr)
 	if ip == nil {
-		return fmt.Errorf("ebpf: Ban: invalid IPv4 address %q", ipStr)
+		return fmt.Errorf("ebpf: Ban: invalid IP address %q", ipStr)
 	}
 
 	port, err := parsePort(portStr)
@@ -309,9 +316,9 @@ func (m *Manager) Unban(ipStr, portStr string) error {
 		return nil
 	}
 
-	ip := net.ParseIP(ipStr).To4()
+	ip := net.ParseIP(ipStr)
 	if ip == nil {
-		return fmt.Errorf("ebpf: Unban: invalid IPv4 address %q", ipStr)
+		return fmt.Errorf("ebpf: Unban: invalid IP address %q", ipStr)
 	}
 
 	port, err := parsePort(portStr)
@@ -338,7 +345,7 @@ func (m *Manager) ReloadAllowFile() error {
 		return nil
 	}
 	// Clear the map first.
-	if err := clearMap(m.objs.MgmtAllowIpsMap); err != nil {
+	if err := clearMap[ipKey, uint8](m.objs.MgmtAllowIpsMap); err != nil {
 		return fmt.Errorf("ebpf: reload allow file: clear map: %w", err)
 	}
 	return m.loadAllowFile(m.objs, m.allowFile)
@@ -346,23 +353,22 @@ func (m *Manager) ReloadAllowFile() error {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-// makeBanKey constructs a banKey from a parsed net.IP (must be 4-byte IPv4)
-// and a parsed uint16 port. The key matches the C struct ban_key layout:
-// src_ip is stored in network byte order (as raw bytes), dst_port is stored
-// in network byte order (big-endian uint16).
+// makeBanKey constructs a banKey from a parsed net.IP (IPv4 or IPv6) and a
+// uint16 port. The key matches the C struct ban_key layout: src_ip is the
+// 16-byte (v4-mapped) address, dst_port is a big-endian uint16.
 func makeBanKey(ip net.IP, port uint16) (banKey, error) {
-	ip4 := ip.To4()
-	if ip4 == nil {
-		return banKey{}, fmt.Errorf("makeBanKey: not an IPv4 address: %v", ip)
+	ip16 := ip.To16()
+	if ip16 == nil {
+		return banKey{}, fmt.Errorf("makeBanKey: not an IP address: %v", ip)
 	}
 	k := banKey{}
-	copy(k.SrcIP[:], ip4)
+	copy(k.SrcIP[:], ip16)
 	// Store port in network byte order to match the C XDP key construction.
 	binary.BigEndian.PutUint16(k.DstPort[:], port)
 	return k, nil
 }
 
-// loadAllowFile reads one IPv4 address per line from path and populates the
+// loadAllowFile reads one IP address (v4 or v6) per line from path and populates the
 // mgmt_allow_ips_map in objs.
 func (m *Manager) loadAllowFile(objs *captureObjects, path string) error {
 	f, err := os.Open(path)
@@ -379,13 +385,14 @@ func (m *Manager) loadAllowFile(objs *captureObjects, path string) error {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		ip := net.ParseIP(line).To4()
+		ip := net.ParseIP(line).To16()
 		if ip == nil {
-			log.Printf("ebpf: allow file %q: skipping invalid IPv4 %q", path, line)
+			log.Printf("ebpf: allow file %q: skipping invalid IP %q", path, line)
 			continue
 		}
-		ipInt := binary.BigEndian.Uint32(ip)
-		if err := objs.MgmtAllowIpsMap.Put(ipInt, one); err != nil {
+		var key ipKey
+		copy(key.Addr[:], ip)
+		if err := objs.MgmtAllowIpsMap.Put(key, one); err != nil {
 			return fmt.Errorf("populate mgmt_allow_ips_map for %s: %w", line, err)
 		}
 		count++
@@ -398,17 +405,20 @@ func (m *Manager) loadAllowFile(objs *captureObjects, path string) error {
 }
 
 // clearMap deletes all entries from an eBPF hash map by iterating keys then deleting.
-func clearMap(m *ebpf.Map) error {
-	var key banKey
-	var val banEntry
+// K is the map's key type and V its value type.
+func clearMap[K, V any](m *ebpf.Map) error {
+	var key K
+	var val V
 	iter := m.Iterate()
-	var keys []banKey
+	var keys []K
 	for iter.Next(&key, &val) {
 		keys = append(keys, key)
 	}
+	if err := iter.Err(); err != nil {
+		return err
+	}
 	for _, k := range keys {
-		k := k
-		if err := m.Delete(k); err != nil && !isNotFound(err) {
+		if err := m.Delete(k); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 			return err
 		}
 	}
@@ -417,7 +427,7 @@ func clearMap(m *ebpf.Map) error {
 
 // isNotFound returns true for ebpf.ErrKeyNotExist.
 func isNotFound(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "key not exist")
+	return errors.Is(err, ebpf.ErrKeyNotExist)
 }
 
 // parsePort converts a decimal port string to uint16.
