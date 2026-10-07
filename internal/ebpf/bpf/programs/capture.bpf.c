@@ -49,7 +49,9 @@ struct ban_entry {
 
 // event: emitted to userspace via the perf event array (20 bytes).
 // Emitted once per new TCP connection attempt (SYN without ACK), per UDP
-// datagram and per ICMP/ICMPv6 packet — not per TCP segment.
+// datagram and per ICMP/ICMPv6 packet — not per TCP segment — except packets
+// shaped like replies to this host's own outbound traffic (see "Reply
+// heuristics"); those are passed and counted but produce no event.
 struct event {
     __u8  src_ip[16]; // v4-mapped or native IPv6, network order
     __u16 dst_port;   // host byte order
@@ -110,6 +112,52 @@ static __always_inline void emit(struct xdp_md *ctx, const __u8 *src,
     ev.dropped  = dropped;
     ev.protocol = proto;
     bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &ev, sizeof(ev));
+}
+
+// ── Reply heuristics ─────────────────────────────────────────────────────────
+//
+// The host's own outbound traffic (DNS lookups, NTP, apt, ping, traceroute...)
+// draws replies from public IPs that look exactly like scans if reported.
+// Without connection tracking we classify "reply-shaped" packets statelessly
+// and suppress their *event* only: they are still passed, counted as passed
+// and subject to ban enforcement, exactly as before.
+
+// icmp4_is_reply: reply-class ICMPv4 types: 0 echo reply, 3 dest unreachable,
+// 4 source quench, 5 redirect, 11 time exceeded, 12 parameter problem,
+// 14/16/18 timestamp/info/mask replies. Echo request (8), timestamp request
+// (13), info/mask requests (15/17) and unknown types are probes: reported.
+static __always_inline int icmp4_is_reply(__u8 t) {
+    switch (t) {
+    case 0: case 3: case 4: case 5: case 11: case 12:
+    case 14: case 16: case 18:
+        return 1;
+    }
+    return 0;
+}
+
+// icmp6_is_reply: ICMPv6 errors (1-4), echo reply (129) and the link-local
+// ND/MLD family (130-137). Echo request (128) is reported.
+static __always_inline int icmp6_is_reply(__u8 t) {
+    return (t >= 1 && t <= 4) || (t >= 129 && t <= 137);
+}
+
+// udp_is_reply: a datagram from a server-looking source port to a Linux
+// ephemeral destination port (>= 32768). Source ports < 1024 are well-known
+// services; 5353 (mDNS), 1900 (SSDP), 3478 (STUN), 4500 (IPsec NAT-T) and
+// 5060 (SIP) are registered ports that count too, still only when
+// dst >= 32768.
+// Limits: this is a heuristic. A scanner that sources from a low port (e.g.
+// UDP/53 or /123 reflection-style probes) to a high port of ours is missed
+// (no event); a reply to a client socket bound to a non-ephemeral port
+// (< 32768, e.g. 'dig -p 5300', or BSD/Windows ephemeral ranges) is still
+// reported. Ports are host byte order.
+static __always_inline int udp_is_reply(__u16 sport, __u16 dport) {
+    if (dport < 32768)
+        return 0;
+    if (sport < 1024)
+        return 1;
+    return sport == 5353 || sport == 1900 || sport == 3478 ||
+           sport == 4500 || sport == 5060;
 }
 
 // ── XDP entry point ──────────────────────────────────────────────────────────
@@ -177,9 +225,16 @@ int xdp_capture(struct xdp_md *ctx) {
             return XDP_PASS;
         dst_port_net  = udp->dest;
         dst_port_host = bpf_ntohs(dst_port_net);
+        new_conn = !udp_is_reply(bpf_ntohs(udp->source), dst_port_host);
     } else if (proto == IPPROTO_ICMP || proto == IPPROTO_ICMPV6) {
+        __u8 *icmp_type = l4;
+        if ((void *)(icmp_type + 1) > data_end)
+            return XDP_PASS;
         telemetry_inc(0);
-        emit(ctx, bk.src_ip, 0, 0, proto);
+        int reply = proto == IPPROTO_ICMP ? icmp4_is_reply(*icmp_type)
+                                          : icmp6_is_reply(*icmp_type);
+        if (!reply)
+            emit(ctx, bk.src_ip, 0, 0, proto);
         return XDP_PASS;
     } else {
         return XDP_PASS;

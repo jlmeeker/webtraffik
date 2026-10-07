@@ -353,6 +353,8 @@ func (a *App) process(q queued) {
 
 // pumpEBPF feeds XDP-observed connection attempts into the pipeline. Ports with
 // a Go listener are skipped (the listener reports them with richer detail).
+// Reply-shaped packets (answers to our own outbound traffic) never reach this
+// channel: the XDP program suppresses their events (see capture.bpf.c).
 func (a *App) pumpEBPF(ctx context.Context, listened map[services.PortKey]bool) {
 	for {
 		select {

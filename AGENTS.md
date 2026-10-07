@@ -56,7 +56,13 @@ cross-compilation trivial). eBPF via `github.com/cilium/ebpf`. Frontend in `web/
    — `CAP_SYS_ADMIN` is not needed (verified). Events fire per SYN/UDP/ICMP, not
    per packet; multicast/broadcast destinations (mDNS, SSDP, DHCP, IPv6 ND…) are
    ignored entirely (`TestXDPIgnoresMulticastAndBroadcast` runs real packets via
-   `BPF_PROG_TEST_RUN`). `Manager` methods are no-ops when inactive; don't nil-check.
+   `BPF_PROG_TEST_RUN`). Packets shaped like *replies to this host's own
+   outbound traffic* are passed and counted but emit no event (stateless
+   heuristic, see "Reply heuristics" in the C file): ICMP/ICMPv6 reply and
+   error types, ND/MLD, and UDP from a server source port (<1024, or
+   5353/1900/3478/4500/5060) to an ephemeral dst port (>=32768); echo/other
+   probes still fire (`TestXDPSuppressesReplyEvents`). Bans are enforced
+   regardless. `Manager` methods are no-ops when inactive; don't nil-check.
 6. **Security defaults.** The dashboard may be exposed: keep the Basic-auth path,
    the Origin check on POST/WebSocket, JSON-only POST bodies, input validation in
    `parseBanRequest`, the traceroute concurrency cap and public-IP check, and the
