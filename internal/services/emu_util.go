@@ -118,3 +118,14 @@ func cstr(b []byte) (s string, rest []byte, ok bool) {
 }
 
 func be16(b []byte) int { return int(binary.BigEndian.Uint16(b)) }
+
+// fit returns the first candidate reply that is no larger than the request,
+// or nil. UDP responders use it so they can never amplify traffic.
+func fit(req []byte, candidates ...[]byte) []byte {
+	for _, c := range candidates {
+		if len(c) > 0 && len(c) <= len(req) {
+			return c
+		}
+	}
+	return nil
+}

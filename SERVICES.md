@@ -52,7 +52,7 @@ This creates realistic fingerprints that scanners and reconnaissance tools will 
 | 3389 | RDP | Remote Desktop Protocol | **interactive** — parses X.224 Connection Request (`mstshash` cookie, requested protocols); Connection Confirm selecting standard RDP security |
 | 4444 | Metasploit | Metasploit Default Reverse Shell | No banner (silent accept) |
 | 4899 | Radmin | Remote Administrator | `RFB 003.006\n` — Radmin v3 RFB-like handshake |
-| 5060 | SIP | Session Initiation Protocol (TCP; UDP is capture-only) | **interactive** — `OPTIONS` → 200, `REGISTER`/`INVITE` → 401 digest challenge; method, UA, From captured |
+| 5060 | SIP | Session Initiation Protocol (TCP) | **interactive** — `OPTIONS` → 200, `REGISTER`/`INVITE` → 401 digest challenge; method, UA, From captured |
 | 5432 | PostgreSQL | PostgreSQL Database | **interactive** — SSLRequest → `N`, cleartext password request, password captured, `FATAL 28P01` |
 | 5555 | ADB | Android Debug Bridge | ADB CNXN connect response with device identity string |
 | 5900 | VNC | Virtual Network Computing | `RFB 003.008\n` — RFB protocol version handshake for VNC 3.8 |
@@ -1148,7 +1148,7 @@ webTraffik binds UDP listeners (using `net.ListenPacket`) on the following ports
 1. The source IP and port are captured
 2. A geolocation event is fired and streamed to dashboards
 3. By default **no response is sent** — the datagram is recorded and discarded
-4. **Nothing is ever sent back on a UDP port.** A datagram's source address can be forged, so any reply — even one no larger than the request — could be reflected at a victim. Four ports (123, 1900, 5060, 11211) have parsers that extract detail and tags, see [Protocol emulators](#protocol-emulators); `serveUDP` never writes to the socket, and `TestServeUDPNeverReplies` enforces it.
+4. Four ports (123, 1900, 5060, 11211) have small responders — see [Protocol emulators](#protocol-emulators). A reply is only ever sent if it is **no larger than the request** (enforced centrally in `serveUDP`, not per handler), and at most 5 replies per source per 10 s are sent, so the sensor can not be used as a reflection amplifier. Every datagram is still captured.
 
 Many UDP reconnaissance and amplification attacks rely on responses. Capture-only ports log the activity without participating in reflection attacks.
 
@@ -1186,19 +1186,19 @@ These services parse the client's side of the protocol, record who is knocking, 
 | 5432/tcp PostgreSQL | `postgresHandler` | `user`, `db`, `application_name`, `secret` (cleartext password), `pg_protocol`, `tls_requested` | `credential-attempt`, `mirai-default-creds`, `privileged-user` | `SSLRequest`/`GSSENCRequest` get `N`; `StartupMessage` gets `AuthenticationCleartextPassword`; the password gets `ErrorResponse FATAL 28P01`. Protocol 2.0 gets `0A000` |
 | 1883/tcp MQTT | `mqttHandler` (`emu_mqtt.go`) | `mqtt_protocol`, `mqtt_level`, `client_id`, `user`, `secret`, `will_topic` | as above | CONNACK return code 5 (v3.1/3.1.1). For MQTT 5 the equivalent reason code `0x87` is used (code 5 is not valid in v5). Remaining length capped at 4 KiB |
 | 3389/tcp RDP | `rdpHandler` (`emu_rdp.go`) | `user` (from `Cookie: mstshash=`), `requested_protocols` (`standard`, `tls`, `credssp`, `rdstls`, `credssp-ex`) | `privileged-user` | X.224 Connection Confirm; with an `RDP_NEG_REQ` the `RDP_NEG_RSP` selects standard RDP security, then one more TPKT (MCS Connect Initial) is read for the capture and the connection closes. TPKT capped at 4 KiB. A bare username is not tagged `credential-attempt` |
-| 5060/tcp + udp SIP | `sipTCPHandler` / `sipUDP` (`emu_sip.go`) | `sip_method`, `sip_uri`, `user_agent`, `from`; with an `Authorization: Digest` header also `user` and `auth_hash_hex` (the digest `response`) | `sip-scan`, `scanner:sipvicious` (friendly-scanner, sipvicious, svwar, svmap, svcrack), `scanner:sipcli` | `OPTIONS` gets 200 OK; `REGISTER`/`INVITE` get 401 with a random digest nonce; other methods get 405; `ACK` and responses get nothing. Via/From/To/Call-ID/CSeq are echoed. The replies are TCP only; UDP datagrams are parsed and recorded but never answered. TCP: at most 4 messages, 8 KiB of headers, 64 header lines, 4 KiB body |
-| 11211/udp Memcached | `memcachedUDP` (`emu_udp.go`) | `memcached_cmd`, `memcached_request_id` | `amplification-probe` for `stats`/`get`/`gets`/`gat`/`gats` | None (UDP is never answered). The 8-byte frame header and command are parsed; `set` is recorded but not tagged. TCP 11211 remains a banner |
-| 123/udp NTP | `ntpUDP` | `ntp_mode`, `ntp_version`, `ntp_reqcode` (mode 7), `ntp_opcode` (mode 6) | `amplification-probe` for mode 7 (monlist, request codes 20/42 noted in `detail`) and mode 6 (ntpq) | None (UDP is never answered) |
-| 1900/udp SSDP | `ssdpUDP` | `ssdp_method`, `ssdp_st`, `user_agent` | `amplification-probe` for `M-SEARCH`, plus `ssdp-scan` | None (UDP is never answered) |
+| 5060/tcp + udp SIP | `sipTCPHandler` / `sipUDP` (`emu_sip.go`) | `sip_method`, `sip_uri`, `user_agent`, `from`; with an `Authorization: Digest` header also `user` and `auth_hash_hex` (the digest `response`) | `sip-scan`, `scanner:sipvicious` (friendly-scanner, sipvicious, svwar, svmap, svcrack), `scanner:sipcli` | `OPTIONS` gets 200 OK; `REGISTER`/`INVITE` get 401 with a random digest nonce; other methods get 405; `ACK` and responses get nothing. Via/From/To/Call-ID/CSeq are echoed. Over UDP a compact form is used if the full reply would exceed the request. TCP: at most 4 messages, 8 KiB of headers, 64 header lines, 4 KiB body |
+| 11211/udp Memcached | `memcachedUDP` (`emu_udp.go`) | `memcached_cmd`, `memcached_request_id` | `amplification-probe` for `stats`/`get`/`gets`/`gat`/`gats` | 8-byte frame header echoed plus a bare `END\r\n` (or `ERROR`), never larger than the request. `set` is recorded but not tagged. TCP 11211 remains a banner |
+| 123/udp NTP | `ntpUDP` | `ntp_mode`, `ntp_version`, `ntp_reqcode` (mode 7), `ntp_opcode` (mode 6) | `amplification-probe` for mode 7 (monlist, request codes 20/42 noted in `detail`) and mode 6 (ntpq) | Mode 3 client gets a stratum-2 mode 4 reply of exactly 48 bytes (the minimum client packet size, so 1:1 at worst). Modes 6 and 7 are never answered |
+| 1900/udp SSDP | `ssdpUDP` | `ssdp_method`, `ssdp_st`, `user_agent` | `amplification-probe` for `M-SEARCH`, plus `ssdp-scan` | None (a real UPnP answer would be larger than the request) |
 | 2375/tcp Docker, 9200/tcp Elasticsearch | `httpFakes` (`httpfake.go`) in the HTTP honeypot | standard HTTP meta (`method`, `path`, `host`, `user_agent`) | classifier tags, e.g. `docker-api-probe` | Path-based JSON, see the port sections above |
 
 ### Adding another path-based fake
 
 Add a `func(*http.Request) (fakeResp, bool)` to `httpFakes` in `httpfake.go` keyed by port, and make sure the port is in `httpPorts` (not `tcpServices`). Returning `false` falls through to the default nginx response.
 
-### UDP parsers
+### UDP responders
 
-A UDP parser is a `func(pkt []byte) Result` registered in `udpHandlers` (`emu_udp.go`) for a port that is already in `udpServicePorts`. It extracts detail, tags and meta only: handlers cannot reply, because `serveUDP` never writes to the socket (UDP sources are spoofable).
+A responder is a `func(pkt []byte) (reply []byte, res Result)` registered in `udpHandlers` (`emu_udp.go`) for a port that is already in `udpServicePorts`. Use `fit(req, candidates...)` to pick a reply that fits, but note that `serveUDP` also drops any reply larger than the request and rate-limits per source, so a buggy handler can not turn the sensor into an amplifier.
 
 ---
 
@@ -1208,7 +1208,7 @@ All ports are defined in one place: `internal/services/registry.go`.
 
 To add a service:
 
-1. **Banner-only TCP**: add an entry to `tcpServices` in `banners.go`. **Interactive TCP**: write a `ConnHandler`, register it in `customHandlers()` (`run.go`) and add the port to `customTCPPorts`. **HTTP/TLS**: add to `httpPorts` / `tlsPorts` (optionally with a path-based fake in `httpfake.go`). **UDP**: add to `udpServicePorts` (optionally with a parser in `udpHandlers`, `emu_udp.go`).
+1. **Banner-only TCP**: add an entry to `tcpServices` in `banners.go`. **Interactive TCP**: write a `ConnHandler`, register it in `customHandlers()` (`run.go`) and add the port to `customTCPPorts`. **HTTP/TLS**: add to `httpPorts` / `tlsPorts` (optionally with a path-based fake in `httpfake.go`). **UDP**: add to `udpServicePorts` (optionally with a responder in `udpHandlers`, `emu_udp.go`).
 2. Add the display name to `tcpServiceNames` in `registry.go` (a test fails if a listener has no name).
 3. Add the human-readable notes to this file.
 4. Run `make docs` to regenerate `docs/PORTS.md` (a test fails if it is stale).

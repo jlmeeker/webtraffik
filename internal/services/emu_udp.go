@@ -12,23 +12,25 @@ import (
 	"time"
 )
 
-// UDP listeners. The source address of a datagram can be forged, so any reply
-// — even one no larger than the request — would let an attacker bounce traffic
-// off this host at a victim. UDP is therefore capture-only: nothing is ever
-// written to a UDP socket. The handlers below only parse what arrived so the
-// capture carries useful detail and tags.
+// UDP responders. Datagram services are trivially spoofable, so these follow
+// two hard rules:
+//
+//  1. A reply is never larger than the request that triggered it (enforced in
+//     serveUDP, not left to the individual handlers), so the sensor can not
+//     amplify traffic.
+//  2. Replies are rate limited per source address.
 //
 // Known amplification vectors (memcached stats, NTP monlist/readvar, SSDP
-// M-SEARCH) are tagged "amplification-probe".
+// M-SEARCH) are tagged "amplification-probe" and answered with nothing or
+// with something minimal.
 
 const tagAmplification = "amplification-probe"
 
-// udpHandler inspects one datagram and returns what to record. A nil
-// res.Data records the datagram itself.
-type udpHandler func(pkt []byte) Result
+// udpHandler inspects one datagram and returns the reply to send (nil for
+// none) plus what to record. A nil res.Data records the datagram itself.
+type udpHandler func(pkt []byte) (reply []byte, res Result)
 
-// udpHandlers are the UDP ports whose datagrams are parsed; the rest are
-// recorded raw. None of them ever answers.
+// udpHandlers are the UDP ports with a responder; the rest are capture-only.
 var udpHandlers = map[int]udpHandler{
 	123:   ntpUDP,
 	1900:  ssdpUDP,
@@ -36,22 +38,57 @@ var udpHandlers = map[int]udpHandler{
 	11211: memcachedUDP,
 }
 
-// safeUDP runs h, converting a panic into a bare record so one hostile
-// datagram can not kill the read loop.
-func safeUDP(h udpHandler, pkt []byte) (res Result) {
+const (
+	udpReplyBurst  = 5                // replies per source per window
+	udpReplyWindow = 10 * time.Second // rate-limit window
+	udpLimiterMax  = 8192             // tracked sources before the table is reset
+)
+
+// replyLimiter is a per-source fixed-window limiter. Owned by the single
+// goroutine that reads the socket, so it needs no lock.
+type replyLimiter struct {
+	m map[string]*limitSlot
+}
+
+type limitSlot struct {
+	start time.Time
+	n     int
+}
+
+func (l *replyLimiter) allow(ip string, now time.Time) bool {
+	if l.m == nil || len(l.m) >= udpLimiterMax {
+		l.m = make(map[string]*limitSlot)
+	}
+	s := l.m[ip]
+	if s == nil || now.Sub(s.start) > udpReplyWindow {
+		l.m[ip] = &limitSlot{start: now, n: 1}
+		return true
+	}
+	s.n++
+	return s.n <= udpReplyBurst
+}
+
+// replyAllowed is the anti-amplification rule: a reply must exist and be no
+// larger than the request.
+func replyAllowed(reply, req []byte) bool { return len(reply) > 0 && len(reply) <= len(req) }
+
+// safeUDP runs h, converting a panic into "no reply" so one hostile datagram
+// can not kill the read loop.
+func safeUDP(h udpHandler, pkt []byte) (reply []byte, res Result) {
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("udp handler panic", "panic", r)
-			res = Result{Detail: "handler error"}
+			reply, res = nil, Result{Detail: "handler error"}
 		}
 	}()
 	return h(pkt)
 }
 
-// serveUDP reads datagrams from pc until it is closed and records each one
-// (parsed by h when non-nil). It never writes to pc.
+// serveUDP reads datagrams from pc until it is closed, recording each one and
+// answering through h when it is non-nil.
 func (e *Env) serveUDP(ctx context.Context, pc net.PacketConn, port int, h udpHandler) {
 	portStr := strconv.Itoa(port)
+	var lim replyLimiter
 	buf := make([]byte, 2048)
 	for {
 		n, src, err := pc.ReadFrom(buf)
@@ -71,12 +108,16 @@ func (e *Env) serveUDP(ctx context.Context, pc net.PacketConn, port int, h udpHa
 			e.Capture(cp)
 			continue
 		}
-		res := safeUDP(h, pkt)
+		reply, res := safeUDP(h, pkt)
 		cp.Data = append([]byte(nil), clip(res.Data, 512)...)
 		if res.Data == nil {
 			cp.Data = append([]byte(nil), clip(pkt, 512)...)
 		}
 		cp.Detail, cp.Tags, cp.Meta = res.Detail, res.Tags, res.Meta
+		if replyAllowed(reply, pkt) && lim.allow(srcIP, time.Now()) {
+			pc.SetWriteDeadline(time.Now().Add(time.Second))
+			pc.WriteTo(reply, src)
+		}
 		e.Capture(cp)
 	}
 }
@@ -85,10 +126,10 @@ func (e *Env) serveUDP(ctx context.Context, pc net.PacketConn, port int, h udpHa
 
 // memcachedUDP parses the 8-byte UDP frame header (request id, sequence, total
 // datagrams, reserved) and the text command that follows. stats/get are the
-// classic amplification vectors.
-func memcachedUDP(pkt []byte) Result {
+// classic amplification vectors; the reply is a bare "END".
+func memcachedUDP(pkt []byte) ([]byte, Result) {
 	if len(pkt) < 8 {
-		return Result{Detail: "memcached: short datagram (no frame header)"}
+		return nil, Result{Detail: "memcached: short datagram (no frame header)"}
 	}
 	hdr := pkt[:8]
 	line := pkt[8:]
@@ -112,16 +153,28 @@ func memcachedUDP(pkt []byte) Result {
 	case "stats", "get", "gets", "gat", "gats":
 		res.Tags = []string{tagAmplification}
 	}
-	return res
+	frame := func(body string) []byte {
+		return append([]byte{hdr[0], hdr[1], 0, 0, 0, 1, 0, 0}, body...)
+	}
+	switch cmd {
+	case "stats", "get", "gets", "gat", "gats":
+		return fit(pkt, frame("END\r\n"), frame("ERROR\r\n")), res
+	case "version":
+		return fit(pkt, frame("VERSION 1.6.21\r\n"), frame("ERROR\r\n")), res
+	default:
+		return fit(pkt, frame("ERROR\r\n")), res
+	}
 }
 
 // ── NTP ───────────────────────────────────────────────────────────────────────
 
-// ntpUDP classifies NTP datagrams. Mode 7 (monlist, ntpdc) and mode 6 (ntpq
+// ntpUDP classifies NTP datagrams and never answers any of them. NTP runs over
+// spoofable UDP, so even a reply the size of the request would reflect traffic
+// at a forged source address. Mode 7 (monlist, ntpdc) and mode 6 (ntpq
 // readvar/readstat) are additionally tagged as amplification vectors.
-func ntpUDP(pkt []byte) Result {
+func ntpUDP(pkt []byte) ([]byte, Result) {
 	if len(pkt) == 0 {
-		return Result{Detail: "ntp: empty datagram"}
+		return nil, Result{Detail: "ntp: empty datagram"}
 	}
 	b0 := pkt[0]
 	vn, mode := (b0>>3)&7, b0&7
@@ -137,29 +190,30 @@ func ntpUDP(pkt []byte) Result {
 			}
 		}
 		res.Tags = []string{tagAmplification}
-		return res
+		return nil, res
 	case 6:
 		res.Detail = "ntp: mode-6 control request"
 		if len(pkt) >= 2 {
 			meta["ntp_opcode"] = strconv.Itoa(int(pkt[1] & 0x1f))
 		}
 		res.Tags = []string{tagAmplification}
-		return res
+		return nil, res
 	case 3:
 		res.Detail = fmt.Sprintf("ntp: client request v%d", vn)
 		if len(pkt) < 48 {
 			res.Detail += " (short)"
 		}
-		return res
+		return nil, res
 	}
 	res.Detail = fmt.Sprintf("ntp: mode %d packet", mode)
-	return res
+	return nil, res
 }
 
 // ── SSDP ──────────────────────────────────────────────────────────────────────
 
-// ssdpUDP records unicast M-SEARCH probes.
-func ssdpUDP(pkt []byte) Result {
+// ssdpUDP records unicast M-SEARCH probes. A real UPnP answer (LOCATION, USN…)
+// is larger than the request, so none is sent.
+func ssdpUDP(pkt []byte) ([]byte, Result) {
 	text := string(clip(pkt, 1024))
 	lines := strings.Split(text, "\n")
 	first := cleanStr(strings.TrimSpace(lines[0]), 64)
@@ -189,5 +243,5 @@ func ssdpUDP(pkt []byte) Result {
 		tags = append(tags, tagAmplification)
 	}
 	res.Tags = mergeTags(tags, Classify(text, meta["user_agent"]))
-	return res
+	return nil, res
 }
