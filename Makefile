@@ -1,5 +1,6 @@
 BINARY  := webtraffik
-GOFLAGS := -ldflags="-s -w"
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+GOFLAGS := -ldflags="-s -w -X main.version=$(VERSION)"
 OUTDIR  := dist
 MAIN    := ./cmd/webtraffik
 
@@ -11,7 +12,7 @@ PLATFORMS := \
 	windows/amd64 \
 	windows/arm64
 
-.PHONY: build run cap cap-dist install uninstall clean dist remote-install firewall ebpf-gen ebpf-check $(PLATFORMS) linux/armv6 linux/armv7
+.PHONY: test vet fmt check build run cap cap-dist install uninstall clean dist remote-install firewall ebpf-gen ebpf-check $(PLATFORMS) linux/armv6 linux/armv7
 
 # Regenerate eBPF objects + Go bindings from C source via bpf2go.
 # Requires: clang >= 10, llvm-strip, linux-libc-dev. No vmlinux.h or kernel BTF
@@ -24,6 +25,19 @@ ebpf-gen:
 # Fail if the committed eBPF artifacts are out of date (used by CI).
 ebpf-check: ebpf-gen
 	git diff --exit-code -- internal/ebpf
+
+# Static checks + tests (what CI runs).
+vet:
+	go vet ./...
+
+fmt:
+	gofmt -w cmd internal
+
+test:
+	go test -race -count=1 ./...
+
+check: vet test
+	@test -z "$$(gofmt -l cmd internal)" || (echo "gofmt needed:"; gofmt -l cmd internal; exit 1)
 
 # Build for the current host OS/arch
 build:
@@ -124,14 +138,15 @@ remote-install:
 	@echo "building for $(REMOTE_GOARCH)..."
 	@$(MAKE) $(REMOTE_GOARCH)
 	$(eval REMOTE_BIN := $(OUTDIR)/$(BINARY)_$(subst /,_,$(REMOTE_GOARCH)))
-	@echo "copying $(REMOTE_BIN), install.sh, firewall.sh, nftables.conf, and gen-btf.sh to $(USER)@$(IP)..."
+	@echo "copying $(REMOTE_BIN), install.sh, firewall.sh, nftables.conf, gen-btf.sh, service unit and config example to $(USER)@$(IP)..."
 	@scp $(REMOTE_BIN)  $(USER)@$(IP):~/webtraffik
 	@scp install.sh     $(USER)@$(IP):~/install.sh
 	@scp firewall.sh    $(USER)@$(IP):~/firewall.sh
 	@scp nftables.conf  $(USER)@$(IP):~/nftables.conf
 	@scp gen-btf.sh     $(USER)@$(IP):~/gen-btf.sh
+	@scp webtraffik.service config.yaml.example $(USER)@$(IP):~/
 	@echo "running install.sh on remote..."
-	@ssh -t $(USER)@$(IP) 'sudo bash ~/install.sh ~/webtraffik && rm ~/webtraffik ~/install.sh ~/firewall.sh ~/nftables.conf ~/gen-btf.sh'
+	@ssh -t $(USER)@$(IP) 'sudo bash ~/install.sh ~/webtraffik && rm ~/webtraffik ~/install.sh ~/firewall.sh ~/nftables.conf ~/gen-btf.sh ~/webtraffik.service ~/config.yaml.example'
 
 # Remove binary, service, and data directory
 uninstall:
