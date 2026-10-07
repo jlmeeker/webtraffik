@@ -361,3 +361,55 @@ func TestDNSRebindingHostCheckWhenUnauthenticated(t *testing.T) {
 		t.Errorf("auth-enabled host = %d", resp.StatusCode)
 	}
 }
+
+func TestSearchTopCampaignsIntelAPI(t *testing.T) {
+	h := start(t, server.Config{})
+	hello := make([]byte, 40)
+	for i := range hello {
+		hello[i] = byte(i + 1) // binary payload -> payload fingerprint
+	}
+	for _, ip := range []string{"203.0.113.7", "203.0.113.8"} {
+		h.app.Submit(services.Capture{
+			SrcIP: ip, DstPort: "22", Protocol: "tcp", Data: hello,
+			Detail: "ssh login root", Meta: map[string]string{"user": "root", "secret": "toor", "ja4": "t13d-test"},
+		})
+	}
+	h.app.Submit(services.Capture{SrcIP: "203.0.113.9", DstPort: "9999", Protocol: "udp", Kind: event.KindObserved})
+	waitFor(t, "rows stored", func() bool {
+		_, b := h.get(t, "/api/history")
+		var hist []event.ConnectionEvent
+		json.Unmarshal([]byte(b), &hist)
+		return len(hist) == 3
+	})
+
+	_, b := h.get(t, "/api/history?q=user:root+class:bruteforce")
+	var hist []event.ConnectionEvent
+	json.Unmarshal([]byte(b), &hist)
+	if len(hist) != 2 || hist[0].Kind != "session" || hist[0].Class != "bruteforce" {
+		t.Errorf("q search = %s", b)
+	}
+	if _, b = h.get(t, "/api/history?kind=observed"); !strings.Contains(b, `"kind":"observed"`) || !strings.Contains(b, "203.0.113.9") {
+		t.Errorf("kind filter = %s", b)
+	}
+	if code, b := h.get(t, "/api/history?q=bogus:1"); code != 400 || !strings.Contains(b, "unknown key") {
+		t.Errorf("bad query = %d %s", code, b)
+	}
+
+	_, b = h.get(t, "/api/top?by=usernames&hours=1")
+	if !strings.Contains(b, `"key":"root"`) || !strings.Contains(b, `"count":2`) || !strings.Contains(b, `"ips":2`) {
+		t.Errorf("top = %s", b)
+	}
+	if code, _ := h.get(t, "/api/top?by=nope"); code != 400 {
+		t.Errorf("top bad dim = %d", code)
+	}
+	_, b = h.get(t, "/api/campaigns")
+	if !strings.Contains(b, `"ip_count":2`) || !strings.Contains(b, "ja4:t13d-test") {
+		t.Errorf("campaigns = %s", b)
+	}
+	if code, b := h.get(t, "/api/intel?ip=203.0.113.7"); code != 200 || !strings.Contains(b, "203.0.113.7") {
+		t.Errorf("intel = %d %s", code, b)
+	}
+	if code, _ := h.get(t, "/api/intel?ip=nope"); code != 400 {
+		t.Errorf("intel bad ip = %d", code)
+	}
+}

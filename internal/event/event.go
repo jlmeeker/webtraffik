@@ -30,7 +30,27 @@ type ConnectionEvent struct {
 	Detail     string            `json:"detail,omitempty"`      // one-line human summary (request line, credentials…)
 	Tags       []string          `json:"tags,omitempty"`        // classifier labels, e.g. "log4shell", "scanner:zgrab"
 	Meta       map[string]string `json:"meta,omitempty"`        // structured extras: ja3, ja4, sni, user, ssh_client…
+	Kind       string            `json:"kind,omitempty"`        // KindSession, KindProbe or KindObserved
+	Class      string            `json:"class,omitempty"`       // ClassExploit, ClassBruteforce, ClassScan, ClassResearch or ClassUnknown
+	Scanner    string            `json:"scanner,omitempty"`     // known research scanner operator, e.g. "Shodan"
+	FP         []string          `json:"-"`                     // campaign fingerprints (ja4:…, pl:…); stored, not sent to browsers
 }
+
+// Event kinds: how much we learned about the connection.
+const (
+	KindSession  = "session"  // a listener held a conversation and captured something
+	KindProbe    = "probe"    // a listener saw the connection but received nothing
+	KindObserved = "observed" // seen only by XDP; no listener on that port
+)
+
+// Event classes: what the source appears to be doing.
+const (
+	ClassExploit    = "exploit"    // payload matched an exploit/attack signature
+	ClassBruteforce = "bruteforce" // credential guessing
+	ClassScan       = "scan"       // reconnaissance with no attack payload
+	ClassResearch   = "research"   // a known research/measurement scanner
+	ClassUnknown    = "unknown"
+)
 
 // JoinTags serialises tags for storage.
 func JoinTags(tags []string) string { return strings.Join(tags, ",") }

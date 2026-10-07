@@ -44,6 +44,11 @@ type Config struct {
 	ExportMaxMB   int    `yaml:"export-max-mb"`  // rotate the export file at this size
 	PublicIP      string `yaml:"public-ip"`      // override auto-discovery; "none" skips it
 
+	// ── source enrichment ─────────────────────────────────────────────────────
+	EnrichRDNS   bool   `yaml:"enrich-rdns"`   // reverse-DNS lookups to spot research scanners
+	GreyNoiseKey string `yaml:"greynoise-key"` // optional GreyNoise community API key
+	AbuseIPDBKey string `yaml:"abuseipdb-key"` // optional AbuseIPDB API key
+
 	// ── geolocation ───────────────────────────────────────────────────────────
 	DisableRgeo   bool   `yaml:"disable-rgeo"`
 	DisableASN    bool   `yaml:"disable-asn"`
@@ -65,6 +70,7 @@ func defaultConfig() Config {
 		DashboardListen: ":8999",
 		RetentionDays:   90,
 		ExportMaxMB:     100,
+		EnrichRDNS:      true,
 		GeoCityURL:      geo.DefaultCityURL,
 		GeoASNURL:       geo.DefaultASNURL,
 		GeoRefresh:      "168h",

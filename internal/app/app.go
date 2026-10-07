@@ -18,6 +18,7 @@ import (
 	"webtraffik/internal/event"
 	"webtraffik/internal/geo"
 	"webtraffik/internal/hub"
+	"webtraffik/internal/intel"
 	"webtraffik/internal/iputil"
 	"webtraffik/internal/metrics"
 	"webtraffik/internal/ratelimit"
@@ -45,6 +46,11 @@ type Options struct {
 	ExportJSONL   string
 	ExportMaxMB   int
 
+	// Source enrichment (all optional; see internal/intel).
+	EnrichRDNS   bool
+	GreyNoiseKey string
+	AbuseKey     string
+
 	Version string
 }
 
@@ -61,6 +67,7 @@ type App struct {
 	Metrics *metrics.Cache
 	Limiter *ratelimit.Limiter
 	EBPF    *ebpf.Manager
+	Intel   *intel.Resolver
 	Env     *services.Env
 	Self    SelfInfo
 
@@ -149,6 +156,10 @@ func New(opts Options) (*App, error) {
 		return ""
 	})
 	a.Limiter.LoadBans()
+
+	a.Intel = intel.NewResolver(intel.Config{
+		RDNS: opts.EnrichRDNS, GreyNoiseKey: opts.GreyNoiseKey, AbuseKey: opts.AbuseKey, Store: a.DB,
+	})
 
 	a.Self = a.discoverSelf()
 
@@ -266,6 +277,7 @@ func (a *App) Run(ctx context.Context) error {
 	close(a.queue)
 	a.qmu.Unlock()
 	workers.Wait()
+	a.Intel.Close()   // before the DB: it persists lookups
 	a.Metrics.Close() // final flush
 	if a.export != nil {
 		a.export.Close()
@@ -308,6 +320,7 @@ func (a *App) process(q queued) {
 		Detail:   c.Detail,
 		Tags:     c.Tags,
 		Meta:     c.Meta,
+		Kind:     c.Kind,
 	}
 	if len(c.Data) > 0 {
 		ev.ClientData = hex.EncodeToString(c.Data[:min(len(c.Data), maxStoredClientData)])
@@ -319,6 +332,14 @@ func (a *App) process(q queued) {
 	} else {
 		slog.Debug("geo lookup failed", "ip", c.SrcIP, "err", err)
 	}
+
+	// Known research scanners: free AS-organisation match first, then the
+	// cached reverse-DNS / GreyNoise result (a miss queues a background lookup).
+	ev.Scanner = intel.MatchASNOrg(ev.ASNOrg)
+	if info, ok := a.Intel.Lookup(ev.SrcIP); ok && ev.Scanner == "" {
+		ev.Scanner = info.Scanner
+	}
+	intel.Annotate(&ev)
 
 	a.Hub.Broadcast(ev)
 	a.DB.Insert(ev)
@@ -349,6 +370,7 @@ func (a *App) pumpEBPF(ctx context.Context, listened map[services.PortKey]bool) 
 				DstPort:  fmt.Sprint(ev.DstPort),
 				Protocol: ev.Protocol,
 				Detail:   "observed by XDP (no listener)",
+				Kind:     event.KindObserved,
 			})
 		}
 	}

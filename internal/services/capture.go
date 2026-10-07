@@ -14,6 +14,7 @@ type Capture struct {
 	Detail   string            // one-line human-readable summary
 	Tags     []string          // classifier labels
 	Meta     map[string]string // structured extras (credentials, fingerprints…)
+	Kind     string            // optional: set by non-listener sources ("observed" for XDP)
 }
 
 // CaptureFunc reports a Capture. It must not block: the application enqueues

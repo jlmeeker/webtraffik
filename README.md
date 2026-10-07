@@ -15,6 +15,7 @@ A network traffic sensor and low-interaction honeypot. It listens on the ports i
 - **Auto-ban + port-scan detection**: flood and volume-window bans per IP+port, scanner panel, persistent bans
 - **eBPF/XDP (optional)**: banned IPs are dropped in the kernel (IPv4 and IPv6); per-SYN events and telemetry (multicast/broadcast LAN chatter such as mDNS is ignored); automatic fallback to pure userspace if XDP cannot attach
 - **Secure by default install**: dashboard Basic auth with a generated password, Origin/CSRF checks, hardened systemd unit, nftables DMZ policy
+- **Intelligence**: every event carries a `kind` (`session` / `probe` / `observed`), a `class` (`exploit` / `bruteforce` / `scan` / `research`) and, for Shodan/Censys/Shadowserver-style crawlers, a `scanner` name (AS-organisation match plus forward-confirmed reverse DNS; optional GreyNoise/AbuseIPDB keys). Events sharing TLS fingerprints (JA3/JA4) or an attack payload are grouped into campaigns.
 - **Operations**: graceful shutdown, bounded queues and connection limits, versioned DB migrations, event retention, Prometheus `/metrics`, JSON-lines export, structured (`slog`) logs, `/api/status`
 - **Single binary**: pure Go (no CGo), SQLite persistence, embedded UI; linux/amd64, arm64, armv6, armv7, darwin and windows
 
@@ -244,6 +245,7 @@ webTraffik is configured by a YAML file at `/etc/webtraffik/config.yaml` (create
 | `data-dir` | working dir | Database, geo files, SSH host key, TLS certificate |
 | `retention-days` | `90` | Delete events older than this (`0` keeps everything; metrics are kept) |
 | `export-jsonl` / `export-max-mb` | – / `100` | Append every event as a JSON line, rotating at the size limit |
+| `enrich-rdns` / `greynoise-key` / `abuseipdb-key` | `true` / – / – | Background source enrichment: forward-confirmed reverse DNS spots research scanners; the API keys are optional (cached, rate-limited) |
 | `public-ip` | auto | Override discovery; `none` skips it |
 | `disable-rgeo`, `disable-asn` | `false` | Skip the city fallback / ASN enrichment (faster start on a Pi) |
 | `geo-refresh` | `168h` | Background refresh of the geo databases (`0` disables); downloads are validated and swapped atomically |
@@ -549,3 +551,12 @@ For issues or questions:
 ---
 
 **Built with Go + D3.js** — Visualize your web traffic in real-time.
+
+## Search and analytics API
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/history?q=…` | Search events. Grammar: `key:value` tokens (`port ip cc asn tag kind class scanner proto ja3 ja4 sni user since until`), `-` negates, `"quoted phrases"`, bare words match detail/ASN org/city/meta. `since:24h`, `since:7d`, `until:2026-01-31`. Invalid queries return HTTP 400. Also `kind`, `class`, `scanner`, `proto` parameters. |
+| `GET /api/top?by=&hours=24&limit=10` | Ranking with trend vs the previous period. `by`: `credentials usernames passwords useragents paths asns ja4 ports countries scanners tags`. |
+| `GET /api/campaigns?hours=72&limit=20` | Clusters of events sharing a fingerprint, seen from at least two addresses. |
+| `GET /api/intel?ip=` | Cached enrichment (reverse DNS, scanner, GreyNoise class, AbuseIPDB score). |

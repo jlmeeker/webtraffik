@@ -25,6 +25,7 @@ import (
 	"webtraffik/internal/app"
 	"webtraffik/internal/db"
 	"webtraffik/internal/event"
+	"webtraffik/internal/intel"
 	"webtraffik/internal/ratelimit"
 	"webtraffik/internal/services"
 	"webtraffik/internal/traceroute"
@@ -110,6 +111,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.app.Status()) })
 	mux.HandleFunc("/api/history", s.handleHistory)
 	mux.HandleFunc("/api/event", s.handleEvent)
+	mux.HandleFunc("/api/top", s.handleTop)
+	mux.HandleFunc("/api/campaigns", s.handleCampaigns)
+	mux.HandleFunc("/api/intel", s.handleIntel)
 	mux.HandleFunc("/api/recent", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, nonNil(s.app.Hub.Snapshot()))
 	})
@@ -302,6 +306,15 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		Country: q.Get("country"), IP: q.Get("ip"), Port: q.Get("port"), Service: q.Get("service"),
 		DateFrom: q.Get("date_from"), DateTo: q.Get("date_to"), Tag: q.Get("tag"),
 		Limit: atoiDefault(q.Get("limit"), 0), Offset: atoiDefault(q.Get("offset"), 0),
+		Kind: q.Get("kind"), Class: q.Get("class"), Scanner: q.Get("scanner"), Proto: q.Get("proto"),
+	}
+	if sq := strings.TrimSpace(q.Get("q")); sq != "" {
+		conds, err := db.ParseQuery(sq, time.Now())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		f.Conds = conds
 	}
 	if a := atoiDefault(q.Get("asn"), 0); a > 0 {
 		f.ASN = uint32(a)
@@ -313,6 +326,55 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, nonNil(events))
+}
+
+// GET /api/top?by=asns&hours=24&limit=10
+func (s *Server) handleTop(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	by := q.Get("by")
+	if by == "" {
+		by = "asns"
+	}
+	res, err := s.app.DB.TopN(by, atoiDefault(q.Get("hours"), 24), atoiDefault(q.Get("limit"), 10), time.Now())
+	if err != nil {
+		if strings.Contains(err.Error(), "unknown dimension") {
+			http.Error(w, "unknown dimension; valid: "+strings.Join(db.TopDimensions(), ", "), http.StatusBadRequest)
+			return
+		}
+		slog.Error("top query", "err", err)
+		http.Error(w, "query error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, res)
+}
+
+// GET /api/campaigns?hours=72&limit=20
+func (s *Server) handleCampaigns(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	cs, err := s.app.DB.Campaigns(atoiDefault(q.Get("hours"), 72), atoiDefault(q.Get("limit"), 20), time.Now())
+	if err != nil {
+		slog.Error("campaigns query", "err", err)
+		http.Error(w, "query error", http.StatusInternalServerError)
+		return
+	}
+	if cs == nil {
+		cs = []intel.Campaign{}
+	}
+	writeJSON(w, cs)
+}
+
+// GET /api/intel?ip=1.2.3.4 — cached enrichment for one address.
+func (s *Server) handleIntel(w http.ResponseWriter, r *http.Request) {
+	ip := r.URL.Query().Get("ip")
+	if _, err := netip.ParseAddr(ip); err != nil {
+		http.Error(w, "invalid ip", http.StatusBadRequest)
+		return
+	}
+	in, ok := s.app.Intel.Get(ip)
+	if !ok {
+		in = intel.Info{IP: ip}
+	}
+	writeJSON(w, in)
 }
 
 // GET /api/event?id=N — one event including raw client data.

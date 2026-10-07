@@ -18,6 +18,7 @@ type migration struct {
 var migrations = []migration{
 	{1, "baseline schema", migrateBaseline},
 	{2, "typed events table, capture details, indexes", migrateEventsV2},
+	{3, "event kind/class/scanner/fingerprints, ip_intel", migrateIntelV3},
 }
 
 // migrate brings the database up to the latest schema version.
@@ -141,6 +142,29 @@ func migrateEventsV2(tx *sql.Tx) error {
 		CREATE INDEX events_src_ip ON events(src_ip, id);
 		CREATE INDEX events_port   ON events(dst_port, id);
 		CREATE INDEX events_cc     ON events(src_cc, id);
+	`)
+	return err
+}
+
+// migrateIntelV3 adds the classification columns (kind, class, scanner), the
+// campaign fingerprints and the per-IP intelligence cache.
+func migrateIntelV3(tx *sql.Tx) error {
+	_, err := tx.Exec(`
+		ALTER TABLE events ADD COLUMN kind    TEXT NOT NULL DEFAULT '';
+		ALTER TABLE events ADD COLUMN class   TEXT NOT NULL DEFAULT '';
+		ALTER TABLE events ADD COLUMN scanner TEXT NOT NULL DEFAULT '';
+		ALTER TABLE events ADD COLUMN fp      TEXT NOT NULL DEFAULT '';
+
+		CREATE INDEX events_kind ON events(kind, id);
+
+		CREATE TABLE ip_intel (
+			ip          TEXT PRIMARY KEY,
+			rdns        TEXT NOT NULL DEFAULT '',
+			scanner     TEXT NOT NULL DEFAULT '',
+			greynoise   TEXT NOT NULL DEFAULT '',
+			abuse_score INTEGER NOT NULL DEFAULT 0,
+			updated     TEXT NOT NULL
+		);
 	`)
 	return err
 }

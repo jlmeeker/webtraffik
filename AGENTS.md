@@ -26,6 +26,7 @@ cross-compilation trivial). eBPF via `github.com/cilium/ebpf`. Frontend in `web/
 | `internal/ebpf` | XDP program + manager (bans, telemetry, event stream); compiled objects are committed |
 | `internal/ratelimit` | auto-ban (flood + volume windows), port-scan detector, ban persistence, eBPF ban sync |
 | `internal/db` | SQLite: versioned migrations (`migrate.go`), event/ban/metrics storage, retention |
+| `internal/intel` | event kind/class, scanner recognition (ASN org, forward-confirmed rDNS, optional GreyNoise/AbuseIPDB), campaign fingerprints + clustering. Lookups are async and cached; never block `process` |
 | `internal/geo` | GeoLite2 City + ASN readers, validated atomic refresh |
 | `internal/hub`, `event`, `metrics`, `traceroute`, `iputil` | fan-out ring buffer, `ConnectionEvent`, hourly metrics, traceroute runner, public-IP discovery |
 | `web/` | frontend source (built output is committed and embedded) |
