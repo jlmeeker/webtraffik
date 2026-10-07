@@ -27,25 +27,27 @@
 | 1434 | udp | MSSQL Browser | datagram capture (no reply) |
 | 1521 | tcp | Oracle | banner |
 | 1723 | tcp | PPTP | banner |
+| 1883 | tcp | MQTT | interactive emulator |
 | 1900 | udp | SSDP | datagram capture (no reply) |
 | 2082 | tcp | cPanel | banner |
 | 2083 | tcp | cPanel SSL | banner |
-| 2375 | tcp | Docker | banner |
+| 2375 | tcp | Docker | HTTP honeypot (nginx lookalike, full request capture) |
 | 3000 | tcp | Node/Express | HTTP honeypot (nginx lookalike, full request capture) |
 | 3001 | tcp | Node alt | HTTP honeypot (nginx lookalike, full request capture) |
 | 3128 | tcp | Squid | HTTP honeypot (nginx lookalike, full request capture) |
 | 3283 | tcp | ARD | banner |
-| 3306 | tcp | MySQL | banner |
+| 3306 | tcp | MySQL | interactive emulator |
 | 3333 | tcp | Stratum | banner |
-| 3389 | tcp | RDP | banner |
+| 3389 | tcp | RDP | interactive emulator |
 | 4000 | tcp | Phoenix | HTTP honeypot (nginx lookalike, full request capture) |
 | 4200 | tcp | Angular | HTTP honeypot (nginx lookalike, full request capture) |
 | 4444 | tcp | Metasploit | banner |
 | 4899 | tcp | Radmin | banner |
 | 5000 | tcp | Flask | HTTP honeypot (nginx lookalike, full request capture) |
 | 5001 | tcp | Flask alt | HTTP honeypot (nginx lookalike, full request capture) |
+| 5060 | tcp | SIP | interactive emulator |
 | 5060 | udp | SIP | datagram capture (no reply) |
-| 5432 | tcp | PostgreSQL | banner |
+| 5432 | tcp | PostgreSQL | interactive emulator |
 | 5555 | tcp | ADB | banner |
 | 5900 | tcp | VNC | interactive emulator |
 | 5985 | tcp | WinRM | banner |
@@ -72,10 +74,11 @@
 | 9000 | tcp | SonarQube | HTTP honeypot (nginx lookalike, full request capture) |
 | 9090 | tcp | Prometheus | HTTP honeypot (nginx lookalike, full request capture) |
 | 9100 | tcp | Printer | banner |
-| 9200 | tcp | Elasticsearch | banner |
+| 9200 | tcp | Elasticsearch | HTTP honeypot (nginx lookalike, full request capture) |
 | 9735 | tcp | Lightning | interactive emulator |
 | 10009 | tcp | Lightning gRPC | banner |
 | 11211 | tcp | Memcached | banner |
+| 11211 | udp | Memcached | datagram capture (no reply) |
 | 18080 | tcp | Monero P2P | banner |
 | 18081 | tcp | Monero RPC | banner |
 | 18789 | tcp | OpenClaw | banner |

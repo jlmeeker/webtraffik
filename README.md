@@ -21,7 +21,7 @@ A network traffic sensor and low-interaction honeypot. It listens on the ports i
 ## Architecture
 
 ```
- scanners ──► listeners (HTTP/TLS/SSH/Telnet/FTP/SMTP/POP3/Redis/banners/UDP)
+ scanners ──► listeners (HTTP/TLS/SSH/Telnet/FTP/SMTP/POP3/Redis/MySQL/PostgreSQL/MQTT/RDP/SIP/banners/UDP)
                  │  Capture{src, port, payload, detail, tags, meta}
  XDP events ─────┤  (ports without a Go listener)
                  ▼
@@ -382,7 +382,7 @@ sudo systemctl stop webtraffik
 
 **⚠️ CRITICAL: webTraffik binds to many well-known service ports by default.**
 
-webTraffik listens on common ports including **22 (SSH)**, **80 (HTTP)**, **443 (HTTPS)**, **3306 (MySQL)**, **5432 (PostgreSQL)**, **6379 (Redis)**, and many others (see Architecture section above for full list).
+webTraffik listens on common ports including **22 (SSH)**, **80 (HTTP)**, **443 (HTTPS)**, **3306 (MySQL)**, **5432 (PostgreSQL)**, **6379 (Redis)**, and many others (see Architecture section above for full list). MySQL, PostgreSQL, MQTT, RDP and SIP (TCP and UDP) are interactive protocol emulators that record the client's identity and credentials and then refuse the login; Elasticsearch (9200) and the Docker API (2375) answer path-based JSON; memcached, NTP and SSDP on UDP are recorded and tagged `amplification-probe` and are never answered with anything larger than the request. Details in [SERVICES.md](SERVICES.md).
 
 ### The Risk
 

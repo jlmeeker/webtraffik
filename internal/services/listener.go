@@ -159,8 +159,10 @@ func (e *Env) serveTCP(ctx context.Context, ln net.Listener, portStr, name strin
 	}
 }
 
-// ServeUDP records every datagram received on port. No reply is sent, and bans
-// are not consulted (UDP is connectionless; the source can be spoofed).
+// ServeUDP records every datagram received on port. Ports with an entry in
+// udpHandlers are also answered (see emu_udp.go: replies are never larger than
+// the request and are rate limited); the rest never reply. Bans are not
+// consulted (UDP is connectionless; the source can be spoofed).
 func (e *Env) ServeUDP(ctx context.Context, port int) {
 	pc, err := net.ListenPacket("udp", fmt.Sprintf(":%d", port))
 	if err != nil {
@@ -169,21 +171,5 @@ func (e *Env) ServeUDP(ctx context.Context, port int) {
 	}
 	go func() { <-ctx.Done(); pc.Close() }()
 	slog.Info("udp listener", "port", port)
-	portStr := strconv.Itoa(port)
-
-	buf := make([]byte, 2048)
-	for {
-		n, src, err := pc.ReadFrom(buf)
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			slog.Warn("udp read", "port", port, "err", err)
-			time.Sleep(time.Second)
-			continue
-		}
-		data := make([]byte, min(n, 512))
-		copy(data, buf)
-		e.Capture(Capture{SrcIP: extractConnIP(src), DstPort: portStr, Protocol: "udp", Data: data})
-	}
+	e.serveUDP(ctx, pc, port, udpHandlers[port])
 }
