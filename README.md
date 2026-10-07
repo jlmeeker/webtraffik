@@ -13,7 +13,7 @@ A network traffic sensor and low-interaction honeypot. It listens on the ports i
 - **Enrichment**: MaxMind GeoLite2 City + ASN (auto-downloaded, validated and refreshed in the background) with an `rgeo` city fallback
 - **Live world map**: animated great-circle arcs, history replay, ban/unban and traceroute from the dashboard
 - **Auto-ban + port-scan detection**: flood and volume-window bans per IP+port, scanner panel, persistent bans
-- **eBPF/XDP (optional)**: banned IPs are dropped in the kernel (IPv4 and IPv6); per-SYN events and telemetry; automatic fallback to pure userspace if XDP cannot attach
+- **eBPF/XDP (optional)**: banned IPs are dropped in the kernel (IPv4 and IPv6); per-SYN events and telemetry (multicast/broadcast LAN chatter such as mDNS is ignored); automatic fallback to pure userspace if XDP cannot attach
 - **Secure by default install**: dashboard Basic auth with a generated password, Origin/CSRF checks, hardened systemd unit, nftables DMZ policy
 - **Operations**: graceful shutdown, bounded queues and connection limits, versioned DB migrations, event retention, Prometheus `/metrics`, JSON-lines export, structured (`slog`) logs, `/api/status`
 - **Single binary**: pure Go (no CGo), SQLite persistence, embedded UI; linux/amd64, arm64, armv6, armv7, darwin and windows
@@ -47,21 +47,21 @@ The dashboard streams events over WebSocket (`/ws?hours=1..24`): history is repl
 
 ![webTraffik Dashboard](screenshot.png)
 
-The dashboard shows:
-- A full-width world map with your server location marked in cyan
-- Animated arcs from visitor IPs to your server (optimized with gradient pooling and 20-point path sampling)
-- Persistent dots with mouseover tooltips showing "City, CC"
-- Two corner overlay panels on the map:
-  - **Top-left**: Top Services (service names with bar charts showing relative traffic)
-  - **Top-right**: Banned IPs (currently banned source IPs)
-- A scrolling log panel at the bottom showing all connections with timestamps, geolocation details, and service names (e.g., `:22 SSH`, `:3306 MySQL`); click any entry to replay its arc on the map
+*Screenshots use synthetic demo traffic (sources are in the reserved 198.18.0.0/15 benchmarking range), rendered by the real backend and UI.*
+
+The live dashboard shows:
+- A world map with your server marked in cyan, animated great-circle arcs from each source (colored by port), persistent dots, and a zoom inset for the latest arrival
+- **Left**: Top Services (live counts per service) and the Capture Mode panel (mode, interface, eBPF passed/dropped packets, active bans, uptime)
+- **Right**: Port Scanners, Banned IPs (with one-click unban) and Last Seen sources
+- **Top bar**: connection status, your IP/location, connection count, replay-window slider (1–24 h), pause/resume, sound and theme toggles
+- A scrolling log at the bottom; click any entry to replay its arc, or double-click a dot to trace the route
 
 ## History Page
 
-The history page filters and charts stored events by country, source IP prefix, port, service, tag/ASN (API), and date range (with presets):
-- Stat tiles and a connections / unique-IPs / bans timeline, auto-bucketed to the queried range
-- Top ports, countries, services and source IPs; per-port and per-country timelines
-- A result table with the captured detail and tags; the **Recent** page shows live hex dumps of client payloads with filters
+The history page filters and charts stored events by country, source IP prefix, port, service and date range (with presets) — the screenshot above is filtered to one source range over the last 24 hours:
+- Stat tiles (connections, unique IPs, bans with an auto/manual split, rows returned) and timelines for connections, unique IPs and bans
+- Below the fold: top ports, countries, services and source IPs, per-port and per-country timelines, an eBPF capture section, and a result table with captured detail and tags
+- The **Recent** page shows live hex dumps of client payloads with filters
 
 ## Quick Start
 
