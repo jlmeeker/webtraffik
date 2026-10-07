@@ -32,6 +32,7 @@ var tcpServiceNames = map[int]string{
 	995:   "POP3S",
 	1433:  "MSSQL",
 	1521:  "Oracle",
+	1883:  "MQTT",
 	1723:  "PPTP",
 	2082:  "cPanel",
 	2083:  "cPanel SSL",
@@ -139,6 +140,7 @@ type Spec struct {
 var httpPorts = []int{
 	80, 8080, 8000, 8008, 8081, 8088, 8090, 8888,
 	3000, 3001, 3128, 4000, 4200, 5000, 5001, 9000, 9090,
+	2375, 9200, // Docker API / Elasticsearch: path-based JSON in httpfake.go
 }
 
 // tlsPorts terminate TLS and serve the HTTP honeypot.
@@ -146,7 +148,7 @@ var tlsPorts = []int{443, 8443}
 
 // customTCPPorts have interactive emulators; Env.customHandlers must provide a
 // handler for each (enforced by a test).
-var customTCPPorts = []int{21, 22, 23, 25, 110, 5900, 6379, 9735, 25565}
+var customTCPPorts = []int{21, 22, 23, 25, 110, 1883, 3306, 3389, 5060, 5432, 5900, 6379, 9735, 25565}
 
 // nameByPort is the precomputed port → service name lookup.
 var nameByPort = func() map[string]string {

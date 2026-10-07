@@ -2,7 +2,7 @@
 
 This document provides a detailed reference of every service webTraffik emulates. When a connection is received on one of these ports, webTraffik logs it, geolocates the source IP, and (for TCP services) sends back a convincing protocol-specific banner designed to fingerprint as the real service to scanners and bots.
 
-**Source of truth**: the port registry in `internal/services/registry.go` (with banners in `banners.go` and interactive emulators in `ssh.go`, `telnet.go`, `textproto.go`, `tlscap.go`, `httpcap.go`). The complete, always-current port list is generated into [`docs/PORTS.md`](docs/PORTS.md) (`make docs`); the firewall port sets are generated from the same registry (`webtraffik ports`). This file holds the human-written protocol notes.
+**Source of truth**: the port registry in `internal/services/registry.go` (with banners in `banners.go` and interactive emulators in `ssh.go`, `telnet.go`, `textproto.go`, `emu_sql.go`, `emu_mqtt.go`, `emu_rdp.go`, `emu_sip.go`, `emu_udp.go`, `httpfake.go`, `tlscap.go`, `httpcap.go`). The complete, always-current port list is generated into [`docs/PORTS.md`](docs/PORTS.md) (`make docs`); the firewall port sets are generated from the same registry (`webtraffik ports`). This file holds the human-written protocol notes.
 
 Every capture records, in addition to source/geo: the raw client bytes (hex, capped at 4 KB), a one-line `detail`, classifier `tags` (e.g. `log4shell`, `mirai-default-creds`, `scanner:zgrab`), and structured `meta` (credentials, JA3/JA4, SNI, SSH client version, HTTP method/path/UA).
 
@@ -41,17 +41,19 @@ This creates realistic fingerprints that scanners and reconnaissance tools will 
 | 995 | POP3S | POP3 over SSL/TLS | TLS handshake_failure alert (same as port 443) |
 | 1433 | MSSQL | Microsoft SQL Server | TDS pre-login response indicating version 15.00.2000, encryption not supported |
 | 1521 | Oracle | Oracle Database TNS Listener | TNS Refuse packet with error code 1153 |
+| 1883 | MQTT | MQTT broker | **interactive** — CONNECT parsed (protocol, client id, username, password); CONNACK "not authorized" |
 | 1723 | PPTP | Point-to-Point Tunneling Protocol VPN | PPTP Start-Control-Connection-Reply (156 bytes) |
 | 2082 | cPanel-HTTP | cPanel Unencrypted HTTP | HTTP 200 with `Server: cpsrvd/11.112` and `X-CPanel-Version: 11.112` |
 | 2083 | cPanel-HTTPS | cPanel Encrypted HTTPS | TLS handshake_failure alert (same as port 443) |
-| 2375 | Docker | Docker Daemon REST API (unencrypted) | HTTP 200 OK mimicking Docker's `/_ping` endpoint with Api-Version and Docker headers |
+| 2375 | Docker | Docker Daemon REST API (unencrypted) | **HTTP honeypot, path-based** — `/_ping`, `/version`, `/containers/json`, `/images/json`, `/info`, `POST /containers/create` (fake id); other paths get Docker's JSON 404. See [Protocol emulators](#protocol-emulators) |
 | 3283 | ARD | Apple Remote Desktop | 2 bytes: `0x00 0x02` (server capability word) |
-| 3306 | MySQL | MySQL Database | MySQL 8.0.35 handshake packet (Protocol 10) with caching_sha2_password |
+| 3306 | MySQL | MySQL Database | **interactive** — v10 greeting (8.0.35); username, database, auth plugin and auth hash captured; `ERR 1045` |
 | 3333 | Stratum | Cryptocurrency Mining Pool Protocol | JSON-RPC mining.notify notification — mimics mining pool distributing work |
-| 3389 | RDP | Remote Desktop Protocol | X.224 Connection Confirm PDU with RDP_NEG_RSP (PROTOCOL_RDP, no enhanced security) |
+| 3389 | RDP | Remote Desktop Protocol | **interactive** — parses X.224 Connection Request (`mstshash` cookie, requested protocols); Connection Confirm selecting standard RDP security |
 | 4444 | Metasploit | Metasploit Default Reverse Shell | No banner (silent accept) |
 | 4899 | Radmin | Remote Administrator | `RFB 003.006\n` — Radmin v3 RFB-like handshake |
-| 5432 | PostgreSQL | PostgreSQL Database | ErrorResponse: `FATAL: no pg_hba.conf entry for host` — realistic rejection |
+| 5060 | SIP | Session Initiation Protocol (TCP) | **interactive** — `OPTIONS` → 200, `REGISTER`/`INVITE` → 401 digest challenge; method, UA, From captured |
+| 5432 | PostgreSQL | PostgreSQL Database | **interactive** — SSLRequest → `N`, cleartext password request, password captured, `FATAL 28P01` |
 | 5555 | ADB | Android Debug Bridge | ADB CNXN connect response with device identity string |
 | 5900 | VNC | Virtual Network Computing | `RFB 003.008\n` — RFB protocol version handshake for VNC 3.8 |
 | 5985 | WinRM-HTTP | Windows Remote Management HTTP | HTTP 404 with `Server: Microsoft-HTTPAPI/2.0` |
@@ -69,10 +71,10 @@ This creates realistic fingerprints that scanners and reconnaissance tools will 
 | 8729 | RouterOS-API-SSL | MikroTik RouterOS API-SSL | TLS handshake_failure alert (same as port 443) |
 | 8899 | Hikvision-HTTP | Hikvision IP Camera HTTP Web UI | HTTP 200 OK with `Server: App-webs/` header and redirect to `/doc/page/login.asp` |
 | 9100 | Printer | HP JetDirect / Printer Services | PJL INFO STATUS "Ready" response |
-| 9200 | Elasticsearch | Elasticsearch Search Engine | HTTP 200 with JSON body mimicking Elasticsearch 7.17.16 node info |
+| 9200 | Elasticsearch | Elasticsearch Search Engine | **HTTP honeypot, path-based** — `/` node info (7.17.16), `/_cat/indices`, `/_cluster/health`, `/_search`; other paths get ES's JSON 400 |
 | 9735 | Lightning | Lightning Network P2P (BOLT #8) | 50-byte Act One response (Noise_XK handshake) |
 | 10009 | Lightning-gRPC | Lightning Network lnd gRPC API | HTTP/2 SETTINGS frame (server connection preface) |
-| 11211 | Memcached | Memcached In-Memory Cache | `ERROR\r\n` — memcached text protocol error response |
+| 11211 | Memcached | Memcached In-Memory Cache | `ERROR\r\n` — memcached text protocol error response (UDP is handled separately, see below) |
 | 18080 | Monero-P2P | Monero P2P Network (monerod) | Levin protocol header with signature 0x0121010101010101 and handshake command |
 | 18081 | Monero-RPC | Monero JSON-RPC Endpoint (monerod) | HTTP 200 with JSON-RPC error — standard Monero RPC error response |
 | 18789 | OpenClaw | OpenClaw AI Assistant Gateway | HTTP 426 Upgrade Required with WebSocket upgrade headers |
@@ -541,21 +543,9 @@ This is the exact binary response that SSL/TLS servers send when rejecting a Cli
 
 #### Port 2375 — Docker (Docker Daemon REST API, unencrypted)
 
-**Banner**: HTTP 200 OK response mimicking Docker's `/_ping` endpoint:
+**Behaviour**: served by the HTTP honeypot (`httpfake.go`), so the full request (method, path, headers, body) is captured and classified exactly as on any other HTTP port. Responses are path-based: `/_ping` returns `OK`, `/version`, `/containers/json`, `/images/json` and `/info` return plausible Docker 25.0.3 JSON, `POST /containers/create` returns `201` with a random container id and `POST /containers/<id>/start` returns `204` (so attackers carry on and reveal the image/command they wanted to run). An optional `/v1.NN/` prefix is accepted. Everything else is Docker's `{"message":"page not found"}` 404. All responses carry `Server: Docker/25.0.3 (linux)`, `Api-Version`, `Docker-Experimental` and `Ostype`. Nothing is ever executed.
 
-```
-HTTP/1.1 200 OK\r\n
-Api-Version: 1.45\r\n
-Docker-Experimental: false\r\n
-Ostype: linux\r\n
-Server: Docker/25.0.3 (linux)\r\n
-Content-Type: text/plain; charset=utf-8\r\n
-Content-Length: 2\r\n
-\r\n
-OK
-```
-
-**Purpose**: Sends the exact response that Docker Engine's HTTP API returns for the `/_ping` health check endpoint. The response includes:
+**Purpose**: `/_ping` is what scanners hit first to confirm Docker is present. The response includes:
 - Api-Version header: 1.45 (Docker Engine API version)
 - Docker-Experimental header: false (stable release)
 - Ostype header: linux (host OS)
@@ -733,23 +723,18 @@ Port 9100 is one of the most-scanned IoT ports and represents a large attack sur
 
 #### Port 9200 — Elasticsearch
 
-**Banner**: HTTP 200 response with JSON body:
+**Behaviour**: served by the HTTP honeypot (`httpfake.go`); the request path/query/body is captured as usual. `GET /` returns the Elasticsearch 7.17.16 node-info JSON, `/_cat/indices` a two-index table (`?format=json` gives JSON), `/_cluster/health` a yellow single-node status, and `*/_search` an empty hit list. Other paths get Elasticsearch's `400 no handler found for uri [...]` JSON. Responses carry `X-elastic-product: Elasticsearch`.
 
 ```json
 {
   "name" : "node-1",
   "cluster_name" : "elasticsearch",
-  "version" : {
-    "number" : "7.17.16",
-    "build_flavor" : "default",
-    "lucene_version" : "8.11.1",
-    ...
-  },
+  "version" : { "number" : "7.17.16", "lucene_version" : "8.11.1", ... },
   "tagline" : "You Know, for Search"
 }
 ```
 
-**Purpose**: Mimics the response to `GET /` on an Elasticsearch node.
+**Purpose**: Mimics an exposed Elasticsearch node and lets scanners enumerate indices, which is the usual first step before data theft or ransom-note attacks.
 
 **Why it's convincing**: This is the exact JSON structure Elasticsearch returns on its root endpoint. Scanners looking for exposed Elasticsearch instances (common targets due to data exposure risks) will see this as a real Elasticsearch 7.17.16 node.
 
@@ -1162,18 +1147,20 @@ webTraffik binds UDP listeners (using `net.ListenPacket`) on the following ports
 
 1. The source IP and port are captured
 2. A geolocation event is fired and streamed to dashboards
-3. **No response is sent** — the datagram is silently discarded
+3. By default **no response is sent** — the datagram is recorded and discarded
+4. Four ports (123, 1900, 5060, 11211) have small responders — see [Protocol emulators](#protocol-emulators). A reply is only ever sent if it is **no larger than the request** (enforced centrally in `serveUDP`, not per handler), and at most 5 replies per source per 10 s are sent, so the sensor can not be used as a reflection amplifier. Every datagram is still captured.
 
-This is intentional: many UDP-based reconnaissance and amplification attacks rely on responses. By capturing without responding, webTraffik logs the activity without participating in reflection attacks.
+Many UDP reconnaissance and amplification attacks rely on responses. Capture-only ports log the activity without participating in reflection attacks.
 
 | Port | Service | Protocol |
 |------|---------|----------|
 | 53 | DNS | Domain Name System |
-| 123 | NTP | Network Time Protocol |
+| 123 | NTP | Network Time Protocol (mode 3 answered with a 48-byte server reply) |
 | 161 | SNMP | Simple Network Management Protocol |
 | 1434 | MSSQL-Mon | MSSQL Browser/Monitor Service |
-| 1900 | SSDP/UPnP | Simple Service Discovery Protocol / Universal Plug and Play |
+| 1900 | SSDP/UPnP | Simple Service Discovery Protocol / Universal Plug and Play (unicast probes recorded, never answered) |
 | 5060 | SIP | Session Initiation Protocol (VoIP) |
+| 11211 | Memcached | Memcached UDP frame + text command |
 | 30303 | Ethereum-Disc | Ethereum Node Discovery Protocol (devp2p discv4/discv5) |
 | 47808 | BACnet | Building Automation and Control Networks |
 
@@ -1189,13 +1176,39 @@ This is intentional: many UDP-based reconnaissance and amplification attacks rel
 
 ---
 
+## Protocol emulators
+
+These services parse the client's side of the protocol, record who is knocking, then refuse politely. All of them bound every read (size, count, deadline: 10 s per read, 30 s per session) and have hostile-input tests (`emulators_test.go`). Credentials (and password hashes) go to `meta`, never to the one-line `detail`.
+
+| Port | Handler | Captured in `meta` | Tags | Reply |
+|------|---------|--------------------|------|-------|
+| 3306/tcp MySQL | `mysqlHandler` (`emu_sql.go`) | `user`, `db`, `auth_plugin`, `auth_hash_hex` (hash only, at most 64 bytes of hex; never `secret`) | `credential-attempt`, `privileged-user` | v10 greeting with a random 20-byte salt, then `ERR 1045 (28000) Access denied for user 'x'@'ip'`. TLS is not offered. Packets over 8 KiB are refused after the 4-byte header |
+| 5432/tcp PostgreSQL | `postgresHandler` | `user`, `db`, `application_name`, `secret` (cleartext password), `pg_protocol`, `tls_requested` | `credential-attempt`, `mirai-default-creds`, `privileged-user` | `SSLRequest`/`GSSENCRequest` get `N`; `StartupMessage` gets `AuthenticationCleartextPassword`; the password gets `ErrorResponse FATAL 28P01`. Protocol 2.0 gets `0A000` |
+| 1883/tcp MQTT | `mqttHandler` (`emu_mqtt.go`) | `mqtt_protocol`, `mqtt_level`, `client_id`, `user`, `secret`, `will_topic` | as above | CONNACK return code 5 (v3.1/3.1.1). For MQTT 5 the equivalent reason code `0x87` is used (code 5 is not valid in v5). Remaining length capped at 4 KiB |
+| 3389/tcp RDP | `rdpHandler` (`emu_rdp.go`) | `user` (from `Cookie: mstshash=`), `requested_protocols` (`standard`, `tls`, `credssp`, `rdstls`, `credssp-ex`) | `privileged-user` | X.224 Connection Confirm; with an `RDP_NEG_REQ` the `RDP_NEG_RSP` selects standard RDP security, then one more TPKT (MCS Connect Initial) is read for the capture and the connection closes. TPKT capped at 4 KiB. A bare username is not tagged `credential-attempt` |
+| 5060/tcp + udp SIP | `sipTCPHandler` / `sipUDP` (`emu_sip.go`) | `sip_method`, `sip_uri`, `user_agent`, `from`; with an `Authorization: Digest` header also `user` and `auth_hash_hex` (the digest `response`) | `sip-scan`, `scanner:sipvicious` (friendly-scanner, sipvicious, svwar, svmap, svcrack), `scanner:sipcli` | `OPTIONS` gets 200 OK; `REGISTER`/`INVITE` get 401 with a random digest nonce; other methods get 405; `ACK` and responses get nothing. Via/From/To/Call-ID/CSeq are echoed. Over UDP a compact form is used if the full reply would exceed the request. TCP: at most 4 messages, 8 KiB of headers, 64 header lines, 4 KiB body |
+| 11211/udp Memcached | `memcachedUDP` (`emu_udp.go`) | `memcached_cmd`, `memcached_request_id` | `amplification-probe` for `stats`/`get`/`gets`/`gat`/`gats` | 8-byte frame header echoed plus a bare `END\r\n` (or `ERROR`), never larger than the request. `set` is recorded but not tagged. TCP 11211 remains a banner |
+| 123/udp NTP | `ntpUDP` | `ntp_mode`, `ntp_version`, `ntp_reqcode` (mode 7), `ntp_opcode` (mode 6) | `amplification-probe` for mode 7 (monlist, request codes 20/42 noted in `detail`) and mode 6 (ntpq) | Mode 3 client gets a stratum-2 mode 4 reply of exactly 48 bytes (the minimum client packet size, so 1:1 at worst). Modes 6 and 7 are never answered |
+| 1900/udp SSDP | `ssdpUDP` | `ssdp_method`, `ssdp_st`, `user_agent` | `amplification-probe` for `M-SEARCH`, plus `ssdp-scan` | None (a real UPnP answer would be larger than the request) |
+| 2375/tcp Docker, 9200/tcp Elasticsearch | `httpFakes` (`httpfake.go`) in the HTTP honeypot | standard HTTP meta (`method`, `path`, `host`, `user_agent`) | classifier tags, e.g. `docker-api-probe` | Path-based JSON, see the port sections above |
+
+### Adding another path-based fake
+
+Add a `func(*http.Request) (fakeResp, bool)` to `httpFakes` in `httpfake.go` keyed by port, and make sure the port is in `httpPorts` (not `tcpServices`). Returning `false` falls through to the default nginx response.
+
+### UDP responders
+
+A responder is a `func(pkt []byte) (reply []byte, res Result)` registered in `udpHandlers` (`emu_udp.go`) for a port that is already in `udpServicePorts`. Use `fit(req, candidates...)` to pick a reply that fits, but note that `serveUDP` also drops any reply larger than the request and rate-limits per source, so a buggy handler can not turn the sensor into an amplifier.
+
+---
+
 ## Maintenance
 
 All ports are defined in one place: `internal/services/registry.go`.
 
 To add a service:
 
-1. **Banner-only TCP**: add an entry to `tcpServices` in `banners.go`. **Interactive TCP**: write a `ConnHandler`, register it in `customHandlers()` (`run.go`) and add the port to `customTCPPorts`. **HTTP/TLS**: add to `httpPorts` / `tlsPorts`. **UDP**: add to `udpServicePorts`.
+1. **Banner-only TCP**: add an entry to `tcpServices` in `banners.go`. **Interactive TCP**: write a `ConnHandler`, register it in `customHandlers()` (`run.go`) and add the port to `customTCPPorts`. **HTTP/TLS**: add to `httpPorts` / `tlsPorts` (optionally with a path-based fake in `httpfake.go`). **UDP**: add to `udpServicePorts` (optionally with a responder in `udpHandlers`, `emu_udp.go`).
 2. Add the display name to `tcpServiceNames` in `registry.go` (a test fails if a listener has no name).
 3. Add the human-readable notes to this file.
 4. Run `make docs` to regenerate `docs/PORTS.md` (a test fails if it is stale).
