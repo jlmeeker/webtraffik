@@ -524,8 +524,7 @@ select {
 }
 .log-src {
   color: var(--text-2);
-  flex: 1;
-  min-width: 140px;
+  min-width: 0;
 }
 .log-src .ip {
   color: var(--text);
@@ -541,6 +540,7 @@ select {
   font-size: 0.62rem;
   min-width: 28px;
   text-align: right;
+  margin-left: auto;
 }
 .log-data-hint {
   color: var(--text-3);

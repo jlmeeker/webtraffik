@@ -103,9 +103,9 @@ export function styleAxis(g: GSel, t: ChartTokens): void {
   g.select('.domain').attr('stroke', t.axis);
 }
 
-export function gridLines(g: GSel, scale: d3.ScaleLinear<number, number>, width: number, t: ChartTokens, ticks = 4): void {
+export function gridLines(g: GSel, scale: d3.ScaleLinear<number, number>, width: number, t: ChartTokens, ticks: number | number[] = 4): void {
   g.selectAll('line')
-    .data(scale.ticks(ticks))
+    .data(Array.isArray(ticks) ? ticks : scale.ticks(ticks))
     .join('line')
     .attr('x1', 0)
     .attr('x2', width)

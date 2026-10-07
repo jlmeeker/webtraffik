@@ -13,6 +13,12 @@ export interface Series {
   points: TimePoint[];
 }
 
+/** Integer-only y ticks (counts never show 0.5). */
+function intTicks(y: d3.ScaleLinear<number, number>, n = 4): number[] {
+  const ticks = y.ticks(n).filter(Number.isInteger);
+  return ticks.length ? ticks : [0, Math.max(1, Math.ceil(y.domain()[1] ?? 1))];
+}
+
 function timeFormat(domain: [Date, Date]): (d: Date) => string {
   const span = domain[1].getTime() - domain[0].getTime();
   if (span <= 36 * 3600e3) return d3.timeFormat('%H:%M');
@@ -40,13 +46,16 @@ export function columns(container: HTMLElement, points: TimePoint[], opts: { lab
   const y = d3.scaleLinear().domain([0, d3.max(points, (p) => p.v) ?? 1]).nice().range([innerH, 0]);
   const color = opts.color ?? t.accent;
 
-  gridLines(g.append('g'), y, innerW, t);
-  const barW = Math.max(2, (x(new Date(domain[0].getTime() + step)) - x(domain[0])) - 2);
+  const yTicks = intTicks(y);
+  gridLines(g.append('g'), y, innerW, t, yTicks);
+  const slotW = x(new Date(domain[0].getTime() + step)) - x(domain[0]);
+  const barW = Math.max(2, Math.min(56, slotW - 2));
+  const inset = (slotW - barW) / 2;
 
   g.selectAll('rect')
     .data(points)
     .join('rect')
-    .attr('x', (p) => x(p.t) + 1)
+    .attr('x', (p) => x(p.t) + inset)
     .attr('y', (p) => y(p.v))
     .attr('width', barW)
     .attr('height', (p) => Math.max(0, innerH - y(p.v)))
@@ -55,7 +64,7 @@ export function columns(container: HTMLElement, points: TimePoint[], opts: { lab
     .attr('opacity', 0.9);
 
   styleAxis(g.append('g').attr('transform', `translate(0,${innerH})`).call(d3.axisBottom(x).ticks(Math.min(8, Math.floor(innerW / 90))).tickFormat((d) => timeFormat(domain)(d as Date)).tickSizeOuter(0)) as GSel, t);
-  styleAxis(g.append('g').call(d3.axisLeft(y).ticks(4).tickFormat((d) => fmtInt(d as number)).tickSize(0)) as GSel, t);
+  styleAxis(g.append('g').call(d3.axisLeft(y).tickValues(yTicks).tickFormat((d) => fmtInt(d as number)).tickSize(0)) as GSel, t);
 
   const tip = chartTip();
   const fmt = timeFormat(domain);
@@ -95,7 +104,8 @@ export function lines(container: HTMLElement, series: Series[], opts: { label: s
   if (domain[0].getTime() === domain[1].getTime()) domain[1] = new Date(domain[0].getTime() + 3600e3);
   const x = d3.scaleTime().domain(domain).range([0, innerW]);
   const y = d3.scaleLinear().domain([0, d3.max(all, (p) => p.v) ?? 1]).nice().range([innerH, 0]);
-  gridLines(g.append('g'), y, innerW, t);
+  const yTicks = intTicks(y);
+  gridLines(g.append('g'), y, innerW, t, yTicks);
 
   const line = d3
     .line<TimePoint>()
@@ -120,7 +130,7 @@ export function lines(container: HTMLElement, series: Series[], opts: { label: s
   }
 
   styleAxis(g.append('g').attr('transform', `translate(0,${innerH})`).call(d3.axisBottom(x).ticks(Math.min(8, Math.floor(innerW / 90))).tickFormat((d) => timeFormat(domain)(d as Date)).tickSizeOuter(0)) as GSel, t);
-  styleAxis(g.append('g').call(d3.axisLeft(y).ticks(4).tickFormat((d) => fmtInt(d as number)).tickSize(0)) as GSel, t);
+  styleAxis(g.append('g').call(d3.axisLeft(y).tickValues(yTicks).tickFormat((d) => fmtInt(d as number)).tickSize(0)) as GSel, t);
 
   const cross = g.append('line').attr('y1', 0).attr('y2', innerH).attr('stroke', t.axis).attr('stroke-width', 1).style('display', 'none');
   const tip = chartTip();
