@@ -1,0 +1,127 @@
+/* ── Chart chrome ─────────────────────────────────────────────────────────── */
+.chart-wrap {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+}
+.chart-wrap svg {
+  display: block;
+  max-width: 100%;
+}
+.chart-wrap .hit:focus-visible {
+  outline: 2px solid var(--focus);
+}
+
+.chart-tip {
+  position: fixed;
+  z-index: 200;
+  background: var(--surface-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  padding: 6px 10px;
+  font-size: 0.7rem;
+  color: var(--text);
+  pointer-events: none;
+  max-width: 280px;
+}
+.chart-tip-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 1px 0;
+}
+.chart-tip-row .k {
+  color: var(--text-2);
+  flex: 1;
+}
+.chart-tip-row .v {
+  font-variant-numeric: tabular-nums;
+}
+.chart-tip .swatch,
+.chart-legend .swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin-top: 8px;
+  font-size: 0.66rem;
+  color: var(--text-2);
+}
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* stat tiles */
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+.tile {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+}
+.tile-label {
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-3);
+}
+.tile-value {
+  font-family: var(--font-ui);
+  font-size: 1.7rem;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.15;
+  margin-top: 4px;
+}
+.tile.tone-critical .tile-value {
+  color: var(--critical);
+}
+.tile.tone-good .tile-value {
+  color: var(--good);
+}
+.tile-hint {
+  font-size: 0.64rem;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+/* meter */
+.meter-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.7rem;
+  color: var(--text-2);
+  margin-bottom: 6px;
+}
+.meter-value {
+  font-variant-numeric: tabular-nums;
+}
+.meter-track {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.meter-fill {
+  height: 100%;
+  background: var(--seq-3);
+  border-radius: 4px;
+  transition: width 0.4s ease;
+}
+.meter-fill.tone-critical {
+  background: var(--critical);
+}

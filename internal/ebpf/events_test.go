@@ -8,29 +8,25 @@ import (
 	"github.com/cilium/ebpf/perf"
 )
 
-// buildRawRecord constructs a perf.Record with the given 8-byte wire payload.
-// protocol is the IP protocol number (6=TCP, 17=UDP, 1=ICMP).
+// buildRawRecord constructs a perf.Record with the 20-byte wire payload.
+// srcIPInt is the IPv4 address as a big-endian uint32 (0x01020304 = 1.2.3.4);
+// it is encoded as a v4-mapped address, as the XDP program does.
 func buildRawRecord(srcIPInt uint32, dstPort uint16, dropped uint8, protocol uint8) perf.Record {
-	b := make([]byte, 8)
-	// Little-endian layout matching the C struct event:
-	//   bytes 0-3: src_ip   (uint32 LE)
-	//   bytes 4-5: dst_port (uint16 LE)
-	//   byte  6:   dropped
-	//   byte  7:   protocol
-	b[0] = byte(srcIPInt)
-	b[1] = byte(srcIPInt >> 8)
-	b[2] = byte(srcIPInt >> 16)
-	b[3] = byte(srcIPInt >> 24)
-	b[4] = byte(dstPort)
-	b[5] = byte(dstPort >> 8)
-	b[6] = dropped
-	b[7] = protocol
+	b := make([]byte, rawEventSize)
+	b[10], b[11] = 0xff, 0xff
+	b[12] = byte(srcIPInt >> 24)
+	b[13] = byte(srcIPInt >> 16)
+	b[14] = byte(srcIPInt >> 8)
+	b[15] = byte(srcIPInt)
+	b[16] = byte(dstPort)
+	b[17] = byte(dstPort >> 8)
+	b[18] = dropped
+	b[19] = protocol
 	return perf.Record{RawSample: b}
 }
 
 func TestParseEventBasic(t *testing.T) {
-	// 1.2.3.4 in little-endian uint32 = 0x04030201
-	srcIPInt := uint32(0x04030201) // LE: bytes are 01 02 03 04
+	srcIPInt := uint32(0x01020304) // 1.2.3.4
 	rec := buildRawRecord(srcIPInt, 80, 0, ProtoTCP)
 
 	ev, err := parseEvent(rec)
@@ -38,7 +34,7 @@ func TestParseEventBasic(t *testing.T) {
 		t.Fatalf("parseEvent: %v", err)
 	}
 
-	wantIP := net.IP{4, 3, 2, 1} // BigEndian decode of 0x04030201
+	wantIP := net.IP{1, 2, 3, 4}
 	if !ev.SrcIP.Equal(wantIP) {
 		t.Errorf("SrcIP = %v, want %v", ev.SrcIP, wantIP)
 	}
@@ -81,8 +77,8 @@ func TestParseEventDroppedNonZero(t *testing.T) {
 }
 
 func TestParseEventTooShort(t *testing.T) {
-	// Records shorter than 8 bytes must return an error.
-	for i := 0; i < 8; i++ {
+	// Records shorter than 20 bytes must return an error.
+	for i := 0; i < rawEventSize; i++ {
 		rec := perf.Record{RawSample: make([]byte, i)}
 		_, err := parseEvent(rec)
 		if err == nil {
@@ -91,7 +87,7 @@ func TestParseEventTooShort(t *testing.T) {
 	}
 }
 
-func TestParseEventExactlyEightBytes(t *testing.T) {
+func TestParseEventExactSize(t *testing.T) {
 	rec := buildRawRecord(0xC0A80101, 8080, 0, ProtoTCP) // 192.168.1.1
 	ev, err := parseEvent(rec)
 	if err != nil {
@@ -103,9 +99,9 @@ func TestParseEventExactlyEightBytes(t *testing.T) {
 }
 
 func TestParseEventExtraBytes(t *testing.T) {
-	// Extra trailing bytes beyond 8 should be silently ignored.
-	b := make([]byte, 12)
-	b[4] = 0x50 // port 80 LE
+	// Extra trailing bytes beyond 20 should be silently ignored.
+	b := make([]byte, rawEventSize+4)
+	b[16] = 0x50 // port 80 LE
 	rec := perf.Record{RawSample: b}
 	_, err := parseEvent(rec)
 	if err != nil {
@@ -172,5 +168,25 @@ func TestParseEventProtocolUnknown(t *testing.T) {
 	}
 	if ev.Protocol != "proto-47" {
 		t.Errorf("Protocol = %q, want \"proto-47\"", ev.Protocol)
+	}
+}
+
+func TestParseEventIPv6(t *testing.T) {
+	b := make([]byte, rawEventSize)
+	copy(b, net.ParseIP("2001:db8::1").To16())
+	b[16], b[17] = 22, 0
+	b[19] = ProtoTCP
+	ev, err := parseEvent(perf.Record{RawSample: b})
+	if err != nil {
+		t.Fatalf("parseEvent: %v", err)
+	}
+	if got := ev.SrcIP.String(); got != "2001:db8::1" {
+		t.Errorf("SrcIP = %s, want 2001:db8::1", got)
+	}
+}
+
+func TestProtoICMPv6(t *testing.T) {
+	if protoString(ProtoICMPv6) != "icmp" {
+		t.Error("ICMPv6 should map to icmp")
 	}
 }

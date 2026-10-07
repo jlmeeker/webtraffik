@@ -69,64 +69,27 @@ fi
 echo "  primary interface : $IFACE"
 echo "  management subnet : $SUBNET"
 
-# ── Build the capture-port nft set literal ────────────────────────────────────
-# TCP ports: existing HTTP ports + new service-emulation ports.
-# Matches the capturePorts slice in main.go AND tcpServices in services.go.
-CAPTURE_PORTS_TCP="21, 22, 23, 25, 80, 102, 110, 135, 139, 143, 443, 445, 502, 554, 631, \
-993, 995, 1433, 1521, 1723, 2082, 2083, 2375, 3000, 3001, 3128, 3283, 3306, 3333, 3389, \
-4000, 4200, 4444, 4899, 5000, 5001, 5432, 5555, \
-5900, 5985, 5986, 6000, 6379, 6443, 6667, \
-8000, 8008, 8080, 8081, 8088, 8090, 8291, 8333, 8443, \
-8545, 8546, 8728, 8729, 8888, 8899, 9000, 9090, 9100, 9200, 9735, 10009, \
-11211, 18080, 18081, 18789, 20000, 25565, 27017, 30303, 34567, 37777, 44818"
-
-# UDP ports: DNS and any other UDP services in services.go.
-CAPTURE_PORTS_UDP="53, 123, 161, 1434, 1900, 5060, 30303, 47808"
-
-# ── Apply DISABLE_PORTS exclusions ────────────────────────────────────────────
-# If DISABLE_PORTS is set (e.g. DISABLE_PORTS="22,80"), remove those ports
-# from the capture sets so the firewall does not open holes for ports the app
-# is not listening on.  The value must match -disable-ports passed to the app.
+# ── Build the capture-port nft set literals ───────────────────────────────────
+# The port sets come straight from the binary's port registry, so the firewall
+# can never drift from what the app actually listens on.
 #
-# Example:
-#   sudo DISABLE_PORTS="22,80,443" bash firewall.sh
-#
-filter_ports() {
-    local port_list="$1"   # e.g. "21, 22, 80, 443"
-    local disabled="$2"    # e.g. "22,80"
-    local result=""
-    # Normalise the disabled list to bare numbers for reliable matching
-    IFS=',' read -ra DISABLED_ARR <<< "$disabled"
-    local trimmed_disabled=()
-    for d in "${DISABLED_ARR[@]}"; do
-        trimmed_disabled+=("$(echo "$d" | tr -d ' ')")
-    done
-    # Walk each port in the allow-list and drop disabled ones
-    IFS=',' read -ra PORT_ARR <<< "$port_list"
-    for p in "${PORT_ARR[@]}"; do
-        local bare
-        bare="$(echo "$p" | tr -d ' ')"
-        local skip=0
-        for d in "${trimmed_disabled[@]}"; do
-            if [[ "$bare" == "$d" ]]; then
-                skip=1
-                break
-            fi
-        done
-        if [[ $skip -eq 0 ]]; then
-            result="${result:+$result, }$bare"
-        else
-            echo "  disabled port     : $bare (excluded from firewall)" >&2
-        fi
-    done
-    echo "$result"
-}
-
-if [[ -n "${DISABLE_PORTS:-}" ]]; then
-    echo "  disabling ports   : $DISABLE_PORTS"
-    CAPTURE_PORTS_TCP="$(filter_ports "$CAPTURE_PORTS_TCP" "$DISABLE_PORTS")"
-    CAPTURE_PORTS_UDP="$(filter_ports "$CAPTURE_PORTS_UDP" "$DISABLE_PORTS")"
+# If you pass -disable-ports to the app (or set it in config.yaml), export the
+# same list here so no firewall holes are opened for ports nobody listens on:
+#   sudo DISABLE_PORTS="22,80" bash firewall.sh
+WEBTRAFFIK_BIN="${WEBTRAFFIK_BIN:-/usr/local/bin/webtraffik}"
+if [[ ! -x "$WEBTRAFFIK_BIN" ]]; then
+    echo "error: webtraffik binary not found at $WEBTRAFFIK_BIN" >&2
+    echo "       install it first, or set WEBTRAFFIK_BIN=/path/to/webtraffik" >&2
+    exit 1
 fi
+
+CAPTURE_PORTS_TCP="$("$WEBTRAFFIK_BIN" ports -proto tcp -format nft -disable "${DISABLE_PORTS:-}")"
+CAPTURE_PORTS_UDP="$("$WEBTRAFFIK_BIN" ports -proto udp -format nft -disable "${DISABLE_PORTS:-}")"
+# A protocol with every port disabled yields an empty list; nft rejects empty
+# sets, so use port 0 (never seen on the wire) as a harmless placeholder.
+[[ -z "$CAPTURE_PORTS_TCP" ]] && CAPTURE_PORTS_TCP="0"
+[[ -z "$CAPTURE_PORTS_UDP" ]] && CAPTURE_PORTS_UDP="0"
+[[ -n "${DISABLE_PORTS:-}" ]] && echo "  disabled ports    : $DISABLE_PORTS"
 
 # ── Substitute tokens and write the live config ───────────────────────────────
 mkdir -p "$CONF_DIR"
@@ -156,7 +119,7 @@ else
 fi
 
 # ── Validate the generated ruleset before applying ────────────────────────────
-if ! nft -c -f "$CONF_OUT" 2>/dev/null; then
+if ! nft -c -f "$CONF_OUT"; then
     echo "error: nft syntax check failed — ruleset NOT applied" >&2
     echo "       check $CONF_OUT" >&2
     exit 1

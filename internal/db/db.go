@@ -2,8 +2,10 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -22,6 +24,7 @@ const (
 	MetricConnections = "connections" // labels: port, protocol, service, cc
 	MetricBans        = "bans"        // labels: type (auto/manual)
 	MetricUniqueIPs   = "unique_ips"  // no labels, per-hour unique IP count
+	MetricTags        = "tag_hits"    // labels: tag (classifier label from the honeypot)
 )
 
 // ── eventDB ──────────────────────────────────────────────────────────────────
@@ -38,25 +41,17 @@ type EventDB struct {
 // better write concurrency.
 func OpenEventDB(dir string) (*EventDB, error) {
 	path := filepath.Join(dir, EventsDBFilename)
-	db, err := sql.Open("sqlite", path)
+	// Pragmas are set in the DSN so they apply to every pooled connection:
+	// WAL lets readers proceed during writes; synchronous=NORMAL trades up to
+	// ~1s of events on power loss for speed; busy_timeout avoids spurious
+	// "database is locked" errors between the writer, metrics flush and bans.
+	dsn := "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
 
-	// Single writer is fine; WAL lets readers not block the writer.
-	if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
-		db.Close()
-		return nil, err
-	}
-
-	// Keep writes fast; we can afford to lose the last second of events on a
-	// hard crash (power loss). Normal OS/app crashes are safe with WAL.
-	if _, err := db.Exec(`PRAGMA synchronous=NORMAL`); err != nil {
-		db.Close()
-		return nil, err
-	}
-
-	if err := createSchema(db); err != nil {
+	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -71,50 +66,46 @@ func OpenEventDB(dir string) (*EventDB, error) {
 	return edb, nil
 }
 
-func createSchema(db *sql.DB) error {
-	_, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS events (
-			id       INTEGER PRIMARY KEY AUTOINCREMENT,
-			time     TEXT    NOT NULL,
-			src_ip   TEXT    NOT NULL,
-			dst_ip   TEXT    NOT NULL,
-			dst_port TEXT    NOT NULL,
-			protocol TEXT    NOT NULL DEFAULT 'tcp',
-			src_lat  REAL    NOT NULL DEFAULT 0,
-			src_lon  REAL    NOT NULL DEFAULT 0,
-			dst_lat  REAL    NOT NULL DEFAULT 0,
-			dst_lon  REAL    NOT NULL DEFAULT 0,
-			src_city TEXT    NOT NULL DEFAULT '',
-			dst_city TEXT    NOT NULL DEFAULT '',
-			src_cc   TEXT    NOT NULL DEFAULT '',
-			dst_cc   TEXT    NOT NULL DEFAULT ''
-		);
-		CREATE INDEX IF NOT EXISTS events_id_desc ON events(id DESC);
+// eventColumns is the SELECT list shared by every event query; it must match
+// scanEvent. client_data is intentionally excluded from list queries (it can be
+// large) and only returned by GetEvent.
+const eventColumns = `id, time, src_ip, dst_ip, dst_port, protocol,
+	src_lat, src_lon, dst_lat, dst_lon,
+	src_city, dst_city, src_cc, dst_cc,
+	asn, asn_org, detail, tags, meta`
 
-		CREATE TABLE IF NOT EXISTS banned_ips (
-			ip         TEXT NOT NULL,
-			port       TEXT NOT NULL,
-			service    TEXT NOT NULL DEFAULT '',
-			banned_at  TEXT NOT NULL,
-			expires_at TEXT NOT NULL,
-			PRIMARY KEY (ip, port)
-		);
+type rowScanner interface{ Scan(dest ...any) error }
 
-		CREATE TABLE IF NOT EXISTS metrics (
-			name   TEXT NOT NULL,
-			labels TEXT NOT NULL DEFAULT '',
-			bucket TEXT NOT NULL,
-			value  REAL NOT NULL DEFAULT 0,
-			PRIMARY KEY (name, labels, bucket)
-		);
-		CREATE INDEX IF NOT EXISTS idx_metrics_bucket ON metrics(bucket);
-	`)
+func scanEvent(r rowScanner) (event.ConnectionEvent, error) {
+	var ev event.ConnectionEvent
+	var tags, meta string
+	err := r.Scan(
+		&ev.ID, &ev.Time, &ev.SrcIP, &ev.DstIP, &ev.DstPort, &ev.Protocol,
+		&ev.SrcLat, &ev.SrcLon, &ev.DstLat, &ev.DstLon,
+		&ev.SrcCity, &ev.DstCity, &ev.SrcCC, &ev.DstCC,
+		&ev.ASN, &ev.ASNOrg, &ev.Detail, &tags, &meta,
+	)
 	if err != nil {
-		return err
+		return ev, err
 	}
-	// Migrate existing databases that predate the protocol column.
-	_, _ = db.Exec(`ALTER TABLE events ADD COLUMN protocol TEXT NOT NULL DEFAULT 'tcp'`)
-	return nil
+	ev.Tags = event.SplitTags(tags)
+	if meta != "" {
+		_ = json.Unmarshal([]byte(meta), &ev.Meta)
+	}
+	return ev, nil
+}
+
+func collectEvents(rows *sql.Rows) ([]event.ConnectionEvent, error) {
+	defer rows.Close()
+	var events []event.ConnectionEvent
+	for rows.Next() {
+		ev, err := scanEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, ev)
+	}
+	return events, rows.Err()
 }
 
 // PersistBan inserts or replaces a BanEntry in the banned_ips table.
@@ -241,23 +232,31 @@ func (e *EventDB) flushBatch(batch []event.ConnectionEvent) {
 		INSERT INTO events
 			(time, src_ip, dst_ip, dst_port, protocol,
 			 src_lat, src_lon, dst_lat, dst_lon,
-			 src_city, dst_city, src_cc, dst_cc)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+			 src_city, dst_city, src_cc, dst_cc,
+			 asn, asn_org, client_data, detail, tags, meta)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
-		log.Printf("DB prepare error: %v", err)
+		slog.Error("db: prepare insert", "err", err)
 		tx.Rollback()
 		return
 	}
 	defer stmt.Close()
 
 	for _, ev := range batch {
+		meta := ""
+		if len(ev.Meta) > 0 {
+			if b, err := json.Marshal(ev.Meta); err == nil {
+				meta = string(b)
+			}
+		}
 		_, err := stmt.Exec(
 			ev.Time, ev.SrcIP, ev.DstIP, ev.DstPort, ev.Protocol,
 			ev.SrcLat, ev.SrcLon, ev.DstLat, ev.DstLon,
 			ev.SrcCity, ev.DstCity, ev.SrcCC, ev.DstCC,
+			ev.ASN, ev.ASNOrg, ev.ClientData, ev.Detail, event.JoinTags(ev.Tags), meta,
 		)
 		if err != nil {
-			log.Printf("DB insert error: %v", err)
+			slog.Error("db: insert event", "err", err)
 		}
 	}
 
@@ -269,65 +268,50 @@ func (e *EventDB) flushBatch(batch []event.ConnectionEvent) {
 // LoadHistory returns the most recent `limit` events, oldest-first, ready to
 // replay to a new WebSocket client.
 func (e *EventDB) LoadHistory(limit int) ([]event.ConnectionEvent, error) {
-	rows, err := e.db.Query(`
-		SELECT time, src_ip, dst_ip, dst_port, protocol,
-		       src_lat, src_lon, dst_lat, dst_lon,
-		       src_city, dst_city, src_cc, dst_cc
-		FROM (
+	rows, err := e.db.Query(`SELECT `+eventColumns+` FROM (
 			SELECT * FROM events ORDER BY id DESC LIMIT ?
-		) ORDER BY id ASC`,
-		limit,
-	)
+		) ORDER BY id ASC`, limit)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var events []event.ConnectionEvent
-	for rows.Next() {
-		var ev event.ConnectionEvent
-		if err := rows.Scan(
-			&ev.Time, &ev.SrcIP, &ev.DstIP, &ev.DstPort, &ev.Protocol,
-			&ev.SrcLat, &ev.SrcLon, &ev.DstLat, &ev.DstLon,
-			&ev.SrcCity, &ev.DstCity, &ev.SrcCC, &ev.DstCC,
-		); err != nil {
-			return nil, err
-		}
-		events = append(events, ev)
-	}
-	return events, rows.Err()
+	return collectEvents(rows)
 }
 
-// LoadHistorySince returns all events since the given RFC3339 timestamp,
-// oldest-first, with no row limit.
-func (e *EventDB) LoadHistorySince(since string) ([]event.ConnectionEvent, error) {
-	rows, err := e.db.Query(`
-		SELECT time, src_ip, dst_ip, dst_port, protocol,
-		       src_lat, src_lon, dst_lat, dst_lon,
-		       src_city, dst_city, src_cc, dst_cc
-		FROM events
-		WHERE time >= ?
-		ORDER BY id ASC`,
-		since,
-	)
+// LoadHistorySince returns events since the given RFC3339 timestamp,
+// oldest-first. At most maxReplay of the most recent matching events are
+// returned so a busy host cannot make a WebSocket connect load millions of rows.
+func (e *EventDB) LoadHistorySince(since string, maxReplay int) ([]event.ConnectionEvent, error) {
+	if maxReplay <= 0 {
+		maxReplay = 50000
+	}
+	rows, err := e.db.Query(`SELECT `+eventColumns+` FROM (
+			SELECT * FROM events WHERE time >= ? ORDER BY id DESC LIMIT ?
+		) ORDER BY id ASC`, since, maxReplay)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	return collectEvents(rows)
+}
 
-	var events []event.ConnectionEvent
-	for rows.Next() {
-		var ev event.ConnectionEvent
-		if err := rows.Scan(
-			&ev.Time, &ev.SrcIP, &ev.DstIP, &ev.DstPort, &ev.Protocol,
-			&ev.SrcLat, &ev.SrcLon, &ev.DstLat, &ev.DstLon,
-			&ev.SrcCity, &ev.DstCity, &ev.SrcCC, &ev.DstCC,
-		); err != nil {
-			return nil, err
-		}
-		events = append(events, ev)
+// GetEvent returns a single event including its raw client data.
+func (e *EventDB) GetEvent(id int64) (event.ConnectionEvent, error) {
+	row := e.db.QueryRow(`SELECT `+eventColumns+`, client_data FROM events WHERE id = ?`, id)
+	var ev event.ConnectionEvent
+	var tags, meta string
+	err := row.Scan(
+		&ev.ID, &ev.Time, &ev.SrcIP, &ev.DstIP, &ev.DstPort, &ev.Protocol,
+		&ev.SrcLat, &ev.SrcLon, &ev.DstLat, &ev.DstLon,
+		&ev.SrcCity, &ev.DstCity, &ev.SrcCC, &ev.DstCC,
+		&ev.ASN, &ev.ASNOrg, &ev.Detail, &tags, &meta, &ev.ClientData,
+	)
+	if err != nil {
+		return ev, err
 	}
-	return events, rows.Err()
+	ev.Tags = event.SplitTags(tags)
+	if meta != "" {
+		_ = json.Unmarshal([]byte(meta), &ev.Meta)
+	}
+	return ev, nil
 }
 
 // HistoryFilter holds optional filter criteria for QueryHistory.
@@ -339,10 +323,21 @@ type HistoryFilter struct {
 	Service  string // resolved via portServiceNameFn; matched against dst_port
 	DateFrom string // RFC3339 / YYYY-MM-DD lower bound (inclusive)
 	DateTo   string // RFC3339 / YYYY-MM-DD upper bound (inclusive, treated as end-of-day)
+	Tag      string // exact tag match
+	ASN      uint32 // source ASN, 0 = any
+	Limit    int    // max rows (default DefaultHistoryLimit, capped at MaxHistoryLimit)
+	Offset   int    // rows to skip, applied to the newest-first ordering
 }
 
+// History query limits.
+const (
+	DefaultHistoryLimit = 20000
+	MaxHistoryLimit     = 100000
+)
+
 // QueryHistory executes a filtered SELECT against the events table and returns
-// matching events oldest-first.
+// matching events oldest-first. The newest Limit rows (after Offset) are
+// selected, so a truncated result always contains the most recent activity.
 // portForService is a callback to resolve a service name to matching port strings.
 func (e *EventDB) QueryHistory(f HistoryFilter, portsForService func(string) []string) ([]event.ConnectionEvent, error) {
 	var where []string
@@ -353,8 +348,19 @@ func (e *EventDB) QueryHistory(f HistoryFilter, portsForService func(string) []s
 		args = append(args, f.Country)
 	}
 	if f.IP != "" {
-		where = append(where, "src_ip LIKE ?")
-		args = append(args, f.IP+"%")
+		// Prefix match; escape LIKE wildcards in user input.
+		esc := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(f.IP)
+		where = append(where, `src_ip LIKE ? ESCAPE '\'`)
+		args = append(args, esc+"%")
+	}
+	if f.Tag != "" {
+		where = append(where, `(',' || tags || ',') LIKE ? ESCAPE '\'`)
+		esc := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(f.Tag)
+		args = append(args, "%,"+esc+",%")
+	}
+	if f.ASN != 0 {
+		where = append(where, "asn = ?")
+		args = append(args, f.ASN)
 	}
 	if f.Port != "" {
 		where = append(where, "dst_port = ?")
@@ -392,41 +398,30 @@ func (e *EventDB) QueryHistory(f HistoryFilter, portsForService func(string) []s
 		args = append(args, dateTo)
 	}
 
-	// Build the query with optional WHERE filters, ordered oldest-first.
-	query := `SELECT time, src_ip, dst_ip, dst_port, protocol,
-	                 src_lat, src_lon, dst_lat, dst_lon,
-	                 src_city, dst_city, src_cc, dst_cc
-	          FROM events`
-	if len(where) > 0 {
-		query += " WHERE "
-		for i, w := range where {
-			if i > 0 {
-				query += " AND "
-			}
-			query += w
-		}
+	limit := f.Limit
+	if limit <= 0 {
+		limit = DefaultHistoryLimit
 	}
-	query += " ORDER BY id ASC"
+	if limit > MaxHistoryLimit {
+		limit = MaxHistoryLimit
+	}
+	offset := f.Offset
+	if offset < 0 {
+		offset = 0
+	}
 
-	rows, err := e.db.Query(query, args...)
+	inner := "SELECT * FROM events"
+	if len(where) > 0 {
+		inner += " WHERE " + strings.Join(where, " AND ")
+	}
+	inner += " ORDER BY id DESC LIMIT ? OFFSET ?"
+	args = append(args, limit, offset)
+
+	rows, err := e.db.Query(`SELECT `+eventColumns+` FROM (`+inner+`) ORDER BY id ASC`, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var events []event.ConnectionEvent
-	for rows.Next() {
-		var ev event.ConnectionEvent
-		if err := rows.Scan(
-			&ev.Time, &ev.SrcIP, &ev.DstIP, &ev.DstPort, &ev.Protocol,
-			&ev.SrcLat, &ev.SrcLon, &ev.DstLat, &ev.DstLon,
-			&ev.SrcCity, &ev.DstCity, &ev.SrcCC, &ev.DstCC,
-		); err != nil {
-			return nil, err
-		}
-		events = append(events, ev)
-	}
-	return events, rows.Err()
+	return collectEvents(rows)
 }
 
 // Close drains the insert queue and releases the database connection.
@@ -657,4 +652,25 @@ func (e *EventDB) BackfillMetrics(portServiceName func(string) string) error {
 
 	log.Printf("Backfilled %d metric rows from events in %v", len(batch), time.Since(start).Round(time.Millisecond))
 	return nil
+}
+
+// PruneEvents deletes events older than the cutoff in small batches so the
+// writer is never blocked for long, and returns the number removed. Metrics
+// (hourly aggregates) are retained.
+func (e *EventDB) PruneEvents(before time.Time) (int64, error) {
+	cutoff := before.UTC().Format(time.RFC3339)
+	var total int64
+	for {
+		res, err := e.db.Exec(`DELETE FROM events WHERE id IN (
+			SELECT id FROM events WHERE time < ? LIMIT 5000)`, cutoff)
+		if err != nil {
+			return total, err
+		}
+		n, _ := res.RowsAffected()
+		total += n
+		if n < 5000 {
+			return total, nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }

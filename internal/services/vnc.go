@@ -1,8 +1,8 @@
 package services
 
 import (
+	"context"
 	"io"
-	"log"
 	"math/rand"
 	"net"
 	"sync"
@@ -41,50 +41,25 @@ func vncIsRepeat(ip string) bool {
 	return ok && now.Sub(last) < vncTarpitWindow
 }
 
-// StartVNCListener binds to VNCPort and emulates an RFB version handshake
-// with an optional tarpit for repeat connections.
-func StartVNCListener(isBanned IsBannedFunc, capture CaptureFunc) {
-	portStr := "5900"
-	addr := ":5900"
-
-	// Periodically prune stale entries from the seen-IP map.
-	go func() {
-		for range time.Tick(5 * time.Minute) {
+// pruneVNCSeen periodically drops stale entries from the seen-IP map until
+// ctx is cancelled.
+func pruneVNCSeen(ctx context.Context) {
+	t := time.NewTicker(5 * time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
 			vncSeenMu.Lock()
 			cutoff := time.Now().Add(-vncTarpitWindow)
-			for ip, t := range vncSeenIPs {
-				if t.Before(cutoff) {
+			for ip, seen := range vncSeenIPs {
+				if seen.Before(cutoff) {
 					delete(vncSeenIPs, ip)
 				}
 			}
 			vncSeenMu.Unlock()
 		}
-	}()
-
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		log.Printf("VNC listener on %s failed: %v", addr, err)
-		return
-	}
-	log.Printf("VNC listener on %s", addr)
-
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			log.Printf("VNC accept on %s: %v", addr, err)
-			time.Sleep(time.Second)
-			continue
-		}
-		go func(c net.Conn) {
-			defer c.Close()
-			srcIP := extractConnIP(c.RemoteAddr())
-			if isBanned(srcIP, portStr) {
-				return
-			}
-			repeat := vncIsRepeat(srcIP)
-			clientData := handleVNCConn(c, repeat)
-			go capture(srcIP, portStr, "tcp", clientData)
-		}(conn)
 	}
 }
 

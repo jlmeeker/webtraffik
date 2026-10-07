@@ -1,72 +1,62 @@
 # webTraffik configuration file
 #
-# Default location: /etc/webtraffik/config.yaml
-# This file is auto-detected on startup. No flag required.
-# To use a custom path: webtraffik -config=/path/to/config.yaml
+# Default location: /etc/webtraffik/config.yaml (auto-detected on startup).
+# Use another path with: webtraffik -config=/path/to/config.yaml
 #
-# All settings are optional. Omitted keys use the compiled-in defaults.
-# CLI flags always override values set in this file.
+# Every key is optional and matches a CLI flag of the same name.
+# Precedence: CLI flag > this file > built-in default.
+# Unknown keys are an ERROR (so a typo cannot silently do nothing).
 #
-# Hot-reload (no restart needed):
-#   systemctl reload webtraffik     # reloads mgmt-allow-file only
-#
-# Full restart required for all other changes:
-#   systemctl restart webtraffik
+# Reload without a restart (SIGHUP):   systemctl reload webtraffik
+#   -> re-reads mgmt-allow-file only. Everything else needs a restart.
 
-# ── Capture mode ──────────────────────────────────────────────────────────────
+# ── Capture ───────────────────────────────────────────────────────────────────
 #
-# "hybrid"    (default) — eBPF XDP for ban enforcement + Go listeners for all
-#             ports. Best balance of kernel-speed banning and protocol emulation.
-# "ebpf-only" — XDP handles all traffic; Go listeners are not started.
-#             Ban enforcement and telemetry at line rate. FTP/SSH/etc. banners
-#             are NOT sent (no Go-side connection handling).
-# "go-only"   — Pure userspace; no eBPF. Original behavior, always available
-#             even on kernels < 5.10 or without CAP_BPF.
+# hybrid   (default) eBPF/XDP drops banned IPs in the kernel; Go listeners
+#          emulate the services and capture payloads.
+# ebpf-only XDP only — no Go listeners (no banners, credentials or payloads).
+# go-only  pure userspace; works anywhere, no extra capabilities.
+#
+# If XDP cannot attach (no CAP_BPF/CAP_NET_ADMIN/CAP_PERFMON, kernel < 5.10,
+# unsupported driver) hybrid/ebpf-only fall back to go-only automatically.
 #
 # capture-mode: hybrid
+# ebpf-iface: eth0                  # default: interface of the default route
+# mgmt-ports: "8999,22"             # never dropped/logged by XDP (default: dashboard port + 22)
+# mgmt-allow-file: /etc/webtraffik/allow.txt   # one IP (v4 or v6) per line; SIGHUP reloads
+# disable-ports: ""                 # ports to NOT bind, e.g. "22,80" if real services use them
+#                                   # (pass the same list to firewall.sh via DISABLE_PORTS)
+# max-conns: 4096                   # concurrent emulated connections across all listeners
 
-# ── eBPF interface ────────────────────────────────────────────────────────────
+# ── Dashboard ─────────────────────────────────────────────────────────────────
 #
-# Network interface to attach the XDP program to.
-# Omit to auto-detect from the default route (works in most cases).
-# Example: eth0, ens3, enp3s0
+# By default the dashboard listens on :8999 and relies on the firewall (subnet
+# only). Strongly recommended: enable authentication. install.sh does this for
+# fresh installs.
 #
-# ebpf-iface: eth0
+# dashboard-listen: ":8999"         # e.g. "127.0.0.1:8999" behind a reverse proxy
+# dashboard-user: admin
+# dashboard-pass-file: /etc/webtraffik/dashboard.pass   # or $WEBTRAFFIK_DASHBOARD_PASS
+# allowed-origins: ""               # extra Origin hosts (your reverse proxy's name)
 
-# ── Management ports ──────────────────────────────────────────────────────────
+# ── Data ──────────────────────────────────────────────────────────────────────
 #
-# Comma-separated ports that are never touched by eBPF ban enforcement or
-# telemetry. These ports remain fully accessible even when an IP is banned.
-# Always include your SSH port and the dashboard port.
-#
-# mgmt-ports: "8999,22"
+# data-dir: /var/lib/webtraffik     # default: working directory
+# retention-days: 90                # delete events older than this; 0 = keep forever
+# export-jsonl: /var/lib/webtraffik/events.jsonl   # append every event as a JSON line
+# export-max-mb: 100                # rotate to <file>.1 at this size
+# public-ip: ""                     # override auto-discovery; "none" skips it
 
-# ── Management IP allowlist ───────────────────────────────────────────────────
+# ── Geolocation ───────────────────────────────────────────────────────────────
 #
-# Path to a plain-text file containing one IPv4 address per line.
-# IPs in this file bypass all eBPF-level restrictions.
-# The file is re-read on SIGHUP (systemctl reload webtraffik) — no restart needed.
-#
-# Example file contents:
-#   192.168.1.10
-#   10.0.0.5
-#
-# mgmt-allow-file: /etc/webtraffik/allow.txt
+# disable-rgeo: false               # skip the city-name fallback (faster start on a Pi)
+# disable-asn: false                # skip ASN / organisation enrichment
+# geo-refresh: "168h"               # refresh the databases this often; "0" disables
+# geo-city-url: https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb
+# geo-asn-url:  https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-ASN.mmdb
+# geo-city-sha256: ""               # pin the City database download
 
-# ── Disable specific ports ────────────────────────────────────────────────────
+# ── Logging ───────────────────────────────────────────────────────────────────
 #
-# Comma-separated list of capture ports to skip binding entirely.
-# Useful when a port is already in use by a real service on the host
-# (e.g. a real SSH daemon on 22, or a real web server on 80).
-# Update your firewall rules accordingly after disabling ports.
-#
-# disable-ports: ""
-
-# ── Disable rgeo reverse geocoder ────────────────────────────────────────────
-#
-# The rgeo library (NaturalEarth datasets + S2 spatial index) provides city
-# names for the ~5-10% of IPs where MaxMind has coordinates but no city data.
-# Loading it takes ~2.5 minutes on slow hardware (e.g. Raspberry Pi).
-# Set to true to skip it and accept missing city names on those IPs.
-#
-# disable-rgeo: false
+# log-level: info                   # debug logs every captured connection
+# log-format: text                  # or json

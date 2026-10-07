@@ -2,7 +2,9 @@
 
 This document provides a detailed reference of every service webTraffik emulates. When a connection is received on one of these ports, webTraffik logs it, geolocates the source IP, and (for TCP services) sends back a convincing protocol-specific banner designed to fingerprint as the real service to scanners and bots.
 
-**Source of truth**: All service definitions live in `services.go`. This document reflects the current state of that file.
+**Source of truth**: the port registry in `internal/services/registry.go` (with banners in `banners.go` and interactive emulators in `ssh.go`, `telnet.go`, `textproto.go`, `tlscap.go`, `httpcap.go`). The complete, always-current port list is generated into [`docs/PORTS.md`](docs/PORTS.md) (`make docs`); the firewall port sets are generated from the same registry (`webtraffik ports`). This file holds the human-written protocol notes.
+
+Every capture records, in addition to source/geo: the raw client bytes (hex, capped at 4 KB), a one-line `detail`, classifier `tags` (e.g. `log4shell`, `mirai-default-creds`, `scanner:zgrab`), and structured `meta` (credentials, JA3/JA4, SNI, SSH client version, HTTP method/path/UA).
 
 ---
 
@@ -21,16 +23,16 @@ This creates realistic fingerprints that scanners and reconnaissance tools will 
 
 | Port | Service | Protocol | Banner Summary |
 |------|---------|----------|----------------|
-| 21 | FTP | File Transfer Protocol | `220 FTP Server ready.` — standard FTP greeting |
-| 22 | SSH | Secure Shell | `SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6` — mimics OpenSSH version string |
-| 23 | Telnet | Telnet | IAC DO TERMINAL-TYPE + IAC DO NAWS negotiation bytes + `Login: ` prompt |
-| 25 | SMTP | Simple Mail Transfer Protocol | `220 mail.example.com ESMTP Postfix (Ubuntu)` — mimics Postfix MTA |
+| 21 | FTP | File Transfer Protocol | **interactive** — `220` greeting; `USER`/`PASS` credentials captured |
+| 22 | SSH | Secure Shell | **interactive** — real SSH handshake; credentials / keys captured, never authenticates |
+| 23 | Telnet | Telnet | **interactive** — `login:`/`Password:` prompts; credentials captured |
+| 25 | SMTP | Simple Mail Transfer Protocol | **interactive** — Postfix greeting; `AUTH` credentials + commands captured |
 | 102 | S7comm | Siemens S7 PLC (ISO-TSAP) | 22-byte COTP Connection Confirm (CC) TPDU with rack 0 slot 2 |
-| 110 | POP3 | Post Office Protocol 3 | `+OK POP3 server ready` — standard POP3 greeting |
+| 110 | POP3 | Post Office Protocol 3 | **interactive** — `+OK` greeting; `USER`/`PASS` captured |
 | 135 | RPC | Microsoft DCE/RPC Endpoint Mapper | DCE/RPC bind_nak rejection (LOCAL_LIMIT_EXCEEDED) |
 | 139 | NetBIOS | NetBIOS Session Service | Negative session response (not listening on called name) |
 | 143 | IMAP | Internet Message Access Protocol | `* OK [CAPABILITY IMAP4rev1 ...] Dovecot ready.` — mimics Dovecot IMAP |
-| 443 | HTTPS | HTTP over TLS | TLS 1.0 Alert (fatal, handshake_failure) — realistic response to ClientHello |
+| 443 | HTTPS | HTTP over TLS | **TLS honeypot** — self-signed cert; JA3/JA4 + HTTP request captured |
 | 445 | SMB | Server Message Block | Minimal SMB2 NEGOTIATE response with STATUS_NOT_SUPPORTED — fingerprints as Windows SMB |
 | 502 | Modbus | Modbus/TCP | 9-byte Modbus Exception Response (function 0x83, exception code 0x01) |
 | 554 | RTSP | Real Time Streaming Protocol | `RTSP/1.0 401 Unauthorized` with Digest authentication challenge — mimics Hikvision IP camera |
@@ -56,11 +58,11 @@ This creates realistic fingerprints that scanners and reconnaissance tools will 
 | 5986 | WinRM-HTTPS | Windows Remote Management HTTPS | TLS handshake_failure alert (same as port 443) |
 | 6000 | X11 | X Window System | X11 connection-refused response with "No protocol specified" error |
 | 6443 | Kubernetes | Kubernetes API Server (kube-apiserver) | HTTP/1.0 400 Bad Request response: "Client sent an HTTP request to an HTTPS server." |
-| 6379 | Redis | Redis In-Memory Database | `-DENIED Redis is running in protected mode` — mimics Redis protected mode |
+| 6379 | Redis | Redis In-Memory Database | **interactive** — RESP parser; `-NOAUTH`, commands captured |
 | 6667 | IRC | Internet Relay Chat | IRC NOTICE AUTH hostname lookup messages |
 | 8291 | Winbox | MikroTik Winbox | 4 bytes: `0x01 0x00 0x00 0x00` (null-session banner) |
 | 8333 | Bitcoin | Bitcoin P2P Network (mainnet) | Bitcoin protocol version message (magic 0xF9BEB4D9, version 70016, /Satoshi:25.0.0/) |
-| 8443 | HTTPS-Alt | HTTP over TLS (alternate port) | Same TLS handshake_failure alert as port 443 |
+| 8443 | HTTPS-Alt | HTTP over TLS (alternate port) | **TLS honeypot** — same as 443 |
 | 8545 | Ethereum-RPC | Ethereum JSON-RPC HTTP Endpoint | HTTP 200 with JSON-RPC error {"code":-32600,"message":"Invalid Request"} |
 | 8546 | Ethereum-WS | Ethereum WebSocket JSON-RPC Endpoint | HTTP 426 Upgrade Required — geth WebSocket endpoint response |
 | 8728 | RouterOS-API | MikroTik RouterOS API | RouterOS API sentence: `!done` + `=ret=ROS_7.14` (length-prefixed) |
@@ -1137,29 +1139,20 @@ This catches:
 
 ---
 
-## HTTP Capture Ports
+## HTTP and TLS Capture Ports
 
-The following ports run plain HTTP listeners (using `http.ListenAndServe` from Go's `net/http` package). These are **not** service emulations — they simply accept the HTTP request, log the connection, and return an empty HTTP 200 response with no body.
+**Plain HTTP ports**: 80, 8080, 8000, 8008, 8081, 8088, 8090, 8888, 3000, 3001, 3128, 4000, 4200, 5000, 5001, 9000, 9090.
+**TLS ports**: 443, 8443.
 
-**Ports**: 80, 8080, 8000, 8008, 8081, 8088, 8090, 8888, 3000, 3001, 3128, 4000, 4200, 5000, 5001, 9000, 9090
+The honeypot answers like a stock `nginx/1.24.0`: the default welcome page for `GET /` and `/index.html`, a faithful nginx `404 Not Found` page for everything else (a 200 for every path is a tell for smart scanners).
 
-### Service Name Mapping (used in UI)
+**Captured** for every request: the method, URI, protocol, `Host` and all headers (sorted), and up to 4 KB of body — so exploit payloads such as `POST /cgi-bin/…` bodies are preserved. The classifier tags well-known probes: `log4shell`, `path-traversal`, `env-probe`, `wordpress-probe`, `admin-panel-probe`, `shell-injection`, `sqli`, `php-rce`, `router-exploit`, `spring4shell`, `docker-api-probe`, and scanner User-Agents (`scanner:zgrab`, `scanner:masscan`, `scanner:nuclei`, …).
 
-These mappings are defined in `services.go:portServiceName()` and displayed in the dashboard:
+**TLS ports** terminate TLS with a self-signed certificate that is persisted (`tls_cert.pem`/`tls_key.pem` in the data directory) and accept legacy protocol versions. The raw ClientHello is parsed *before* the handshake to compute the **JA3** hash and the **JA4** fingerprint plus the SNI (`meta.ja3`, `meta.ja4`, `meta.sni`), which identify scanning tools regardless of their User-Agent. Non-TLS traffic sent to a TLS port (plain HTTP to 443 is common) is recorded and classified (`non-tls`).
 
-| Port(s) | Service Name | Common Use Cases |
-|---------|--------------|------------------|
-| 80 | HTTP | Standard HTTP |
-| 8080, 8000, 8008, 8081, 8088, 8090, 8888 | HTTP-Alt | Alternate HTTP ports, proxies, Tomcat, Jenkins |
-| 3000, 3001 | Node/Dev | Node.js/Express, Grafana, Rails, React dev server |
-| 3128 | Proxy | Squid proxy default port |
-| 4000 | Phoenix | Phoenix (Elixir framework) dev server |
-| 4200 | Angular | Angular CLI dev server |
-| 5000, 5001 | Flask/Dev | Flask dev server, Docker Registry API |
-| 9000 | SonarQube | SonarQube, Portainer |
-| 9090 | Prometheus | Prometheus metrics server, Cockpit |
+**Connect-only probes** (a TCP connect or TLS handshake with no request) are recorded with the tag `connect-only`.
 
-**Why these ports**: These are common ports targeted by web vulnerability scanners looking for exposed dev servers, proxies, CI/CD systems, and application frameworks.
+Service names shown in the UI come from the registry (`/api/services`).
 
 ---
 
@@ -1198,18 +1191,12 @@ This is intentional: many UDP-based reconnaissance and amplification attacks rel
 
 ## Maintenance
 
-**IMPORTANT**: This file must stay in sync with `services.go`.
+All ports are defined in one place: `internal/services/registry.go`.
 
-When adding, removing, or modifying a service in `services.go`:
+To add a service:
 
-1. **Update this file** (`SERVICES.md`) with the new service's port, protocol, banner details, and purpose
-2. **Update `firewall.sh`**:
-   - Add the port to `CAPTURE_PORTS_TCP` (for TCP services) or `CAPTURE_PORTS_UDP` (for UDP services)
-3. **Update `AGENTS.md`**: If this is a new service category or changes the port count, update the architecture section
-4. **Rebuild and redeploy**: `make remote-install IP=x.x.x.x`
-
-The port lists in `firewall.sh` must always match the port lists in `services.go` and `main.go` to ensure the firewall exposes exactly the ports the app is listening on.
-
----
-
-**Last synchronized with**: `services.go` as of the current codebase state (60 TCP services, 8 UDP services, 1 Minecraft service, 17 HTTP ports)
+1. **Banner-only TCP**: add an entry to `tcpServices` in `banners.go`. **Interactive TCP**: write a `ConnHandler`, register it in `customHandlers()` (`run.go`) and add the port to `customTCPPorts`. **HTTP/TLS**: add to `httpPorts` / `tlsPorts`. **UDP**: add to `udpServicePorts`.
+2. Add the display name to `tcpServiceNames` in `registry.go` (a test fails if a listener has no name).
+3. Add the human-readable notes to this file.
+4. Run `make docs` to regenerate `docs/PORTS.md` (a test fails if it is stale).
+5. Redeploy and re-run the firewall — `firewall.sh` reads the port sets from the installed binary (`webtraffik ports`), so there is nothing to keep in sync by hand.

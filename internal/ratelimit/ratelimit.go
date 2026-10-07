@@ -3,6 +3,7 @@ package ratelimit
 import (
 	"hash/fnv"
 	"log"
+	"sort"
 	"sync"
 	"time"
 
@@ -416,11 +417,7 @@ func (rl *Limiter) ActiveBans() []BanEntry {
 	for _, e := range rl.bans {
 		out = append(out, *e)
 	}
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j].BannedAt.After(out[j-1].BannedAt); j-- {
-			out[j], out[j-1] = out[j-1], out[j]
-		}
-	}
+	sort.Slice(out, func(i, j int) bool { return out[i].BannedAt.After(out[j].BannedAt) })
 	return out
 }
 

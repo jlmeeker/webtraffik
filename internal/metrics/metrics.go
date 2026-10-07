@@ -78,6 +78,9 @@ func (mc *Cache) Record(ev event.ConnectionEvent) {
 
 	mc.mu.Lock()
 	mc.counters[metricKey{db.MetricConnections, labels, bucket}]++
+	for _, tag := range ev.Tags {
+		mc.counters[metricKey{db.MetricTags, db.CanonLabels("tag=" + tag), bucket}]++
+	}
 
 	// Track unique IPs per bucket
 	if mc.ipSets[bucket] == nil {

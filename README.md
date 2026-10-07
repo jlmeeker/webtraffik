@@ -1,6 +1,6 @@
 # webTraffik
 
-A real-time network traffic sensor and visualization tool that captures incoming connections on common HTTP ports, TCP services (FTP, SSH, Telnet, SMTP, databases, etc.), and UDP ports, geolocates them using MaxMind GeoLite2, and renders them on an interactive D3.js world map with animated great-circle arcs.
+A network traffic sensor and low-interaction honeypot. It listens on the ports internet scanners probe most — HTTP(S), SSH, Telnet, FTP, SMTP, Redis, databases, ICS/SCADA, crypto nodes and more — emulates just enough of each protocol to capture what attackers actually send (credentials, commands, exploit payloads, TLS fingerprints), geolocates every source (country, city, ASN) and streams it all to a live world-map dashboard. An optional eBPF/XDP layer drops banned sources in the kernel.
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Go Version](https://img.shields.io/badge/go-1.26+-00ADD8.svg)
@@ -8,40 +8,40 @@ A real-time network traffic sensor and visualization tool that captures incoming
 
 ## Features
 
-- **Live Traffic Visualization**: Animated great-circle arcs showing connections from source to destination in real-time
-- **Multi-Protocol Support**: Captures HTTP traffic (17 common ports), TCP service emulation (14 services including SSH, FTP, databases), and UDP traffic (DNS)
-- **Automatic Geolocation**: MaxMind GeoLite2 City database with `rgeo` fallback for enhanced city-level accuracy
-- **Dark-Themed D3.js Map**: Beautiful Natural Earth projection with optimized arc animations
-- **Corner Overlay Panels**: Two transparent panels showing Top Services and Banned IPs — overlaid on the map for an unobstructed view
-- **Historical Replay**: New dashboard connections receive the last 1000 events as faded static dots
-- **History Page**: Query and chart all stored connection events by any combination of country, IP, port, service, and date range — with 7 interactive Chart.js charts (timeline, per-port/country timelines, top ports, top countries, top services doughnut, top source IPs)
-- **SQLite Persistence**: Events survive service restarts; stored in `/var/lib/webtraffik/events.db`
-- **Port-Based Color Coding**: Each monitored port gets a unique color in the legend and arc animations
-- **Map Dot Tooltips**: Hovering over any source dot shows "City, CC" for that connection
-- **Performance Optimized**: Gradient pooling, reduced path sampling, arc lifecycle capping, decoupled panel rendering with requestIdleCallback
-- **Selective Port Disabling**: Skip individual ports at startup with `-disable-ports=22,80,443` to avoid conflicting with existing services on the host
-- **Automated nftables Firewall**: Auto-configured on install — restricts management ports (SSH, dashboard) to your subnet while exposing capture ports to the internet
-- **Zero Configuration**: Auto-downloads GeoLite2 database from GitHub mirror on first run (no license key needed)
-- **Systemd Integration**: Runs as non-root user with `CAP_NET_BIND_SERVICE` capability for ports <1024
-- **Cross-Platform**: Supports linux/amd64, linux/arm64, linux/armv6, linux/armv7, darwin, and windows
+- **Deep capture, not just counting**: full HTTP requests (headers + body) behind a convincing nginx lookalike, TLS honeypot on 443/8443 with **JA3/JA4** fingerprints and SNI, a real **SSH** handshake that records every password and key offered, Telnet/FTP/SMTP/POP3/Redis sessions with credentials and commands, and raw client bytes for everything else
+- **Classification**: payloads are tagged (`log4shell`, `path-traversal`, `env-probe`, `shell-injection`, `redis-exploit`, `mirai-default-creds`, `scanner:zgrab`, …) and counted in the metrics
+- **Enrichment**: MaxMind GeoLite2 City + ASN (auto-downloaded, validated and refreshed in the background) with an `rgeo` city fallback
+- **Live world map**: animated great-circle arcs, history replay, ban/unban and traceroute from the dashboard
+- **Auto-ban + port-scan detection**: flood and volume-window bans per IP+port, scanner panel, persistent bans
+- **eBPF/XDP (optional)**: banned IPs are dropped in the kernel (IPv4 and IPv6); per-SYN events and telemetry; automatic fallback to pure userspace if XDP cannot attach
+- **Secure by default install**: dashboard Basic auth with a generated password, Origin/CSRF checks, hardened systemd unit, nftables DMZ policy
+- **Operations**: graceful shutdown, bounded queues and connection limits, versioned DB migrations, event retention, Prometheus `/metrics`, JSON-lines export, structured (`slog`) logs, `/api/status`
+- **Single binary**: pure Go (no CGo), SQLite persistence, embedded UI; linux/amd64, arm64, armv6, armv7, darwin and windows
 
 ## Architecture
 
-webTraffik listens on:
-- **17 HTTP ports** (80, 8080, 8000, 8008, 8081, 8088, 8090, 8888, 3000, 3001, 3128, 4000, 4200, 5000, 5001, 9000, 9090)
-- **18 TCP service ports** with protocol emulation (21/FTP, 22/SSH, 23/Telnet, 25/SMTP, 110/POP3, 143/IMAP, 443/HTTPS, 445/SMB, 1433/MSSQL, 3306/MySQL, 3389/RDP, 5432/PostgreSQL, 6379/Redis, 27017/MongoDB, 5900/VNC, 8443/HTTPS-Alt, 9200/Elasticsearch, 11211/Memcached)
-- **5 UDP ports** (53/DNS, 123/NTP, 161/SNMP, 1900/SSDP, 5060/SIP)
-- **1 TCP service port** for Minecraft Java Edition (25565) with full Server List Ping emulation
+```
+ scanners ──► listeners (HTTP/TLS/SSH/Telnet/FTP/SMTP/POP3/Redis/banners/UDP)
+                 │  Capture{src, port, payload, detail, tags, meta}
+ XDP events ─────┤  (ports without a Go listener)
+                 ▼
+          App.Submit()  ── bounded queue (drops are counted, never blocks) ──┐
+                                                                              ▼
+                          workers: rate-limit/scan check → geo + ASN → ConnectionEvent
+                                              │
+              ┌───────────────┬──────────────┼───────────────┬────────────────┐
+              ▼               ▼              ▼               ▼                ▼
+         Hub (ring +     SQLite (batched   Metrics       JSONL export     /api/status
+         WebSocket)      writer)           (hourly)      (optional)
+```
 
-The dashboard is served on port **8999** (management-only, restricted to your subnet by the firewall).
+Every port is defined once, in the registry in `internal/services/registry.go`; the listeners, the firewall port sets (`webtraffik ports`), the UI service names and [docs/PORTS.md](docs/PORTS.md) are all derived from it. See [SERVICES.md](SERVICES.md) for what each emulator does, and [AGENTS.md](AGENTS.md) for the design invariants.
 
-For a detailed description of each emulated service and its protocol banner, see [SERVICES.md](SERVICES.md).
+The dashboard is served on port **8999** (management-only: subnet-restricted by the firewall and, on fresh installs, password protected).
 
-Traffic reaches the app via **pure NAT redirect** — your firewall forwards packets without injecting proxy headers, so `RemoteAddr` contains the original source IP.
+Traffic reaches the app via **NAT redirect** (no proxy headers), so the connection's remote address is the real source IP. IPv4 and IPv6 are both supported.
 
-The dashboard uses WebSocket for real-time event streaming. Each new connection receives:
-1. **Historical events** (last 1000) replayed from the SQLite database as faded static dots
-2. **Live events** as animated arcs that settle into persistent dots with city/CC tooltips
+The dashboard streams events over WebSocket (`/ws?hours=1..24`): history is replayed from SQLite first (flagged `replay`), then live events follow.
 
 ## Screenshot
 
@@ -58,16 +58,10 @@ The dashboard shows:
 
 ## History Page
 
-![webTraffik History](history.png)
-
-The history page allows you to filter and visualize stored events:
-- **Filter bar**: country code, source IP prefix, port, service (dropdown), date range, and row limit
-- **Connections Over Time**: bar chart auto-bucketed to 5-min/30-min/3-hour/daily/weekly depending on the queried range
-- **Top Ports / Top Countries**: horizontal bar charts showing the top 15 by hit count
-- **Top Services**: doughnut chart breaking down traffic by service name
-- **Top Source IPs**: horizontal bar chart of the top 15 attacking IPs
-- **Per-Port Timeline** and **Per-Country Timeline**: multi-line charts shown when more than one port or country is present in the results
-- **Result sample table**: first 200 matching rows with timestamp, IP, city, country code, port, service, and protocol
+The history page filters and charts stored events by country, source IP prefix, port, service, tag/ASN (API), and date range (with presets):
+- Stat tiles and a connections / unique-IPs / bans timeline, auto-bucketed to the queried range
+- Top ports, countries, services and source IPs; per-port and per-country timelines
+- A result table with the captured detail and tags; the **Recent** page shows live hex dumps of client payloads with filters
 
 ## Quick Start
 
@@ -173,8 +167,11 @@ For hosts without Go:
 | `make firewall` | Re-apply nftables firewall ruleset on the local machine |
 | `make uninstall` | Remove service, binary, user, data directory, and firewall config |
 | `make clean` | Remove build artifacts and GeoLite2 DB |
-| `make ebpf-gen` | Regenerate eBPF Go bindings from `capture.bpf.c` via `bpf2go` (requires `clang`) |
-| `make ebpf-clean` | Remove generated eBPF artifacts (`capture_bpfel.go`, `capture_bpfeb.go`, `.o` files) |
+| `make check` | gofmt + `go vet` + `go test -race` (what CI runs) |
+| `make test` / `make vet` / `make fmt` | Individual checks |
+| `make docs` | Regenerate `docs/PORTS.md` from the port registry |
+| `make ebpf-gen` | Regenerate the committed eBPF objects/bindings from `capture.bpf.c` via `bpf2go` (requires `clang`) |
+| `make ebpf-check` | Regenerate and fail if the committed eBPF artifacts differ (CI) |
 
 ## Firewall Configuration
 
@@ -203,27 +200,23 @@ make firewall
 sudo bash firewall.sh
 ```
 
-### Port sync requirement
+### Ports are generated, not synced
 
-**Important**: If you add or remove ports in `main.go` (HTTP ports in `capturePorts`) or `services.go` (TCP service ports in `tcpServices` or UDP ports in `udpServicePorts`), you must also update the corresponding variables in `firewall.sh` to match:
-- `CAPTURE_PORTS_TCP` (around line 70) — must include all HTTP ports from `main.go` plus all TCP service ports from `services.go`
-- `CAPTURE_PORTS_UDP` (around line 75) — must include all UDP ports from `services.go`
+`firewall.sh` asks the installed binary for the port sets (`webtraffik ports -proto tcp -format nft`), so the firewall always matches what the app listens on — there is nothing to keep in sync by hand. Inspect them yourself:
 
-If you are disabling individual ports with `-disable-ports`, you must also pass them to `firewall.sh` via the `DISABLE_PORTS` environment variable:
+```bash
+webtraffik ports -proto tcp -format nft        # 21, 22, 23, ...
+webtraffik ports -proto udp -format nft
+webtraffik ports -format json                  # everything, with service names
+```
+
+If you disable individual ports with `-disable-ports` (for example because a real SSH daemon uses 22), pass the same list to the firewall so it does not open ports nobody serves:
 
 ```bash
 sudo DISABLE_PORTS=22,443 bash firewall.sh
 ```
 
-Then re-apply:
-
-```bash
-make remote-install IP=x.x.x.x
-# or, on the server directly:
-sudo bash firewall.sh
-```
-
-The dashboard port **8999** is intentionally excluded from the capture-port list and is protected by the subnet-only management rule.
+The dashboard port **8999** is intentionally not in the capture sets and is protected by the subnet-only management rule.
 
 ### Inspect the active ruleset
 
@@ -233,195 +226,94 @@ nft list ruleset
 
 ## Configuration
 
-webTraffik can be configured via a YAML file at `/etc/webtraffik/config.yaml` (created automatically by `install.sh` with all keys commented out). All CLI flags can be set here; **CLI flags always override config file values**.
+webTraffik is configured by a YAML file at `/etc/webtraffik/config.yaml` (created by `install.sh` from [config.yaml.example](config.yaml.example), which documents every option) and/or CLI flags. Every key has a flag of the same name.
 
-### Config file keys
+**Precedence: CLI flag > config file > built-in default.** Unknown keys in the file are an error, so a typo cannot silently do nothing.
 
-```yaml
-# Capture mode: "hybrid" (default), "ebpf-only", or "go-only"
-# capture-mode: hybrid
-
-# Network interface for eBPF XDP attach (default: auto-detect)
-# ebpf-iface: eth0
-
-# Management ports that bypass eBPF ban enforcement and telemetry
-# mgmt-ports: "8999,22"
-
-# Path to file listing allowed management IPs, one IPv4 per line
-# mgmt-allow-file: /etc/webtraffik/allow.txt
-
-# Comma-separated ports to skip binding entirely
-# disable-ports: ""
-
-# Skip loading the rgeo reverse geocoder (saves ~2 min on slow hardware)
-# disable-rgeo: false
-```
-
-### Using an alternate config file
+| Option | Default | Purpose |
+|--------|---------|---------|
+| `capture-mode` | `hybrid` | `hybrid` (XDP bans + Go listeners), `ebpf-only`, `go-only`. Falls back to `go-only` automatically if XDP cannot attach |
+| `ebpf-iface` | auto | Interface for XDP (default route) |
+| `mgmt-ports` | dashboard port + `22` | Ports XDP never drops/logs |
+| `mgmt-allow-file` | – | IPs (v4/v6, one per line) that bypass XDP bans; `systemctl reload` re-reads it |
+| `disable-ports` | – | Ports not to bind (real services on the host) |
+| `max-conns` | `4096` | Concurrent emulated connections |
+| `dashboard-listen` | `:8999` | e.g. `127.0.0.1:8999` behind a reverse proxy |
+| `dashboard-user` / `dashboard-pass-file` | – | Enable HTTP Basic auth (or `$WEBTRAFFIK_DASHBOARD_PASS`) |
+| `allowed-origins` | – | Extra Origin hosts (your reverse proxy name) for WebSocket/POST |
+| `data-dir` | working dir | Database, geo files, SSH host key, TLS certificate |
+| `retention-days` | `90` | Delete events older than this (`0` keeps everything; metrics are kept) |
+| `export-jsonl` / `export-max-mb` | – / `100` | Append every event as a JSON line, rotating at the size limit |
+| `public-ip` | auto | Override discovery; `none` skips it |
+| `disable-rgeo`, `disable-asn` | `false` | Skip the city fallback / ASN enrichment (faster start on a Pi) |
+| `geo-refresh` | `168h` | Background refresh of the geo databases (`0` disables); downloads are validated and swapped atomically |
+| `geo-city-url`, `geo-asn-url`, `geo-city-sha256` | public mirror | Where to fetch the databases; optionally pin the City download |
+| `log-level`, `log-format` | `info`, `text` | `debug` logs every connection; `json` for log pipelines |
 
 ```bash
-webtraffik -config=/path/to/config.yaml
+webtraffik -config=/path/to/config.yaml     # alternate file
+webtraffik -help                            # every flag
+webtraffik ports -format json               # what will be bound
+webtraffik version
 ```
 
-### Precedence
+### Reloading
 
-CLI flags > config file values > compiled-in defaults
-
-### Hot-reloading
-
-The `mgmt-allow-file` setting can be reloaded at runtime without a restart:
-
-```bash
-systemctl reload webtraffik   # sends SIGHUP
-```
-
-All other config changes require a service restart:
-
-```bash
-systemctl restart webtraffik
-```
+`systemctl reload webtraffik` (SIGHUP) re-reads `mgmt-allow-file` only; everything else needs `systemctl restart webtraffik`. `SIGTERM`/`SIGINT` trigger a graceful shutdown: listeners close, queued events are processed, metrics and the DB are flushed and the XDP program is detached.
 
 ## File Structure
 
 ```
-webTraffik/
-├── README.md                          # This file
-├── SERVICES.md                        # Emulated service protocol banners reference
-├── AGENTS.md                          # AI agent reference (architecture, tasks, notes)
-├── cmd/
-│   └── webtraffik/
-│       ├── main.go                    # Entry point, hub, WebSocket, HTTP/eBPF capture
-│       ├── services.go                # TCP service emulation, UDP capture
-│       ├── db.go                      # SQLite persistence (events + metrics)
-│       ├── metrics.go                 # In-memory metrics cache + Prometheus endpoint
-│       ├── geodb.go                   # Auto-download GeoLite2-City.mmdb
-│       ├── iputil.go                  # Public IP discovery
-│       ├── static_embed.go            # //go:embed static
-│       └── static/
-│           ├── index.html             # D3.js map, WebSocket client, panels, log
-│           ├── index.js               # Frontend JS: eBPF panel, traceroute, formatters
-│           └── history.html           # History page: filter + Chart.js charts
+webtraffik/
+├── cmd/webtraffik/          # main, flags/config, `ports` subcommand
 ├── internal/
-│   ├── ebpf/
-│   │   ├── manager.go                 # Manager lifecycle, XDP attach/detach, ban sync
-│   │   ├── events.go                  # Perf buffer reader, event parsing
-│   │   ├── stats.go                   # Telemetry aggregation, /api/ebpf/stats handler
-│   │   ├── iface.go                   # Default interface detection
-│   │   ├── rlimit.go                  # RLIMIT_MEMLOCK adjustment
-│   │   ├── doc.go                     # Package doc
-│   │   ├── capture_bpfel.go           # Generated by bpf2go (little-endian)
-│   │   ├── capture_bpfeb.go           # Generated by bpf2go (big-endian)
-│   │   └── bpf/programs/
-│   │       └── capture.bpf.c          # XDP C program source
-│   ├── geo/
-│   │   └── geo.go                     # GeoLocator: MaxMind GeoLite2 + rgeo fallback
-│   ├── ratelimit/
-│   │   ├── ratelimit.go               # Auto-ban limiter, ebpfBanner interface
-│   │   └── scanner.go                 # Port scan detection
-│   └── traceroute/
-│       └── traceroute.go              # Hop struct, Run(), traceroute/tracepath spawner
-├── firewall.sh                        # nftables DMZ ruleset installer
-├── nftables.conf                      # Ruleset template (__SUBNET__, __CAPTURE_PORTS_*)
-├── webtraffik.service                 # systemd unit template
-├── install.sh                         # Standalone deployer for remote hosts
-├── Makefile                           # Build, deploy, firewall, ebpf-gen/clean targets
-├── go.mod
-└── go.sum
+│   ├── app/                 # capture pipeline, workers, shutdown, status, JSONL export
+│   ├── server/              # dashboard HTTP: auth, API, WebSocket, traceroute SSE
+│   ├── services/            # port registry + all listeners and protocol emulators
+│   ├── ebpf/                # XDP program (C), loader/manager, committed objects
+│   ├── ratelimit/           # auto-ban, port-scan detection
+│   ├── db/                  # SQLite, migrations, retention
+│   ├── geo/                 # GeoLite2 City/ASN, validated refresh
+│   ├── hub/ event/ metrics/ traceroute/ iputil/ testutil/
+├── web/                     # frontend source
+├── docs/PORTS.md            # generated port reference
+├── firewall.sh, nftables.conf, install.sh, webtraffik.service
+├── config.yaml.example, Makefile
+└── README.md, SERVICES.md, AGENTS.md
 ```
 
 ## How It Works
 
 ### Geolocation Pipeline
 
-1. **GeoLite2 City Lookup**: Primary database with ~50MB of IP→City mappings
-2. **rgeo Fallback**: When GeoLite2 only has country-level data but provides coordinates, `rgeo` reverse-geocodes to find the nearest city using embedded Cities10 and Provinces10 datasets
-3. **Non-Blocking Init**: `rgeo` initializes in a background goroutine — early lookups simply skip the fallback if not ready
+1. **GeoLite2 City + ASN**: country, city, coordinates, accuracy radius, AS number and organisation. The databases are downloaded on first run, refreshed weekly with a conditional request, validated (size, MaxMind format, optional SHA-256) and swapped in atomically.
+2. **rgeo fallback**: when GeoLite2 has coordinates but no city name, `rgeo` reverse-geocodes the nearest city from embedded datasets. It initialises in the background; early lookups simply skip it.
 
 ### Event Flow
 
-```
-Incoming HTTP request
-  |
-  v
-Extract source IP from RemoteAddr
-  |
-  v
-Geolocate source IP (city, lat/lon, country)
-  |
-  v
-Create ConnectionEvent with src + dst coordinates
-  |
-  v
-hub.broadcast() — appends to in-memory ring buffer + fans out to WebSocket subscribers
-  |
-  v
-appDB.insert() — persists to SQLite (fire-and-forget, never blocks capture)
-  |
-  v
-Dashboard receives event:
-  - If replay=true: render faded static dot with tooltip
-  - If live: render animated arc + glowing dot with tooltip
-```
+See the diagram under [Architecture](#architecture). Capture is non-blocking end to end: listeners hand a `Capture` to a bounded queue, workers enrich and fan it out, the DB writer batches inserts, and a full queue drops (and counts) rather than stalling the network path.
 
-### Dashboard Components
+### Dashboard
 
-- **Map**: D3.js Natural Earth projection with TopoJSON world-atlas, fills full container width
-- **Arcs**: Great-circle paths using `d3.geoInterpolate` with 20-point sampling (optimized from 60), animated with `stroke-dashoffset`
-- **Dots**: Animated circles; persistent after arc completes; no glow filters on dots (only on self-dot)
-- **Tooltips**: Mouseover on any source dot shows "City, CC" (or just CC if city is unavailable)
-- **Corner Panels**: Two transparent overlay panels (Top Services and Banned IPs), rendered via `requestIdleCallback` on a 2-second interval (decoupled from event processing)
-- **Log Panel**: Scrolling panel showing timestamp, source IP, city, country, port with service name (e.g., `:22 SSH`, `:3306 MySQL`), and protocol; capped at 200 entries; click any entry to replay its arc on the map
-- **Performance**: Gradient pooling (reuses SVG gradients by color pair), arc count capped at 150, dot count capped at 1000, adaptive flood control (batches events above 10/sec)
+The UI is a Vite + TypeScript app in [`web/`](web/README.md) (D3 map, live/history/recent pages). It is built to `web/dist`, which is **committed and embedded** in the binary, so `go build` needs no Node. Everything is self-hosted — no CDN requests, which also lets the strict Content-Security-Policy stay tight. Highlights: dark/light themes, pause/resume, replay-window slider (1–24 h), auto-reconnecting WebSocket, keyboard/ARIA support, mobile drawers, traceroute visualisation with country-level and RTT-implausibility filtering, ban/unban from tooltips and the Banned panel.
+
+Frontend workflow: `make web` rebuilds `web/dist` (commit the result), `make web-check` runs typecheck + lint + unit tests, `cd web && npm run dev` serves with hot reload proxying to a running backend on :8999.
 
 ## Dependencies
 
 ### Go Modules
 
 - `github.com/oschwald/geoip2-golang` — MaxMind DB reader
-- `github.com/sams96/rgeo` — Embedded reverse geocoder
+- `github.com/sams96/rgeo` — embedded reverse geocoder
 - `nhooyr.io/websocket` — WebSocket server
-- `modernc.org/sqlite` — Pure-Go SQLite driver (no cgo required)
-- `github.com/cilium/ebpf` — eBPF program loading, XDP attach, perf buffer reading (Linux only; eBPF modes only)
+- `modernc.org/sqlite` — pure-Go SQLite driver (no cgo)
+- `github.com/cilium/ebpf` — XDP loading, perf buffer (Linux)
+- `golang.org/x/crypto/ssh` — SSH honeypot handshake
+- `gopkg.in/yaml.v3` — config
 
-### Frontend (CDN)
+### Frontend (bundled from npm, build-time only)
 
-- D3.js v7
-- TopoJSON v3
-- world-atlas v2 (countries-110m.json)
-- Chart.js v4 (history page charts)
-- chartjs-adapter-date-fns v3 (time-series axis)
-
-## Configuration
-
-webTraffik uses **zero-config defaults**:
-
-- **Dashboard port**: 8999 (hardcoded in `main.go`)
-- **Capture ports**: See `capturePorts` array in `main.go`
-- **History size**: 1000 events (ring buffer and DB replay)
-- **Working directory**: `/var/lib/webtraffik` (systemd), or current directory (manual run)
-- **SQLite database**: `events.db` in the working directory
-- **GeoLite2 DB**: Auto-downloaded to working directory on first run
-
-### Command-line Options
-
-- **`-disable-ports=<port1,port2,...>`**: Comma-separated list of port numbers to skip at startup. Use this to exclude ports that are already in use by other services on the host (e.g., `-disable-ports=22,80,443`). When disabling ports, you must also pass `DISABLE_PORTS=` to `firewall.sh` to exclude them from the firewall ruleset.
-
-- **`-disable-rgeo`**: Skip loading the rgeo reverse geocoder (NaturalEarth datasets + S2 spatial index). This saves ~2.5 minutes of startup time on slow hardware like Raspberry Pi. Trade-off: city names will be missing for ~5-10% of IPs where MaxMind GeoLite2 has coordinates but no city data — those connections will show country code only.
-
-- **`-capture-mode=<mode>`**: Capture strategy. One of:
-  - `hybrid` (default) — XDP enforces bans via `XDP_DROP`; Go listeners capture traffic and send protocol banners
-  - `ebpf-only` — XDP handles all telemetry; Go listeners are not spawned (service emulation unavailable; maximum performance)
-  - `go-only` — Pure userspace; eBPF manager is a no-op (legacy behavior; use on non-eBPF systems or for debugging)
-  
-  If XDP attach fails at startup, the app automatically falls back to `go-only` and continues — it never crashes due to eBPF unavailability.
-
-- **`-ebpf-iface=<interface>`**: Network interface for XDP program attachment (e.g., `eth0`, `ens3`). Defaults to auto-detect via the default route interface.
-
-- **`-mgmt-ports=<port1,port2,...>`**: Comma-separated management ports that bypass eBPF ban enforcement and telemetry. Default: `22,8999`. These ports are never dropped by XDP even for banned IPs.
-
-- **`-mgmt-allow-file=<path>`**: Path to a file containing one IPv4 address per line. These IPs are whitelisted in the eBPF `mgmt_allow_ips_map`. The file is re-read on SIGHUP (`systemctl reload webtraffik`) without restarting the service.
-
-To customize ports or buffer size, edit `cmd/webtraffik/main.go` and rebuild. If you change capture ports, also update `firewall.sh` and re-apply the firewall.
+D3, topojson-client and the `sane-topojson` world map are bundled into `web/dist`; Vite, TypeScript, Vitest and Playwright are dev dependencies. See [web/README.md](web/README.md).
 
 ## Cross-Compilation
 
@@ -451,10 +343,10 @@ Binaries appear in `dist/` as `webtraffik_<os>_<arch>[.exe]`.
 The service runs as a dedicated `webtraffik` system user with minimal privileges:
 
 - **User/Group**: `webtraffik:webtraffik`
-- **Capabilities**: `CAP_NET_BIND_SERVICE` (bind ports <1024), `CAP_BPF` + `CAP_NET_ADMIN` + `CAP_SYS_ADMIN` (eBPF hybrid/ebpf-only modes)
-- **Memory lock**: `LimitMEMLOCK=infinity` — required for eBPF map allocation under systemd hardening
-- **Note**: `CAP_SYS_ADMIN` is required when `kernel.unprivileged_bpf_disabled=2` (the default on most hardened kernels), as the BPF verifier restricts pointer arithmetic to processes with this capability
-- **Sandboxing**: `ProtectSystem=strict`, `ProtectHome=true`, `PrivateTmp=true`, `NoNewPrivileges=true`
+- **Capabilities**: `CAP_NET_BIND_SERVICE` (bind ports <1024) plus `CAP_BPF`, `CAP_NET_ADMIN` and `CAP_PERFMON` for the eBPF modes (kernel ≥ 5.8). `CAP_SYS_ADMIN` is **not** needed: without `CAP_PERFMON` the BPF verifier rejects the program's pointer arithmetic for non-root users, and with it the program loads (verified unprivileged). The app falls back to `go-only` if loading fails.
+- **Memory lock**: `LimitMEMLOCK=infinity` — required for eBPF map allocation
+- **Sandboxing**: `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `NoNewPrivileges`, `ProtectKernel{Modules,Logs}`, `ProtectControlGroups`, `ProtectClock`, `LockPersonality`, `RestrictRealtime`, `RestrictSUIDSGID`
+- **Reload/stop**: `ExecReload` sends SIGHUP (allow-list reload); `systemctl stop` sends SIGTERM and waits up to 30 s for the graceful shutdown
 - **Working Directory**: `/var/lib/webtraffik` (writable for GeoLite2 DB download and SQLite database)
 - **Auto-Restart**: `Restart=on-failure` with 5s delay
 
@@ -478,11 +370,13 @@ sudo systemctl stop webtraffik
 
 ## Security Considerations
 
-- **No Authentication**: The dashboard (port 8999) has no authentication. The nftables firewall restricts it to your subnet by default. For remote access from outside your subnet, place behind a reverse proxy with auth.
-- **Public Ports**: Capture ports are meant to be exposed to the internet. The app returns HTTP 200 with no body — it's a blackhole for HTTP traffic.
-- **Firewall Required**: Without `firewall.sh` applied, port 8999 and SSH are exposed. Always run the firewall installer on internet-facing hosts.
-- **Geolocation Privacy**: Source IPs and geolocation data are logged to stdout (journald) and displayed on the dashboard. Ensure logs comply with your privacy policy.
-- **Resource Limits**: The ring buffer caps history at 1000 events in memory. The SQLite database grows unbounded — manage it manually if disk space is a concern. The frontend caps the log panel at 200 entries.
+- **Dashboard authentication**: set `dashboard-user` and `dashboard-pass-file` (fresh installs generate a password for you). Without it the dashboard relies solely on the firewall and logs a warning at startup. It speaks plain HTTP — put it behind a TLS reverse proxy (set `dashboard-listen: 127.0.0.1:8999` and `allowed-origins`) if you reach it across untrusted networks.
+- **Cross-site protection**: state-changing endpoints (`/api/ban`, `/api/unban`) require `Content-Type: application/json` and reject requests whose `Origin` is not the dashboard's own host; the WebSocket checks the Origin too. Inputs are validated (IP/port), and traceroute is limited to public addresses with at most two concurrent runs.
+- **Public ports**: capture ports are meant to be exposed to the internet. Emulators are low-interaction: no shell is ever granted, the SSH server rejects every authentication attempt, and all parsers bound the input they read. The connection limit (`max-conns`) and per-session deadlines cap resource use.
+- **Firewall required**: without `firewall.sh`, SSH and the dashboard are exposed. Run it on internet-facing hosts.
+- **Captured data is sensitive-ish**: attackers' passwords and payloads are stored in `events.db` (and the optional JSONL export) and logged at `debug` level. Treat the data directory accordingly and set `retention-days` to match your policy.
+- **Supply chain**: the GeoLite2 databases come from a third-party mirror by default. Pin the City download with `geo-city-sha256`, or host the files yourself (`geo-city-url`). The UI is fully self-hosted (no CDN requests).
+- **Resource limits**: in memory, the history ring holds 1000 events and the capture queue 8192; on disk, `retention-days` (default 90) prunes old events.
 
 ## Port Conflicts & Warnings
 
@@ -553,12 +447,13 @@ sudo DISABLE_PORTS=22,80,443 bash firewall.sh
 
 - **Check firewall rules**: Ensure NAT redirect is active (`nft list ruleset`)
 - **Check capture ports**: Verify the app is listening on expected ports (`ss -tlnp | grep webtraffik`)
-- **Check public IP**: Ensure `selfIP` discovery succeeded (check logs)
+- **Check public IP**: Ensure discovery succeeded (check the logs), or set `public-ip` explicitly
+- **Check the status endpoint**: `curl -u admin:… http://host:8999/api/status` shows handled/dropped events, queue depth and rejected connections
 
 ### GeoLite2 download fails
 
-- **Manual download**: Place `GeoLite2-City.mmdb` in the working directory before starting
-- **Mirror URL**: If GitHub mirror is down, update `geoliteURL` in `geodb.go` to an alternative source
+- **Manual download**: Place `GeoLite2-City.mmdb` (and optionally `GeoLite2-ASN.mmdb`) in the data directory before starting
+- **Mirror URL**: set `geo-city-url` / `geo-asn-url` in the config to another source; downloads are rejected if they are too small or not a valid MaxMind database
 
 ### Service fails to start
 
@@ -581,67 +476,16 @@ sudo DISABLE_PORTS=22,80,443 bash firewall.sh
 ### eBPF XDP fails to attach
 
 - **Check kernel version**: XDP requires Linux ≥5.10. Check with `uname -r`.
-- **Check capabilities**: The service unit must include `CAP_BPF`, `CAP_NET_ADMIN`, and `CAP_SYS_ADMIN` in both `AmbientCapabilities` and `CapabilityBoundingSet`, plus `LimitMEMLOCK=infinity`. The default `install.sh` sets all of these.
-- **Check `unprivileged_bpf_disabled`**: Run `sysctl kernel.unprivileged_bpf_disabled`. A value of `1` or `2` means the BPF verifier requires `CAP_SYS_ADMIN` in addition to `CAP_BPF`.
+- **Check capabilities**: The service unit must include `CAP_BPF`, `CAP_NET_ADMIN` and `CAP_PERFMON` in both `AmbientCapabilities` and `CapabilityBoundingSet`, plus `LimitMEMLOCK=infinity` (the shipped unit does). A verifier error like `R2 has pointer with unsupported alu operation ... prohibited for !root` means `CAP_PERFMON` is missing. Kernels older than 5.8 have no `CAP_BPF`/`CAP_PERFMON`; they need `CAP_SYS_ADMIN` instead.
+- **Check the eBPF program loads**: `go test -run TestProgramLoads ./internal/ebpf` (as the service user / with the same capabilities) runs the object through the kernel verifier.
 - **Check interface**: Ensure `-ebpf-iface` matches an active interface: `ip link show`. If unset, auto-detection uses the default route interface.
 - **Automatic fallback**: On attach failure, webTraffik automatically falls back to `go-only` mode (all Go listeners still work). Check logs: `journalctl -u webtraffik -e | grep ebpf`
 - **Driver compatibility**: Some virtual/cloud NICs do not support XDP native mode. The app uses generic (SKB) mode as fallback — it always works but has slightly higher overhead.
-- **Docker/container**: Requires `--cap-add=BPF --cap-add=NET_ADMIN --cap-add=SYS_ADMIN` and `--network=host` (XDP does not work with bridged container networking in most CNI setups).
+- **Docker/container**: Requires `--cap-add=BPF --cap-add=NET_ADMIN --cap-add=PERFMON` and `--network=host` (XDP does not work with bridged container networking in most CNI setups).
 
-### eBPF on Raspberry Pi 4 (Raspberry Pi OS)
+### eBPF on Raspberry Pi / kernels without BTF
 
-Raspberry Pi OS kernels ship without BTF (`CONFIG_DEBUG_INFO_BTF`) and with `kernel.unprivileged_bpf_disabled=2`, which means extra steps are required to run eBPF in hybrid mode.
-
-#### Step 1: Install a BTF-enabled kernel
-
-The Debian arm64 kernel has BTF built in. Install it alongside the Pi kernel (the Pi kernel remains available as a fallback):
-
-```bash
-sudo apt install linux-image-arm64 linux-image-6.12.74+deb13+1-arm64
-```
-
-#### Step 2: Copy kernel files to the firmware partition
-
-```bash
-sudo cp /boot/vmlinuz-6.12.74+deb13+1-arm64 /boot/firmware/vmlinuz-debian
-sudo cp /boot/initrd.img-6.12.74+deb13+1-arm64 /boot/firmware/initramfs-debian
-sudo cp /usr/lib/linux-image-6.12.74+deb13+1-arm64/broadcom/bcm2711-rpi-4-b.dtb \
-        /boot/firmware/bcm2711-rpi-4-b-debian.dtb
-```
-
-#### Step 3: Configure the bootloader
-
-Append to `/boot/firmware/config.txt`:
-
-```
-[all]
-kernel=vmlinuz-debian
-initramfs initramfs-debian followkernel
-device_tree=bcm2711-rpi-4-b-debian.dtb
-```
-
-Reboot:
-
-```bash
-sudo reboot
-```
-
-#### Step 4: Verify
-
-After reboot:
-
-```bash
-uname -r                        # should show deb13 kernel
-ls /sys/kernel/btf/vmlinux      # should exist
-journalctl -u webtraffik -e | grep ebpf  # should show "XDP program attached"
-```
-
-#### Notes
-
-- The original Pi kernel (`kernel8.img`) is untouched — remove the `kernel=` lines from `config.txt` to revert.
-- `gen-btf.sh` (installed to `/usr/local/lib/webtraffik/gen-btf.sh`) runs as `ExecStartPre` on each boot. On the Debian kernel it detects that `/sys/kernel/btf/vmlinux` already exists and skips — no overhead.
-- The Debian kernel works on Pi 4 (bcm2711). Pi 5 uses bcm2712 — use `bcm2712-rpi-5-b.dtb` instead of `bcm2711-rpi-4-b.dtb`.
-- `kernel.unprivileged_bpf_disabled=2` is permanent once set — `CAP_SYS_ADMIN` in the service unit is the correct fix (already included in the default `install.sh`).
+The XDP program is built against the stable kernel UAPI headers (no `vmlinux.h`, no CO-RE relocations), so it does **not** need `/sys/kernel/btf/vmlinux`. Stock Raspberry Pi OS kernels (no `CONFIG_DEBUG_INFO_BTF`) work without swapping kernels or generating BTF — this was verified on a kernel with an empty `/sys/kernel/btf/`. What is required is Linux ≥ 5.10 and the capabilities listed under *Systemd Service Details*.
 
 ## Development
 
@@ -663,15 +507,9 @@ go build -o webtraffik.exe .
 
 Ports <1024 require Administrator privileges on Windows.
 
-### Hot Reload
+### Frontend hot reload
 
-Since static files are embedded via `//go:embed`, changes to `static/index.html` require a rebuild:
-
-```bash
-make build && ./webtraffik
-```
-
-For faster iteration, temporarily serve `static/` via a file server and remove the embed.
+Run a backend (`./webtraffik -capture-mode=go-only -dashboard-listen=127.0.0.1:8999`), then `cd web && npm run dev` — the Vite dev server on :5173 proxies `/api` and `/ws` to it. Run `make web` and commit `web/dist` when done.
 
 ## Uninstall
 

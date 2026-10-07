@@ -1,5 +1,6 @@
 BINARY  := webtraffik
-GOFLAGS := -ldflags="-s -w"
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+GOFLAGS := -ldflags="-s -w -X main.version=$(VERSION)"
 OUTDIR  := dist
 MAIN    := ./cmd/webtraffik
 
@@ -11,18 +12,52 @@ PLATFORMS := \
 	windows/amd64 \
 	windows/arm64
 
-.PHONY: build run cap cap-dist install uninstall clean dist remote-install firewall ebpf-gen ebpf-clean $(PLATFORMS) linux/armv6 linux/armv7
+.PHONY: docs test vet fmt check build run cap cap-dist install uninstall clean dist remote-install firewall ebpf-gen ebpf-check web web-check web-clean $(PLATFORMS) linux/armv6 linux/armv7
 
-# Regenerate eBPF Go bindings from C source via bpf2go.
-# Requires: clang >= 10, llvm-strip, linux-libc-dev, bpftool (for vmlinux.h)
-# Run after editing internal/ebpf/bpf/programs/capture.bpf.c
+# ── Frontend (web/) ──────────────────────────────────────────────────────────
+# The browser dashboard lives in web/ (Vite + TypeScript). Its build output
+# web/dist is COMMITTED and embedded by web/embed.go, so plain `go build`
+# needs no Node. Run `make web` after changing anything under web/src and
+# commit the regenerated web/dist.
+web:
+	cd web && npm ci && npm run build
+
+# Typecheck + lint + unit tests for the frontend
+web-check:
+	cd web && npm ci && npm run check
+
+web-clean:
+	rm -rf web/node_modules web/dist/assets web/dist/*.html
+
+# Regenerate eBPF objects + Go bindings from C source via bpf2go.
+# Requires: clang >= 10, llvm-strip, linux-libc-dev. No vmlinux.h or kernel BTF
+# is needed (the program uses only stable UAPI headers).
+# The generated .o/.go files are committed; run this after editing
+# internal/ebpf/bpf/programs/capture.bpf.c and commit the result.
 ebpf-gen:
 	go generate ./internal/ebpf/...
 
-# Remove generated eBPF artifacts (force regeneration on next build)
-ebpf-clean:
-	rm -f internal/ebpf/capture_bpfel.go internal/ebpf/capture_bpfeb.go
-	rm -f internal/ebpf/capture_bpfel.o  internal/ebpf/capture_bpfeb.o
+# Fail if the committed eBPF artifacts are out of date (used by CI).
+ebpf-check: ebpf-gen
+	git diff --exit-code -- internal/ebpf
+
+# Regenerate generated docs (docs/PORTS.md) from the port registry.
+docs:
+	@mkdir -p docs
+	go run $(MAIN) ports -format md > docs/PORTS.md
+
+# Static checks + tests (what CI runs).
+vet:
+	go vet ./...
+
+fmt:
+	gofmt -w cmd internal
+
+test:
+	go test -race -count=1 ./...
+
+check: vet test
+	@test -z "$$(gofmt -l cmd internal)" || (echo "gofmt needed:"; gofmt -l cmd internal; exit 1)
 
 # Build for the current host OS/arch
 build:
@@ -77,7 +112,7 @@ cap-dist: dist
 	done
 	@echo "Done — capabilities set on all Linux dist binaries"
 
-clean: ebpf-clean
+clean:
 	rm -f $(BINARY)
 	rm -rf $(OUTDIR)
 	rm -f GeoLite2-City.mmdb
@@ -123,14 +158,14 @@ remote-install:
 	@echo "building for $(REMOTE_GOARCH)..."
 	@$(MAKE) $(REMOTE_GOARCH)
 	$(eval REMOTE_BIN := $(OUTDIR)/$(BINARY)_$(subst /,_,$(REMOTE_GOARCH)))
-	@echo "copying $(REMOTE_BIN), install.sh, firewall.sh, nftables.conf, and gen-btf.sh to $(USER)@$(IP)..."
+	@echo "copying $(REMOTE_BIN), install.sh, firewall.sh, nftables.conf, service unit and config example to $(USER)@$(IP)..."
 	@scp $(REMOTE_BIN)  $(USER)@$(IP):~/webtraffik
 	@scp install.sh     $(USER)@$(IP):~/install.sh
 	@scp firewall.sh    $(USER)@$(IP):~/firewall.sh
 	@scp nftables.conf  $(USER)@$(IP):~/nftables.conf
-	@scp gen-btf.sh     $(USER)@$(IP):~/gen-btf.sh
+	@scp webtraffik.service config.yaml.example $(USER)@$(IP):~/
 	@echo "running install.sh on remote..."
-	@ssh -t $(USER)@$(IP) 'sudo bash ~/install.sh ~/webtraffik && rm ~/webtraffik ~/install.sh ~/firewall.sh ~/nftables.conf ~/gen-btf.sh'
+	@ssh -t $(USER)@$(IP) 'sudo bash ~/install.sh ~/webtraffik && rm ~/webtraffik ~/install.sh ~/firewall.sh ~/nftables.conf ~/webtraffik.service ~/config.yaml.example'
 
 # Remove binary, service, and data directory
 uninstall:

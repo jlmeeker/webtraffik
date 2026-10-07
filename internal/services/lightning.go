@@ -2,7 +2,6 @@ package services
 
 import (
 	"io"
-	"log"
 	"net"
 	"time"
 )
@@ -20,39 +19,6 @@ import (
 
 // LightningPort is the default Lightning Network peer port.
 const LightningPort = 9735
-
-// StartLightningListener binds to LightningPort and emulates the BOLT #8
-// Noise_XK handshake: reads the client's 50-byte Act One, then sends
-// a 50-byte Act Two response.
-func StartLightningListener(isBanned IsBannedFunc, capture CaptureFunc) {
-	portStr := "9735"
-	addr := ":9735"
-
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		log.Printf("Lightning listener on %s failed: %v", addr, err)
-		return
-	}
-	log.Printf("Lightning listener on %s", addr)
-
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			log.Printf("Lightning accept on %s: %v", addr, err)
-			time.Sleep(time.Second)
-			continue
-		}
-		go func(c net.Conn) {
-			defer c.Close()
-			srcIP := extractConnIP(c.RemoteAddr())
-			if isBanned(srcIP, portStr) {
-				return
-			}
-			clientData := handleLightningConn(c)
-			go capture(srcIP, portStr, "tcp", clientData)
-		}(conn)
-	}
-}
 
 // handleLightningConn processes a single Lightning Network connection:
 // reads the 50-byte Act One from the initiator, then sends a 50-byte

@@ -2,29 +2,34 @@ package ebpf
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"time"
 
 	"github.com/cilium/ebpf/perf"
 )
 
 // RawEvent is the wire format emitted by the XDP program into the perf buffer.
-// It mirrors the C `struct event` exactly (8 bytes, host byte order after
-// bpf_perf_event_output which copies raw bytes).
+// It mirrors the C `struct event` exactly (20 bytes; the port is in host
+// byte order, which bpf_perf_event_output copies raw).
 type RawEvent struct {
-	SrcIP    uint32 // IPv4 source address (host byte order)
-	DstPort  uint16 // destination port (host byte order)
-	Dropped  uint8  // 1 = XDP_DROP (banned), 0 = XDP_PASS
-	Protocol uint8  // IPPROTO_TCP (6), IPPROTO_UDP (17), or IPPROTO_ICMP (1)
+	SrcIP    [16]byte // v4-mapped or native IPv6 source address, network order
+	DstPort  uint16   // destination port (host byte order)
+	Dropped  uint8    // 1 = XDP_DROP (banned), 0 = XDP_PASS
+	Protocol uint8    // IPPROTO_TCP (6), IPPROTO_UDP (17), ICMP (1) or ICMPv6 (58)
 }
+
+const rawEventSize = 20
 
 // IP protocol numbers used by the XDP program.
 const (
-	ProtoICMP = 1
-	ProtoTCP  = 6
-	ProtoUDP  = 17
+	ProtoICMP   = 1
+	ProtoTCP    = 6
+	ProtoUDP    = 17
+	ProtoICMPv6 = 58
 )
 
 // protoString converts an IP protocol number to a lowercase string.
@@ -34,7 +39,7 @@ func protoString(p uint8) string {
 		return "tcp"
 	case ProtoUDP:
 		return "udp"
-	case ProtoICMP:
+	case ProtoICMP, ProtoICMPv6:
 		return "icmp"
 	default:
 		return fmt.Sprintf("proto-%d", p)
@@ -51,31 +56,26 @@ type Event struct {
 }
 
 // parseEvent converts a raw perf.Record into an Event.
-// The record data must be exactly 8 bytes (sizeof struct event in C).
+// The record data must be at least 20 bytes (sizeof struct event in C).
 func parseEvent(rec perf.Record) (Event, error) {
-	if len(rec.RawSample) < 8 {
-		return Event{}, fmt.Errorf("ebpf: short event record: %d bytes", len(rec.RawSample))
-	}
 	b := rec.RawSample
-	// Little-endian layout (x86/arm host byte order):
-	//   bytes 0-3: src_ip   (uint32 LE)
-	//   bytes 4-5: dst_port (uint16 LE)
-	//   byte  6:   dropped  (uint8)
-	//   byte  7:   protocol (uint8: 6=TCP, 17=UDP, 1=ICMP)
-	srcIPInt := binary.LittleEndian.Uint32(b[0:4])
-	dstPort := binary.LittleEndian.Uint16(b[4:6])
-	dropped := b[6] != 0
-	proto := b[7]
-
-	// Convert uint32 to net.IP (big-endian byte slice).
-	ip := make(net.IP, 4)
-	binary.BigEndian.PutUint32(ip, srcIPInt)
-
+	if len(b) < rawEventSize {
+		return Event{}, fmt.Errorf("ebpf: short event record: %d bytes", len(b))
+	}
+	//   bytes 0-15:  src_ip   (16 bytes, network order, v4-mapped for IPv4)
+	//   bytes 16-17: dst_port (uint16, host byte order)
+	//   byte  18:    dropped
+	//   byte  19:    protocol
+	ip := make(net.IP, 16)
+	copy(ip, b[0:16])
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4
+	}
 	return Event{
 		SrcIP:    ip,
-		DstPort:  dstPort,
-		Dropped:  dropped,
-		Protocol: protoString(proto),
+		DstPort:  binary.NativeEndian.Uint16(b[16:18]),
+		Dropped:  b[18] != 0,
+		Protocol: protoString(b[19]),
 		Time:     time.Now(),
 	}, nil
 }
@@ -91,8 +91,8 @@ func (m *Manager) startEventReader(ch chan<- Event) {
 	for {
 		rec, err := m.eventsReader.Read()
 		if err != nil {
-			// perf.ErrClosed is the expected shutdown signal.
-			if err.Error() != "perf reader closed" {
+			// Closed reader is the expected shutdown signal.
+			if !errors.Is(err, perf.ErrClosed) && !errors.Is(err, os.ErrClosed) {
 				log.Printf("ebpf: perf reader error: %v", err)
 			}
 			return
