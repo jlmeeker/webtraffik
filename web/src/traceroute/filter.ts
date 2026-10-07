@@ -94,7 +94,34 @@ export function correctImplausibleGeo(hops: readonly Hop[], kmPerMs: number = RT
   return out;
 }
 
+/** Documented accuracy cut-off used by the strict trace mode (km). */
+export const GEO_ACCURACY_THRESHOLD_STRICT = 200;
+
+/**
+ * 'default' = shipped behaviour (500 km, 500 km/ms, drop implausible hops).
+ * 'strict'  = documented variant (200 km, 300 km/ms, clamp implausible hops
+ *             onto the previous hop instead of dropping them).
+ */
+export type TraceMode = 'default' | 'strict';
+
+export function isTraceMode(v: unknown): v is TraceMode {
+  return v === 'default' || v === 'strict';
+}
+
+/** Collapse consecutive hops that sit at identical coordinates (post-clamp). */
+function collapseCoLocated(hops: readonly Hop[]): Hop[] {
+  const out: Hop[] = [];
+  for (const h of hops) {
+    const last = out[out.length - 1];
+    if (last && last.lat === h.lat && last.lon === h.lon) continue;
+    out.push(h);
+  }
+  return out;
+}
+
 export interface TracePathOptions extends FilterOptions {
+  /** Pipeline variant; explicit accuracyThresholdKm / kmPerMs still win. */
+  mode?: TraceMode;
   /** Known geolocation of the traced IP (prepended as first point). */
   srcGeo?: GeoPoint | null;
   /** Our own server position (appended as last point). */
@@ -119,8 +146,14 @@ export function buildTracePath(rawHops: readonly Hop[], targetIP: string, opts: 
   const withGeo = rawHops.filter((h) => h && (h.lat || h.lon));
   // traceroute reports the destination as a hop with rtt≈0 — srcGeo covers it.
   const intermediate = withGeo.filter((h) => h.ip !== targetIP);
-  const cityHops = filterCountryLevelHops(intermediate, opts.accuracyThresholdKm);
-  const plausible = filterImplausibleHops(cityHops, opts);
+  const strict = opts.mode === 'strict';
+  const cityHops = filterCountryLevelHops(intermediate, opts.accuracyThresholdKm ?? (strict ? GEO_ACCURACY_THRESHOLD_STRICT : GEO_ACCURACY_THRESHOLD));
+  // Strict clamps implausible geo onto the previous hop (keeping the route's
+  // shape); the co-located duplicates this creates are then collapsed so no
+  // zero-length arcs are drawn.
+  const plausible = strict
+    ? collapseCoLocated(correctImplausibleGeo(cityHops, opts.kmPerMs ?? RTT_KM_PER_MS_STRICT))
+    : filterImplausibleHops(cityHops, opts);
   // traceroute runs FROM us TO them; reverse so the path flows inward.
   const path: TracePoint[] = [...plausible].reverse().map((h) => ({
     ip: h.ip,

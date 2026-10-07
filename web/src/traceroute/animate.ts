@@ -4,7 +4,7 @@ import type { GeoPoint, Hop, LonLat } from '../lib/types';
 import { cssVar } from '../lib/theme';
 import { quadArc } from '../map/geometry';
 import type { MapView } from '../map/view';
-import { buildTracePath, type TracePoint } from './filter';
+import { buildTracePath, type TraceMode, type TracePoint } from './filter';
 
 export const TRACE_ZOOM_IN_MS = 900;
 export const TRACE_ZOOM_OUT_MS = 1200;
@@ -20,6 +20,8 @@ export interface TraceLayerOptions {
   reducedMotion: () => boolean;
   getSelf: () => (GeoPoint & { ip?: string }) | null;
   onActiveChange?: (active: boolean) => void;
+  /** Filter variant for new traces (read at completion time). */
+  getMode?: () => TraceMode;
 }
 
 /**
@@ -96,8 +98,10 @@ export class TraceLayer {
       },
       onDone: () => {
         this.closeStream = null;
-        const path = buildTracePath(hops, ip, { srcGeo, self: this.opts.getSelf() });
-        this.setIndicator(path.length >= 2 ? `${ip}: ${path.length - 1} hops` : `${ip}: no plottable hops`);
+        const mode = this.opts.getMode?.() ?? 'default';
+        const path = buildTracePath(hops, ip, { srcGeo, self: this.opts.getSelf(), mode });
+        const tag = mode === 'strict' ? ' (strict)' : '';
+        this.setIndicator(path.length >= 2 ? `${ip}: ${path.length - 1} hops${tag}` : `${ip}: no plottable hops${tag}`);
         this.animate(path);
       },
       onError: () => {

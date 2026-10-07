@@ -26,6 +26,7 @@
     </header>
 
     <form id="filter-panel" class="filter-panel" aria-label="Query filters" autocomplete="off">
+      <div id="searchbox" class="sb-wrap"></div>
       <div class="field">
         <label for="f-country">Country (CC)</label>
         <input class="input" type="text" id="f-country" placeholder="US, CN, RU" maxlength="8" />
@@ -71,6 +72,39 @@
     </div>
 
     <main id="content" class="content">
+      <section class="card insights" id="insights" aria-label="Top lists and campaigns" hidden>
+        <div class="tabs" role="tablist" aria-label="Insights">
+          <button class="tab" role="tab" id="tab-top" type="button" aria-selected="true" aria-controls="panel-top">Top</button>
+          <button class="tab" role="tab" id="tab-campaigns" type="button" aria-selected="false" aria-controls="panel-campaigns" tabindex="-1">Campaigns</button>
+        </div>
+        <div role="tabpanel" id="panel-top" aria-labelledby="tab-top">
+          <div class="insight-controls">
+            <div class="field">
+              <label for="top-by">Rank by</label>
+              <select class="select" id="top-by"></select>
+            </div>
+            <div class="field">
+              <span class="field-label" id="top-hours-label">Window</span>
+              <div class="seg-group" id="top-hours" role="group" aria-labelledby="top-hours-label"></div>
+            </div>
+            <p class="insight-hint">Click a row to filter the search by it. Arrows compare with the preceding equal period.</p>
+          </div>
+          <p class="insight-msg" id="top-msg" role="status"></p>
+          <ol class="top-list" id="top-list" aria-label="Top entries"></ol>
+        </div>
+        <div role="tabpanel" id="panel-campaigns" aria-labelledby="tab-campaigns" hidden>
+          <div class="insight-controls">
+            <div class="field">
+              <label for="camp-hours">Window</label>
+              <select class="select" id="camp-hours"></select>
+            </div>
+            <p class="insight-hint">Sources that behave alike (shared fingerprint, targets or payloads). Expand one to list its IPs.</p>
+          </div>
+          <p class="insight-msg" id="camp-msg" role="status"></p>
+          <ul class="camp-list" id="camp-list" aria-label="Campaigns"></ul>
+        </div>
+      </section>
+
       <div id="empty-state" class="empty-state">
         <div class="icon" aria-hidden="true">&#9783;</div>
         <div id="empty-text">Set filters above and press Query to explore connection history</div>
@@ -138,8 +172,24 @@
           </div>
         </section>
 
+        <section class="card" id="card-scrub" aria-labelledby="h-scrub">
+          <h3 id="h-scrub">Time scrubber <span class="muted">(narrows the table and top source IPs)</span></h3>
+          <div class="scrub">
+            <div class="scrub-strip" id="scrub-strip">
+              <input class="scrub-range" type="range" id="scrub-lo" aria-label="Window start" value="0" />
+              <input class="scrub-range" type="range" id="scrub-hi" aria-label="Window end" value="1000" />
+            </div>
+            <div class="scrub-foot">
+              <span id="scrub-label" role="status" aria-live="polite"></span>
+              <span id="scrub-count" class="muted"></span>
+              <button class="btn ghost" type="button" id="scrub-reset" disabled>Reset window</button>
+            </div>
+          </div>
+        </section>
+
         <section class="card" id="card-table">
           <h3>Result sample <span class="muted">(most recent 200 rows)</span></h3>
+          <p class="scope-note" id="scope-note" hidden>Charts above cover all traffic in the selected range. The table, scrubber and top source IPs reflect your search.</p>
           <div class="table-scroll">
             <table class="data-table" id="result-table">
               <thead>
@@ -151,6 +201,7 @@
                   <th scope="col">Port</th>
                   <th scope="col">Service</th>
                   <th scope="col">Protocol</th>
+                  <th scope="col">Labels</th>
                 </tr>
               </thead>
               <tbody id="result-tbody"></tbody>

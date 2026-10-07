@@ -1,22 +1,30 @@
 import '../styles/theme.css';
 import '../styles/charts.css';
 import '../styles/history.css';
+import '../styles/search.css';
 
 import { horizontalBars } from '../charts/bars';
 import { meter, statTiles } from '../charts/tiles';
 import { columns, lines, type Series } from '../charts/timeline';
 import { chartTokens } from '../charts/base';
+import { eventsInWindow } from '../history/scrub';
+import { presetForHours } from '../history/top';
 import { bucketsToPoints, countBy, summarize, sumByLabel, topN, topTimelineKeys } from '../history/aggregate';
-import { api } from '../lib/api';
+import { api, ApiError } from '../lib/api';
+import { badgeEls } from '../lib/badges';
 import { initChrome } from '../lib/chrome';
 import { SlotAssigner } from '../lib/palette';
 import { ServiceRegistry } from '../lib/services';
 import { onThemeChange } from '../lib/theme';
+import { readUrlState, writeUrlState } from '../lib/urlstate';
 import type { ConnectionEvent, EBPFStats, MetricsResponse } from '../lib/types';
 import { $, el } from '../lib/utils/dom';
 import { dateTimeFull, fmtNum, fmtUptime, localDateTimeStr, localDateTimeToUTC } from '../lib/utils/format';
 import { getPref, setPref } from '../lib/utils/prefs';
 import { modeLabel } from '../panels/ebpf';
+import { InsightsPanel } from '../panels/insights';
+import { Scrubber } from '../ui/scrubber';
+import { SearchBox } from '../ui/searchbox';
 
 const PREF_FROM = 'wt_hist_from';
 const PREF_TO = 'wt_hist_to';
@@ -47,6 +55,19 @@ function main(): void {
 
   let last: { metrics: MetricsResponse; events: ConnectionEvent[]; ebpf: EBPFStats | null } | null = null;
 
+  const searchbox = new SearchBox($('#searchbox'), {
+    onSubmit: () => void runQuery(),
+    getDynamicChips: () => dynamicChips(last?.events ?? []),
+  });
+  const scrubber = new Scrubber($('#card-scrub'), () => renderEventViews());
+  const insights = new InsightsPanel('#insights', {
+    applyTerms: (terms, hours) => {
+      if (hours) applyPreset(hours);
+      searchbox.applyTerms(terms);
+    },
+  });
+  insights.start();
+
   void services.ready.then(() => {
     for (const s of services.list()) {
       fService.append(el('option', { value: s.name, text: `${s.name} (${s.ports.join(', ')})` }));
@@ -73,16 +94,69 @@ function main(): void {
     setPref(PREF_TO, fTo.value);
     fPreset.value = '';
   });
-  fPreset.addEventListener('change', () => {
-    const hours = parseInt(fPreset.value, 10);
-    if (!hours) return;
+  /** Set the date range to "the last `hours`" (relative, so shared links stay fresh). */
+  function applyPreset(hours: number): void {
     const now = new Date();
     fTo.value = localDateTimeStr(now);
     fFrom.value = localDateTimeStr(new Date(now.getTime() - hours * 3_600_000));
+    fPreset.value = presetForHours(hours);
     setPref(PREF_FROM, fFrom.value);
     setPref(PREF_TO, fTo.value);
+  }
+  fPreset.addEventListener('change', () => {
+    const hours = parseInt(fPreset.value, 10);
+    if (!hours) return;
+    applyPreset(hours);
     void runQuery();
   });
+
+  /** Most frequent scanners / tags in the loaded events, for quick-filter chips. */
+  function dynamicChips(events: readonly ConnectionEvent[]): { scanners: string[]; tags: string[] } {
+    const sc = new Map<string, number>();
+    const tg = new Map<string, number>();
+    for (const e of events) {
+      if (e.scanner) sc.set(e.scanner, (sc.get(e.scanner) ?? 0) + 1);
+      for (const t of e.tags ?? []) tg.set(t, (tg.get(t) ?? 0) + 1);
+    }
+    const top = (m: Map<string, number>) => [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([k]) => k);
+    return { scanners: top(sc), tags: top(tg) };
+  }
+
+  function syncUrl(): void {
+    const preset = fPreset.value;
+    writeUrlState({
+      q: searchbox.value,
+      country: fCountry.value.trim(),
+      ip: fIp.value.trim(),
+      port: fPort.value.trim(),
+      service: fService.value,
+      preset,
+      from: preset ? '' : localDateTimeToUTC(fFrom.value),
+      to: preset ? '' : localDateTimeToUTC(fTo.value),
+    });
+  }
+
+  /** Restore fields from a shared link. Returns true when it carried a view. */
+  function restoreFromUrl(): boolean {
+    const st = readUrlState(location.hash, location.search);
+    const keys = ['q', 'country', 'ip', 'port', 'service', 'preset', 'from', 'to'];
+    if (!keys.some((k) => st[k])) return false;
+    searchbox.setValue(st.q ?? '');
+    fCountry.value = st.country ?? '';
+    fIp.value = st.ip ?? '';
+    fPort.value = st.port ?? '';
+    void services.ready.then(() => {
+      if (st.service) fService.value = st.service;
+    });
+    const preset = parseInt(st.preset ?? '', 10);
+    if (preset > 0) applyPreset(preset);
+    else if (st.from && st.to && !Number.isNaN(Date.parse(st.from)) && !Number.isNaN(Date.parse(st.to))) {
+      fFrom.value = localDateTimeStr(new Date(st.from));
+      fTo.value = localDateTimeStr(new Date(st.to));
+      fPreset.value = '';
+    }
+    return true;
+  }
 
   function showEmpty(text: string): void {
     emptyText.textContent = text;
@@ -99,9 +173,13 @@ function main(): void {
 
     const from = localDateTimeToUTC(fFrom.value);
     const to = localDateTimeToUTC(fTo.value);
+    const q = searchbox.value;
+    searchbox.setError(null);
+    syncUrl();
     try {
       const [events, metrics, ebpf] = await Promise.all([
         api.history({
+          q,
           country: fCountry.value.trim(),
           ip: fIp.value.trim(),
           port: fPort.value.trim(),
@@ -114,10 +192,18 @@ function main(): void {
       ]);
       await services.ready;
       last = { metrics, events: Array.isArray(events) ? events : [], ebpf };
+      scrubber.setEvents(last.events);
+      searchbox.refreshQuick();
       render();
     } catch (err) {
-      summaryEl.textContent = `Error: ${err instanceof Error ? err.message : String(err)}`;
-      summaryEl.className = 'error';
+      if (err instanceof ApiError && err.status === 400) {
+        // The backend rejected the search query: show its message next to the box.
+        searchbox.setError(err.detail || 'The search query was rejected.');
+        searchbox.focus();
+      } else {
+        summaryEl.textContent = `Error: ${err instanceof Error ? err.message : String(err)}`;
+        summaryEl.className = 'error';
+      }
     } finally {
       btnQuery.disabled = false;
       loading.classList.remove('visible');
@@ -188,11 +274,6 @@ function main(): void {
       { label: 'Top services' },
     );
 
-    horizontalBars(
-      $('#chart-ips'),
-      topN(countBy(events, (e) => e.src_ip), 15).map(([ip, v]) => ({ label: ip, value: v })),
-      { label: 'Top source IPs' },
-    );
 
     // Per-port timeline (≤ 8 series, colour follows the port entity).
     const ptKeys = topTimelineKeys(metrics.port_timeline, 8);
@@ -222,7 +303,23 @@ function main(): void {
     }
 
     renderEBPF(ebpf);
-    renderTable(events);
+    $('#scope-note').hidden = !(searchbox.value || fCountry.value.trim() || fIp.value.trim() || fPort.value.trim() || fService.value);
+    renderEventViews();
+  }
+
+  /** Parts driven by the loaded events and the scrubber window. */
+  function renderEventViews(): void {
+    if (!last) return;
+    const all = last.events;
+    const win = scrubber.window;
+    const shown = win ? eventsInWindow(all, win) : all;
+    $('#scrub-count').textContent = win ? `${shown.length.toLocaleString()} of ${all.length.toLocaleString()} events in window` : `${all.length.toLocaleString()} events loaded`;
+    horizontalBars(
+      $('#chart-ips'),
+      topN(countBy(shown, (e) => e.src_ip), 15).map(([ip, v]) => ({ label: ip, value: v })),
+      { label: 'Top source IPs' },
+    );
+    renderTable(shown);
   }
 
   function renderEBPF(stats: EBPFStats | null): void {
@@ -263,6 +360,7 @@ function main(): void {
           el('td', { class: 'hl', text: ev.dst_port }),
           el('td', { text: services.label(ev.dst_port) }),
           el('td', { text: ev.protocol ?? 'tcp' }),
+          el('td', { class: 'labels' }, badgeEls(ev)),
         ]),
       );
     }
@@ -275,8 +373,12 @@ function main(): void {
     fPort.value = '';
     fService.value = '';
     fPreset.value = '';
+    searchbox.setValue('');
     setDefaultDates();
     last = null;
+    scrubber.setEvents([]);
+    writeUrlState({});
+    $('#scope-note').hidden = true;
     showEmpty('Set filters above and press Query to explore connection history');
     summaryEl.textContent = '';
   }
@@ -298,6 +400,8 @@ function main(): void {
   });
 
   setDefaultDates();
+  // A shared link (#q=…) runs its search right away.
+  if (restoreFromUrl()) void runQuery();
 }
 
 main();

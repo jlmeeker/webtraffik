@@ -1,13 +1,16 @@
 import type {
   BanEntry,
+  Campaign,
   ConnectionEvent,
   EBPFStats,
   HistoryFilters,
   Hop,
+  IntelInfo,
   MetricsResponse,
   ScannerEntry,
   SelfInfo,
   ServiceEntry,
+  TopResponse,
 } from './types';
 
 export class ApiError extends Error {
@@ -15,8 +18,10 @@ export class ApiError extends Error {
     public readonly status: number,
     public readonly url: string,
     message?: string,
+    /** Response body text (the backend sends plain-text errors, e.g. a 400 for a bad query). */
+    public readonly detail: string = '',
   ) {
-    super(message ?? `HTTP ${status} for ${url}`);
+    super(message ?? (detail || `HTTP ${status} for ${url}`));
     this.name = 'ApiError';
   }
 }
@@ -26,7 +31,17 @@ const BASE_INIT: RequestInit = { credentials: 'same-origin' };
 
 async function getJSON<T>(url: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(url, { ...BASE_INIT, ...init });
-  if (!resp.ok) throw new ApiError(resp.status, url);
+  if (!resp.ok) {
+    let detail = '';
+    if (resp.status === 400) {
+      try {
+        detail = (await resp.text()).trim().slice(0, 300);
+      } catch {
+        detail = '';
+      }
+    }
+    throw new ApiError(resp.status, url, undefined, detail);
+  }
   return (await resp.json()) as T;
 }
 
@@ -57,7 +72,10 @@ function qs(params: Record<string, string | number | undefined | null>): string 
 
 export const api = {
   self: () => getJSON<SelfInfo>('/api/self'),
-  history: (f: HistoryFilters) => getJSON<ConnectionEvent[]>(`/api/history${qs(f as Record<string, string | undefined>)}`),
+  history: (f: HistoryFilters) => getJSON<ConnectionEvent[]>(`/api/history${qs(f as Record<string, string | number | undefined>)}`),
+  top: (by: string, hours: number, limit = 10) => getJSON<TopResponse>(`/api/top${qs({ by, hours, limit })}`),
+  campaigns: (hours = 72, limit = 20) => getJSON<Campaign[]>(`/api/campaigns${qs({ hours, limit })}`),
+  intel: (ip: string) => getJSON<IntelInfo>(`/api/intel${qs({ ip })}`),
   recent: () => getJSON<ConnectionEvent[]>('/api/recent'),
   banned: () => getJSON<BanEntry[]>('/api/banned'),
   scanners: () => getJSON<ScannerEntry[]>('/api/scanners'),
@@ -67,6 +85,11 @@ export const api = {
   ban: (ip: string, port: string) => postJSON<{ status: string }>('/api/ban', { ip, port }),
   unban: (ip: string, port: string) => postJSON<{ status: string }>('/api/unban', { ip, port }),
 };
+
+/** True when an optional endpoint is not offered by this backend (feature hides itself). */
+export function isUnsupported(err: unknown): boolean {
+  return err instanceof ApiError && (err.status === 404 || err.status === 405 || err.status === 501);
+}
 
 export interface TracerouteHandlers {
   onHop: (hop: Hop) => void;

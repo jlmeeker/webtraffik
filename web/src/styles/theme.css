@@ -572,6 +572,59 @@ select {
   display: block;
 }
 
+/* ── Kind / class / scanner badges ───────────────────────────────────────────
+   Glyph + text always present, so meaning never depends on colour alone.   */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.6rem;
+  line-height: 1.4;
+  padding: 0 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--text-2);
+  white-space: nowrap;
+  vertical-align: baseline;
+}
+.badge-glyph {
+  font-size: 0.62rem;
+  color: var(--text-3);
+}
+.badge-scanner {
+  border-color: var(--accent);
+}
+.badge-scanner .badge-glyph {
+  color: var(--accent);
+}
+.badge-class[data-value='exploit'] {
+  border-color: var(--critical);
+}
+.badge-class[data-value='exploit'] .badge-glyph {
+  color: var(--critical);
+}
+.badge-class[data-value='bruteforce'] {
+  border-color: var(--serious);
+}
+.badge-class[data-value='bruteforce'] .badge-glyph {
+  color: var(--serious);
+}
+.badge-class[data-value='scan'] {
+  border-color: var(--warning);
+}
+.badge-class[data-value='research'] {
+  border-color: var(--series-7);
+}
+.badge-kind[data-value='observed'] {
+  border-style: dashed;
+  color: var(--text-3);
+}
+.log-badges {
+  display: inline-flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
 /* ── Misc ─────────────────────────────────────────────────────────────────── */
 .spinner {
   width: 12px;

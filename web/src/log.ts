@@ -1,3 +1,4 @@
+import { badgeEls, badgeSummary } from './lib/badges';
 import type { ServiceRegistry } from './lib/services';
 import type { ConnectionEvent } from './lib/types';
 import { el, rafBatcher } from './lib/utils/dom';
@@ -28,6 +29,8 @@ export function buildLogRow(
     row.append(el('span', { class: 'log-arrow', text: '→', 'aria-hidden': 'true' }));
     row.append(el('span', { class: 'log-port', text: `:${portNum}${svc ? ' ' + svc : ''}` }));
   }
+  const badges = badgeEls(ev);
+  if (badges.length > 0) row.append(el('span', { class: 'log-badges', title: badgeSummary(ev) }, badges));
   if (proto) row.append(el('span', { class: 'log-proto', text: proto }));
 
   if (canTrace) {
