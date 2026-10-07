@@ -123,7 +123,14 @@ func (e *Env) httpHandler(portStr string) http.Handler {
 		w.Header().Set("Server", nginxVersion)
 		w.Header().Set("Connection", "close")
 		w.Header().Set("Content-Type", "text/html")
+		var fake fakeResp
+		haveFake := false
+		if f := httpFakes[portStr]; f != nil {
+			fake, haveFake = f(r)
+		}
 		switch {
+		case haveFake:
+			writeFake(w, r, fake)
 		case (r.URL.Path == "/" || r.URL.Path == "/index.html" || r.URL.Path == "/index.nginx-debian.html") &&
 			(r.Method == http.MethodGet || r.Method == http.MethodHead):
 			w.Header().Set("Content-Length", strconv.Itoa(len(nginxWelcome)))

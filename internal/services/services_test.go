@@ -77,6 +77,11 @@ func TestClassify(t *testing.T) {
 		{"config set dir /var/spool/cron", "", "redis-exploit"},
 		{"GET / HTTP/1.1", "Mozilla/5.0 zgrab/0.x", "scanner:zgrab"},
 		{"GET / HTTP/1.1", "python-requests/2.31", "scanner:python-requests"},
+		{"GET /version HTTP/1.1\r\nHost: x\r\n\r\n", "", "docker-api-probe"},
+		{"GET /v1.44/containers/json HTTP/1.1", "", "docker-api-probe"},
+		{"OPTIONS sip:100@x SIP/2.0\r\nUser-Agent: friendly-scanner\r\n", "friendly-scanner", "scanner:sipvicious"},
+		{"REGISTER sip:x SIP/2.0\r\n", "sipcli/v1.8", "scanner:sipcli"},
+		{"REGISTER sip:x SIP/2.0\r\n", "SIPVicious", "scanner:sipvicious"},
 	}
 	for _, c := range cases {
 		got := Classify(c.payload, c.ua)
@@ -89,6 +94,9 @@ func TestClassify(t *testing.T) {
 		if !found {
 			t.Errorf("Classify(%q,%q) = %v, want it to include %q", c.payload, c.ua, got, c.want)
 		}
+	}
+	if got := Classify("GET /api/version-history HTTP/1.1", ""); hasTag(got, "docker-api-probe") {
+		t.Errorf("unrelated path tagged docker: %v", got)
 	}
 	if got := Classify("GET /index.html HTTP/1.1", "Mozilla/5.0"); len(got) != 0 {
 		t.Errorf("benign request tagged: %v", got)

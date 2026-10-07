@@ -161,6 +161,7 @@ func buildOptions(cfg Config) (app.Options, server.Config, error) {
 		GeoRefresh: refresh,
 		PublicIP:   strings.TrimSpace(cfg.PublicIP), MaxConns: cfg.MaxConns,
 		RetentionDays: cfg.RetentionDays, ExportJSONL: cfg.ExportJSONL, ExportMaxMB: cfg.ExportMaxMB,
+		EnrichRDNS: cfg.EnrichRDNS, GreyNoiseKey: strings.TrimSpace(cfg.GreyNoiseKey), AbuseKey: strings.TrimSpace(cfg.AbuseIPDBKey),
 		Version: version,
 	}
 	srvCfg := server.Config{

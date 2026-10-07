@@ -26,6 +26,8 @@
           <input type="range" id="time-slider" class="range" min="1" max="24" value="1" aria-valuetext="1 hour" />
           <span class="value" id="slider-label">1h</span>
         </div>
+        <button id="noise-toggle" class="btn" type="button" aria-pressed="true" title="Hide connections that XDP saw but no listener answered (kind: observed)">Hide XDP noise</button>
+        <button id="trace-mode" class="btn" type="button" aria-pressed="false" title="Strict traceroute: 200 km accuracy cut-off, 300 km/ms plausibility, clamp instead of drop">Strict trace</button>
         <button id="pause-btn" class="btn icon" type="button" aria-pressed="false" aria-label="Pause live updates" title="Pause / resume live updates (Space)">
           <svg class="icon-pause" aria-hidden="true" viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
           <svg class="icon-play" aria-hidden="true" viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M7 4l13 8-13 8z"/></svg>
@@ -47,6 +49,7 @@
     <div id="dot-tooltip" class="dot-tooltip" role="dialog" aria-label="Source details">
       <div class="tip-label"></div>
       <div class="tip-ip"></div>
+      <div class="tip-badges"></div>
       <button class="tip-trace" type="button">Trace route</button>
       <button class="tip-ban" type="button">Ban</button>
     </div>

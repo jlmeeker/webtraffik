@@ -77,6 +77,15 @@ export class LiveStream {
     this.connect();
   }
 
+  /** Drop the socket and reconnect now, replaying the window again. */
+  reload(): void {
+    this.attempt = 0;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    this.closeSocket();
+    this.connect();
+  }
+
   private closeSocket(): void {
     const ws = this.ws;
     this.ws = null;

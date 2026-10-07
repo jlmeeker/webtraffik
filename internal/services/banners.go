@@ -3,9 +3,10 @@ package services
 import "fmt"
 
 // tcpServices is the list of non-HTTP TCP services webTraffik emulates.
-// Port 5900 (VNC), 9735 (Lightning), and 25565 (Minecraft) are handled by their
-// own dedicated listeners (startVNCListener, startLightningListener,
-// startMinecraftListener) because they require interactive protocol exchanges.
+// Interactive services (FTP, SSH, Telnet, SMTP, POP3, MySQL, RDP, PostgreSQL,
+// MQTT, SIP, Redis, VNC, Lightning, Minecraft) live in customTCPPorts with a
+// ConnHandler; Elasticsearch (9200) and the Docker API (2375) are served by the
+// HTTP honeypot (httpPorts + httpfake.go).
 var tcpServices = []serviceEntry{
 	{
 		Port: 21, // FTP
@@ -194,83 +195,9 @@ var tcpServices = []serviceEntry{
 		},
 	},
 	{
-		Port: 2375, // Docker API (unencrypted)
-		Banner: func() []byte {
-			return []byte("HTTP/1.1 200 OK\r\n" +
-				"Api-Version: 1.45\r\n" +
-				"Docker-Experimental: false\r\n" +
-				"Ostype: linux\r\n" +
-				"Server: Docker/25.0.3 (linux)\r\n" +
-				"Content-Type: text/plain; charset=utf-8\r\n" +
-				"Content-Length: 2\r\n" +
-				"\r\n" +
-				"OK")
-		},
-	},
-	{
-		Port: 3306, // MySQL
-		Banner: func() []byte {
-			serverVersion := "8.0.35\x00"
-			pkt := []byte{0x0a}
-			pkt = append(pkt, []byte(serverVersion)...)
-			pkt = append(pkt,
-				0x01, 0x00, 0x00, 0x00,
-				0x52, 0x59, 0x41, 0x4e, 0x44, 0x4f, 0x4d, 0x58,
-				0x00,
-				0x02, 0xff,
-				0x21,
-				0x02, 0x00,
-				0x7f, 0xff,
-				0x15,
-				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-				0x53, 0x54, 0x52, 0x4f, 0x4e, 0x47, 0x50, 0x41, 0x53, 0x53, 0x57, 0x44, 0x00,
-				0x63, 0x61, 0x63, 0x68, 0x69, 0x6e, 0x67, 0x5f, 0x73, 0x68, 0x61, 0x32, 0x5f, 0x70, 0x61, 0x73, 0x73, 0x77, 0x6f, 0x72, 0x64, 0x00,
-			)
-			length := len(pkt)
-			framed := []byte{byte(length), byte(length >> 8), byte(length >> 16), 0x00}
-			return append(framed, pkt...)
-		},
-	},
-	{
-		Port: 3389, // RDP
-		Banner: func() []byte {
-			return []byte{
-				0x03, 0x00,
-				0x00, 0x13,
-				0x0e,
-				0xd0,
-				0x00, 0x00,
-				0x00, 0x00,
-				0x00,
-				0x02,
-				0x00,
-				0x08, 0x00,
-				0x00, 0x00, 0x00, 0x00,
-			}
-		},
-	},
-	{
 		Port: 4444, // Metasploit default reverse shell — no banner
 		Banner: func() []byte {
 			return nil
-		},
-	},
-	{
-		Port: 5432, // PostgreSQL
-		Banner: func() []byte {
-			fields := []byte(
-				"SFATAL\x00" +
-					"VFATAL\x00" +
-					"C28000\x00" +
-					"Mno pg_hba.conf entry for host\x00" +
-					"\x00",
-			)
-			length := 4 + len(fields)
-			hdr := []byte{
-				'E',
-				byte(length >> 24), byte(length >> 16), byte(length >> 8), byte(length),
-			}
-			return append(hdr, fields...)
 		},
 	},
 	{
@@ -372,29 +299,6 @@ var tcpServices = []serviceEntry{
 		Port: 9100, // HP JetDirect / Printer
 		Banner: func() []byte {
 			return []byte("@PJL INFO STATUS\r\nCODE=10001\r\nDISPLAY=\"Ready\"\r\nONLINE=TRUE\r\n")
-		},
-	},
-	{
-		Port: 9200, // Elasticsearch
-		Banner: func() []byte {
-			return []byte(`HTTP/1.1 200 OK
-Content-Type: application/json; charset=UTF-8
-
-{
-  "name" : "node-1",
-  "cluster_name" : "elasticsearch",
-  "cluster_uuid" : "xQ2k9h_lRleh4TnOhK4LJw",
-  "version" : {
-    "number" : "7.17.16",
-    "build_flavor" : "default",
-    "build_type" : "deb",
-    "lucene_version" : "8.11.1",
-    "minimum_wire_compatibility_version" : "6.8.0",
-    "minimum_index_compatibility_version" : "6.0.0-beta1"
-  },
-  "tagline" : "You Know, for Search"
-}
-`)
 		},
 	},
 	{
@@ -834,6 +738,7 @@ var udpServicePorts = []int{
 	1434,  // MSSQL Browser/Monitor
 	1900,  // SSDP/UPnP
 	5060,  // SIP
+	11211, // Memcached (UDP frame header + text command)
 	30303, // Ethereum P2P (devp2p discovery)
 	47808, // BACnet (building automation)
 }

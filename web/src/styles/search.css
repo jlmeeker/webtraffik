@@ -1,0 +1,219 @@
+/* Search box, filter chips, saved views (History + Recent). */
+
+.sb-wrap {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+.searchbox {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.sb-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.sb-combo {
+  position: relative;
+  flex: 1 1 280px;
+  min-width: 0;
+}
+.sb-input {
+  width: 100%;
+  font-family: var(--font);
+}
+.sb-input[aria-invalid='true'] {
+  border-color: var(--critical);
+}
+.sb-list {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  list-style: none;
+  background: var(--surface-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  max-height: 260px;
+  overflow-y: auto;
+}
+.sb-list[hidden] {
+  display: none;
+}
+.sb-opt {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 10px;
+  cursor: pointer;
+  font-size: 0.74rem;
+}
+.sb-opt[aria-selected='true'],
+.sb-opt:hover {
+  background: var(--surface-2);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+.sb-opt-label {
+  color: var(--text);
+}
+.sb-opt-hint {
+  color: var(--text-3);
+  font-size: 0.66rem;
+  text-align: right;
+}
+.sb-error {
+  color: var(--critical-strong);
+  font-size: 0.74rem;
+  padding: 4px 8px;
+  border-left: 3px solid var(--critical);
+  background: var(--surface-2);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+.sb-error[hidden],
+.sb-help[hidden],
+.sb-chips[hidden] {
+  display: none;
+}
+.sb-help {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  font-size: 0.72rem;
+  color: var(--text-2);
+}
+.sb-help p + .sb-help-grid,
+.sb-help-grid + .sb-help-eg {
+  margin-top: 8px;
+}
+.sb-help-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 2px 16px;
+}
+.sb-help-row {
+  display: flex;
+  gap: 8px;
+}
+.sb-help-row code {
+  color: var(--accent);
+  min-width: 68px;
+}
+.sb-help-row span {
+  color: var(--text-3);
+}
+.sb-help code {
+  font-family: var(--font);
+}
+.sb-noise {
+  font-size: 0.72rem;
+  color: var(--text-2);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* chips */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--text-2);
+  font-size: 0.7rem;
+  padding: 2px 10px;
+  min-height: 24px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.chip:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.chip.neg {
+  border-style: dashed;
+}
+.chip.neg .chip-text::before {
+  content: 'not ';
+  color: var(--text-3);
+}
+.chip.toggle[aria-pressed='true'] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+.chip-x {
+  color: var(--text-3);
+}
+.sb-chips,
+.sb-quick,
+.sb-views,
+.sb-view-list {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.sb-quick {
+  gap: 4px 16px;
+}
+.sb-qgroup {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.sb-label {
+  font-size: 0.62rem;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-right: 2px;
+}
+.sb-view-name {
+  min-width: 0;
+  width: 150px;
+}
+.sb-view {
+  display: inline-flex;
+  align-items: center;
+}
+.sb-view .view-apply {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.sb-view .view-del {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left: 0;
+  padding: 2px 8px;
+}
+.sb-view-msg {
+  font-size: 0.68rem;
+  color: var(--text-3);
+}
+
+@media (max-width: 720px) {
+  .sb-go {
+    flex: 1 1 auto;
+  }
+  .sb-view-name {
+    flex: 1 1 120px;
+  }
+  .sb-opt {
+    flex-direction: column;
+    gap: 0;
+  }
+  .sb-opt-hint {
+    text-align: left;
+  }
+}

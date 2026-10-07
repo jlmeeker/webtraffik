@@ -13,15 +13,16 @@ A network traffic sensor and low-interaction honeypot. It listens on the ports i
 - **Enrichment**: MaxMind GeoLite2 City + ASN (auto-downloaded, validated and refreshed in the background) with an `rgeo` city fallback
 - **Live world map**: animated great-circle arcs, history replay, ban/unban and traceroute from the dashboard
 - **Auto-ban + port-scan detection**: flood and volume-window bans per IP+port, scanner panel, persistent bans
-- **eBPF/XDP (optional)**: banned IPs are dropped in the kernel (IPv4 and IPv6); per-SYN events and telemetry (multicast/broadcast LAN chatter such as mDNS is ignored); automatic fallback to pure userspace if XDP cannot attach
+- **eBPF/XDP (optional)**: banned IPs are dropped in the kernel (IPv4 and IPv6); per-SYN events and telemetry (multicast/broadcast LAN chatter such as mDNS is ignored, as are packets that look like replies to this host's own outbound traffic: ICMP echo replies/errors and UDP from a server port to an ephemeral port); automatic fallback to pure userspace if XDP cannot attach
 - **Secure by default install**: dashboard Basic auth with a generated password, Origin/CSRF checks, hardened systemd unit, nftables DMZ policy
+- **Intelligence**: every event carries a `kind` (`session` / `probe` / `observed`), a `class` (`exploit` / `bruteforce` / `scan` / `research`) and, for Shodan/Censys/Shadowserver-style crawlers, a `scanner` name (AS-organisation match plus forward-confirmed reverse DNS; optional GreyNoise/AbuseIPDB keys). Events sharing TLS fingerprints (JA3/JA4) or an attack payload are grouped into campaigns.
 - **Operations**: graceful shutdown, bounded queues and connection limits, versioned DB migrations, event retention, Prometheus `/metrics`, JSON-lines export, structured (`slog`) logs, `/api/status`
 - **Single binary**: pure Go (no CGo), SQLite persistence, embedded UI; linux/amd64, arm64, armv6, armv7, darwin and windows
 
 ## Architecture
 
 ```
- scanners ──► listeners (HTTP/TLS/SSH/Telnet/FTP/SMTP/POP3/Redis/banners/UDP)
+ scanners ──► listeners (HTTP/TLS/SSH/Telnet/FTP/SMTP/POP3/Redis/MySQL/PostgreSQL/MQTT/RDP/SIP/banners/UDP)
                  │  Capture{src, port, payload, detail, tags, meta}
  XDP events ─────┤  (ports without a Go listener)
                  ▼
@@ -244,6 +245,7 @@ webTraffik is configured by a YAML file at `/etc/webtraffik/config.yaml` (create
 | `data-dir` | working dir | Database, geo files, SSH host key, TLS certificate |
 | `retention-days` | `90` | Delete events older than this (`0` keeps everything; metrics are kept) |
 | `export-jsonl` / `export-max-mb` | – / `100` | Append every event as a JSON line, rotating at the size limit |
+| `enrich-rdns` / `greynoise-key` / `abuseipdb-key` | `true` / – / – | Background source enrichment: forward-confirmed reverse DNS spots research scanners; the API keys are optional (cached, rate-limited) |
 | `public-ip` | auto | Override discovery; `none` skips it |
 | `disable-rgeo`, `disable-asn` | `false` | Skip the city fallback / ASN enrichment (faster start on a Pi) |
 | `geo-refresh` | `168h` | Background refresh of the geo databases (`0` disables); downloads are validated and swapped atomically |
@@ -295,7 +297,7 @@ See the diagram under [Architecture](#architecture). Capture is non-blocking end
 
 ### Dashboard
 
-The UI is a Vite + TypeScript app in [`web/`](web/README.md) (D3 map, live/history/recent pages). It is built to `web/dist`, which is **committed and embedded** in the binary, so `go build` needs no Node. Everything is self-hosted — no CDN requests, which also lets the strict Content-Security-Policy stay tight. Highlights: dark/light themes, pause/resume, replay-window slider (1–24 h), auto-reconnecting WebSocket, keyboard/ARIA support, mobile drawers, traceroute visualisation with country-level and RTT-implausibility filtering, ban/unban from tooltips and the Banned panel.
+The UI is a Vite + TypeScript app in [`web/`](web/README.md) (D3 map, live/history/recent pages). It is built to `web/dist`, which is **committed and embedded** in the binary, so `go build` needs no Node. Everything is self-hosted — no CDN requests, which also lets the strict Content-Security-Policy stay tight. Highlights: dark/light themes, pause/resume, replay-window slider (1–24 h), auto-reconnecting WebSocket, keyboard/ARIA support, mobile drawers, traceroute visualisation with country-level and RTT-implausibility filtering (plus an opt-in strict mode), a search box with `key:value` syntax / saved views / shareable links, Top-N and campaign panels, a history time scrubber, ban/unban from tooltips and the Banned panel.
 
 Frontend workflow: `make web` rebuilds `web/dist` (commit the result), `make web-check` runs typecheck + lint + unit tests, `cd web && npm run dev` serves with hot reload proxying to a running backend on :8999.
 
@@ -382,7 +384,7 @@ sudo systemctl stop webtraffik
 
 **⚠️ CRITICAL: webTraffik binds to many well-known service ports by default.**
 
-webTraffik listens on common ports including **22 (SSH)**, **80 (HTTP)**, **443 (HTTPS)**, **3306 (MySQL)**, **5432 (PostgreSQL)**, **6379 (Redis)**, and many others (see Architecture section above for full list).
+webTraffik listens on common ports including **22 (SSH)**, **80 (HTTP)**, **443 (HTTPS)**, **3306 (MySQL)**, **5432 (PostgreSQL)**, **6379 (Redis)**, and many others (see Architecture section above for full list). MySQL, PostgreSQL, MQTT, RDP and SIP (TCP and UDP) are interactive protocol emulators that record the client's identity and credentials and then refuse the login; Elasticsearch (9200) and the Docker API (2375) answer path-based JSON; NTP and SSDP on UDP are recorded and never answered (UDP is spoofable), and memcached UDP only ever gets a reply smaller than the request; amplification vectors are tagged `amplification-probe`. Details in [SERVICES.md](SERVICES.md).
 
 ### The Risk
 
@@ -549,3 +551,12 @@ For issues or questions:
 ---
 
 **Built with Go + D3.js** — Visualize your web traffic in real-time.
+
+## Search and analytics API
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/history?q=…` | Search events. Grammar: `key:value` tokens (`port ip cc asn tag kind class scanner proto ja3 ja4 sni user since until`), `-` negates, `"quoted phrases"`, bare words match detail/ASN org/city/meta. `since:24h`, `since:7d`, `until:2026-01-31`. Invalid queries return HTTP 400. Also `kind`, `class`, `scanner`, `proto` parameters. |
+| `GET /api/top?by=&hours=24&limit=10` | Ranking with trend vs the previous period. `by`: `credentials usernames passwords useragents paths asns ja4 ports countries scanners tags`. |
+| `GET /api/campaigns?hours=72&limit=20` | Clusters of events sharing a fingerprint, seen from at least two addresses. |
+| `GET /api/intel?ip=` | Cached enrichment (reverse DNS, scanner, GreyNoise class, AbuseIPDB score). |

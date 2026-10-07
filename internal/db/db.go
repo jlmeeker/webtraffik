@@ -72,7 +72,7 @@ func OpenEventDB(dir string) (*EventDB, error) {
 const eventColumns = `id, time, src_ip, dst_ip, dst_port, protocol,
 	src_lat, src_lon, dst_lat, dst_lon,
 	src_city, dst_city, src_cc, dst_cc,
-	asn, asn_org, detail, tags, meta`
+	asn, asn_org, detail, tags, meta, kind, class, scanner`
 
 type rowScanner interface{ Scan(dest ...any) error }
 
@@ -83,7 +83,7 @@ func scanEvent(r rowScanner) (event.ConnectionEvent, error) {
 		&ev.ID, &ev.Time, &ev.SrcIP, &ev.DstIP, &ev.DstPort, &ev.Protocol,
 		&ev.SrcLat, &ev.SrcLon, &ev.DstLat, &ev.DstLon,
 		&ev.SrcCity, &ev.DstCity, &ev.SrcCC, &ev.DstCC,
-		&ev.ASN, &ev.ASNOrg, &ev.Detail, &tags, &meta,
+		&ev.ASN, &ev.ASNOrg, &ev.Detail, &tags, &meta, &ev.Kind, &ev.Class, &ev.Scanner,
 	)
 	if err != nil {
 		return ev, err
@@ -233,8 +233,8 @@ func (e *EventDB) flushBatch(batch []event.ConnectionEvent) {
 			(time, src_ip, dst_ip, dst_port, protocol,
 			 src_lat, src_lon, dst_lat, dst_lon,
 			 src_city, dst_city, src_cc, dst_cc,
-			 asn, asn_org, client_data, detail, tags, meta)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+			 asn, asn_org, client_data, detail, tags, meta, kind, class, scanner, fp)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		slog.Error("db: prepare insert", "err", err)
 		tx.Rollback()
@@ -254,6 +254,7 @@ func (e *EventDB) flushBatch(batch []event.ConnectionEvent) {
 			ev.SrcLat, ev.SrcLon, ev.DstLat, ev.DstLon,
 			ev.SrcCity, ev.DstCity, ev.SrcCC, ev.DstCC,
 			ev.ASN, ev.ASNOrg, ev.ClientData, ev.Detail, event.JoinTags(ev.Tags), meta,
+			ev.Kind, ev.Class, ev.Scanner, strings.Join(ev.FP, ","),
 		)
 		if err != nil {
 			slog.Error("db: insert event", "err", err)
@@ -302,7 +303,7 @@ func (e *EventDB) GetEvent(id int64) (event.ConnectionEvent, error) {
 		&ev.ID, &ev.Time, &ev.SrcIP, &ev.DstIP, &ev.DstPort, &ev.Protocol,
 		&ev.SrcLat, &ev.SrcLon, &ev.DstLat, &ev.DstLon,
 		&ev.SrcCity, &ev.DstCity, &ev.SrcCC, &ev.DstCC,
-		&ev.ASN, &ev.ASNOrg, &ev.Detail, &tags, &meta, &ev.ClientData,
+		&ev.ASN, &ev.ASNOrg, &ev.Detail, &tags, &meta, &ev.Kind, &ev.Class, &ev.Scanner, &ev.ClientData,
 	)
 	if err != nil {
 		return ev, err
@@ -327,6 +328,11 @@ type HistoryFilter struct {
 	ASN      uint32 // source ASN, 0 = any
 	Limit    int    // max rows (default DefaultHistoryLimit, capped at MaxHistoryLimit)
 	Offset   int    // rows to skip, applied to the newest-first ordering
+	Kind     string // session | probe | observed
+	Class    string // exploit | bruteforce | scan | research | unknown
+	Scanner  string // known scanner operator (case-insensitive)
+	Proto    string // tcp | udp | icmp
+	Conds    []Cond // parsed free-form search (see ParseQuery)
 }
 
 // History query limits.
@@ -383,6 +389,20 @@ func (e *EventDB) QueryHistory(f HistoryFilter, portsForService func(string) []s
 			// No ports match → return empty result set
 			return []event.ConnectionEvent{}, nil
 		}
+	}
+	for _, kv := range [][2]string{{"kind", f.Kind}, {"class", f.Class}, {"protocol", f.Proto}} {
+		if kv[1] != "" {
+			where = append(where, kv[0]+" = ?")
+			args = append(args, strings.ToLower(kv[1]))
+		}
+	}
+	if f.Scanner != "" {
+		where = append(where, "LOWER(scanner) = LOWER(?)")
+		args = append(args, f.Scanner)
+	}
+	if w, a := whereFor(f.Conds); len(w) > 0 {
+		where = append(where, w...)
+		args = append(args, a...)
 	}
 	if f.DateFrom != "" {
 		where = append(where, "time >= ?")
