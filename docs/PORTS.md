@@ -7,15 +7,15 @@
 | 22 | tcp | SSH | interactive emulator |
 | 23 | tcp | Telnet | interactive emulator |
 | 25 | tcp | SMTP | interactive emulator |
-| 53 | udp | DNS | datagram capture (some ports answer minimally) |
+| 53 | udp | DNS | datagram capture (never replies) |
 | 80 | tcp | HTTP | HTTP honeypot (nginx lookalike, full request capture) |
 | 102 | tcp | S7comm | banner |
 | 110 | tcp | POP3 | interactive emulator |
-| 123 | udp | NTP | datagram capture (some ports answer minimally) |
+| 123 | udp | NTP | datagram capture (never replies) |
 | 135 | tcp | RPC | banner |
 | 139 | tcp | NetBIOS | banner |
 | 143 | tcp | IMAP | banner |
-| 161 | udp | SNMP | datagram capture (some ports answer minimally) |
+| 161 | udp | SNMP | datagram capture (never replies) |
 | 443 | tcp | HTTPS | TLS honeypot (JA3/JA4 + HTTP capture) |
 | 445 | tcp | SMB | banner |
 | 502 | tcp | Modbus | banner |
@@ -24,11 +24,11 @@
 | 993 | tcp | IMAPS | banner |
 | 995 | tcp | POP3S | banner |
 | 1433 | tcp | MSSQL | banner |
-| 1434 | udp | MSSQL Browser | datagram capture (some ports answer minimally) |
+| 1434 | udp | MSSQL Browser | datagram capture (never replies) |
 | 1521 | tcp | Oracle | banner |
 | 1723 | tcp | PPTP | banner |
 | 1883 | tcp | MQTT | interactive emulator |
-| 1900 | udp | SSDP | datagram capture (some ports answer minimally) |
+| 1900 | udp | SSDP | datagram capture (never replies) |
 | 2082 | tcp | cPanel | banner |
 | 2083 | tcp | cPanel SSL | banner |
 | 2375 | tcp | Docker | HTTP honeypot (nginx lookalike, full request capture) |
@@ -46,7 +46,7 @@
 | 5000 | tcp | Flask | HTTP honeypot (nginx lookalike, full request capture) |
 | 5001 | tcp | Flask alt | HTTP honeypot (nginx lookalike, full request capture) |
 | 5060 | tcp | SIP | interactive emulator |
-| 5060 | udp | SIP | datagram capture (some ports answer minimally) |
+| 5060 | udp | SIP | datagram capture (never replies) |
 | 5432 | tcp | PostgreSQL | interactive emulator |
 | 5555 | tcp | ADB | banner |
 | 5900 | tcp | VNC | interactive emulator |
@@ -78,7 +78,7 @@
 | 9735 | tcp | Lightning | interactive emulator |
 | 10009 | tcp | Lightning gRPC | banner |
 | 11211 | tcp | Memcached | banner |
-| 11211 | udp | Memcached | datagram capture (some ports answer minimally) |
+| 11211 | udp | Memcached | datagram capture (never replies) |
 | 18080 | tcp | Monero P2P | banner |
 | 18081 | tcp | Monero RPC | banner |
 | 18789 | tcp | OpenClaw | banner |
@@ -86,8 +86,8 @@
 | 25565 | tcp | Minecraft | interactive emulator |
 | 27017 | tcp | MongoDB | banner |
 | 30303 | tcp | Ethereum P2P | banner |
-| 30303 | udp | Ethereum P2P | datagram capture (some ports answer minimally) |
+| 30303 | udp | Ethereum P2P | datagram capture (never replies) |
 | 34567 | tcp | DVR (XMEye) | banner |
 | 37777 | tcp | DVR (Dahua) | banner |
 | 44818 | tcp | EtherNet/IP | banner |
-| 47808 | udp | BACnet | datagram capture (some ports answer minimally) |
+| 47808 | udp | BACnet | datagram capture (never replies) |

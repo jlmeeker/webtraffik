@@ -125,15 +125,14 @@ func sipResponse(m sipMsg, code int, reason string, challenge, compact bool) []b
 	return []byte(b.String())
 }
 
-// sipReplies returns the full and compact replies for m; both nil when no
-// reply is due.
-func sipReplies(m sipMsg) (full, compact []byte) {
+// sipReply returns the reply for m (TCP only), or nil when none is due.
+func sipReply(m sipMsg) []byte {
 	var code int
 	var reason string
 	var challenge bool
 	switch m.Method {
 	case "RESPONSE", "ACK":
-		return nil, nil
+		return nil
 	case "OPTIONS":
 		code, reason = 200, "OK"
 	case "REGISTER", "INVITE":
@@ -141,7 +140,7 @@ func sipReplies(m sipMsg) (full, compact []byte) {
 	default:
 		code, reason = 405, "Method Not Allowed"
 	}
-	return sipResponse(m, code, reason, challenge, false), sipResponse(m, code, reason, challenge, true)
+	return sipResponse(m, code, reason, challenge, false)
 }
 
 // sipResult turns a parsed message into capture metadata and tags.
@@ -172,15 +171,15 @@ func sipResult(m sipMsg, raw []byte) Result {
 	return Result{Data: raw, Detail: "sip: " + m.Method, Tags: tags, Meta: meta}
 }
 
-// sipUDP answers one datagram. OPTIONS gets 200, REGISTER/INVITE a digest
-// challenge; the reply is only sent if it is no larger than the request.
-func sipUDP(pkt []byte) ([]byte, Result) {
+// sipUDP records one datagram. It never answers: the source of a UDP
+// datagram can be forged (TCP SIP, whose handshake validates the peer, does
+// reply).
+func sipUDP(pkt []byte) Result {
 	m, err := parseSIP(pkt)
 	if err != nil {
-		return nil, Result{Data: pkt, Detail: "sip: unparseable datagram", Tags: Classify(string(pkt), "")}
+		return Result{Data: pkt, Detail: "sip: unparseable datagram", Tags: Classify(string(pkt), "")}
 	}
-	full, compact := sipReplies(m)
-	return fit(pkt, full, compact), sipResult(m, pkt)
+	return sipResult(m, pkt)
 }
 
 // sipReadHead reads one header block, bounded in line length, line count and
@@ -234,7 +233,7 @@ func sipTCPHandler(_ context.Context, c net.Conn, _ string) Result {
 					r := sipResult(m, nil)
 					first = &r
 				}
-				if full, _ := sipReplies(m); full != nil {
+				if full := sipReply(m); full != nil {
 					writeAll(c, full)
 				}
 				if cl, _ := strconv.Atoi(m.H["content-length"]); cl > sipMaxBody {

@@ -1,7 +1,6 @@
 package services
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -12,7 +11,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -553,15 +551,7 @@ func TestSIPParser(t *testing.T) {
 
 func TestSIPUDP(t *testing.T) {
 	opt := sipSample("OPTIONS", "friendly-scanner", "")
-	reply, res := sipUDP(opt)
-	if !strings.HasPrefix(string(reply), "SIP/2.0 200 OK\r\n") || len(reply) > len(opt) {
-		t.Fatalf("OPTIONS reply (%d of %d bytes): %q", len(reply), len(opt), reply)
-	}
-	for _, want := range []string{"Call-ID: 1704290419@198.51.100.7", "CSeq: 1 OPTIONS", "branch=z9hG4bK-1234", ";tag="} {
-		if !strings.Contains(string(reply), want) {
-			t.Errorf("reply lacks %q:\n%s", want, reply)
-		}
-	}
+	res := sipUDP(opt)
 	metaHas(t, res.Meta, "sip_method", "OPTIONS")
 	metaHas(t, res.Meta, "user_agent", "friendly-scanner")
 	if !strings.Contains(res.Meta["from"], "sip:100@1.1.1.1") {
@@ -572,144 +562,43 @@ func TestSIPUDP(t *testing.T) {
 			t.Errorf("tags %v lack %q", res.Tags, want)
 		}
 	}
-
-	for _, method := range []string{"REGISTER", "INVITE"} {
-		req := sipSample(method, "sipcli/v1.8", "")
-		reply, res := sipUDP(req)
-		if !strings.HasPrefix(string(reply), "SIP/2.0 401 Unauthorized\r\n") || !strings.Contains(string(reply), "WWW-Authenticate: Digest") ||
-			!strings.Contains(string(reply), "nonce=\"") || len(reply) > len(req) {
-			t.Errorf("%s reply (%d of %d): %q", method, len(reply), len(req), reply)
-		}
-		if !hasTag(res.Tags, "scanner:sipcli") {
-			t.Errorf("tags = %v", res.Tags)
-		}
+	if res := sipUDP(sipSample("INVITE", "sipcli/v1.8", "")); !hasTag(res.Tags, "scanner:sipcli") {
+		t.Errorf("tags = %v", res.Tags)
 	}
 	// A digest Authorization header yields user + hash, never in Detail.
 	auth := "Authorization: Digest username=\"1001\", realm=\"asterisk\", nonce=\"abc\", uri=\"sip:x\", response=\"0123456789abcdef0123456789abcdef\"\r\n"
-	_, res = sipUDP(sipSample("REGISTER", "Zoiper", auth))
+	res = sipUDP(sipSample("REGISTER", "Zoiper", auth))
 	metaHas(t, res.Meta, "user", "1001")
 	metaHas(t, res.Meta, "auth_hash_hex", "0123456789abcdef0123456789abcdef")
 	noSecretsInDetail(t, res, "1001", "0123456789abcdef")
-
-	// ACK and responses get no reply; unknown methods 405.
-	if r, _ := sipUDP(sipSample("ACK", "x", "")); r != nil {
-		t.Error("replied to ACK")
-	}
-	if r, _ := sipUDP([]byte("SIP/2.0 200 OK\r\nVia: x\r\n\r\n")); r != nil {
-		t.Error("replied to a SIP response")
-	}
-	if r, _ := sipUDP(sipSample("MESSAGE", "x", "")); !strings.HasPrefix(string(r), "SIP/2.0 405") {
-		t.Errorf("MESSAGE reply = %q", r)
-	}
-	// A tiny request must not be answered with a bigger datagram.
-	tiny := []byte("OPTIONS sip:a SIP/2.0\r\n\r\n")
-	if r, _ := sipUDP(tiny); len(r) > len(tiny) {
-		t.Errorf("tiny request got %d-byte reply", len(r))
-	}
 	for _, in := range hostileInputs() {
-		if r, _ := sipUDP(in); len(r) > len(in) {
-			t.Errorf("reply %d > request %d", len(r), len(in))
-		}
+		res := sipUDP(in)
+		checkBounded(t, Result{Detail: res.Detail, Meta: res.Meta}) // serveUDP clips Data to 512 bytes
 	}
 }
-
-func TestSIPTCP(t *testing.T) {
-	readReply := func(br *bufio.Reader) string {
-		var b strings.Builder
-		for {
-			l, err := br.ReadString('\n')
-			if err != nil {
-				t.Fatalf("reading reply: %v (%q)", err, b.String())
-			}
-			b.WriteString(l)
-			if l == "\r\n" {
-				return b.String()
-			}
-		}
-	}
-	res := runPipe(t, sipTCPHandler, func(c net.Conn) {
-		br := bufio.NewReader(c)
-		c.Write(sipSample("OPTIONS", "friendly-scanner", ""))
-		if r := readReply(br); !strings.HasPrefix(r, "SIP/2.0 200 OK") || !strings.Contains(r, "Allow:") {
-			t.Errorf("OPTIONS reply: %q", r)
-		}
-		c.Write(sipSample("REGISTER", "friendly-scanner", ""))
-		if r := readReply(br); !strings.HasPrefix(r, "SIP/2.0 401") {
-			t.Errorf("REGISTER reply: %q", r)
-		}
-	})
-	metaHas(t, res.Meta, "sip_method", "OPTIONS")
-	if res.Detail != "sip: OPTIONS, REGISTER" {
-		t.Errorf("detail = %q", res.Detail)
-	}
-	if !hasTag(res.Tags, "scanner:sipvicious") {
-		t.Errorf("tags = %v", res.Tags)
-	}
-}
-
-func TestSIPTCPBounds(t *testing.T) {
-	huge := "OPTIONS sip:x SIP/2.0\r\n" + strings.Repeat("A", 70000) // one endless line
-	inputs := []string{
-		huge,
-		"OPTIONS sip:x SIP/2.0\r\n" + strings.Repeat("X-Junk: "+strings.Repeat("a", 100)+"\r\n", 5000),
-		"OPTIONS sip:x SIP/2.0\r\nContent-Length: 99999999\r\n\r\n",
-		"OPTIONS sip:x SIP/2.0\r\nContent-Length: -5\r\n\r\n",
-		"OPTIONS sip:x SIP/2.0\r\nContent-Length: 4000\r\n\r\nshort",
-		strings.Repeat("\r\n", 10000),
-		strings.Repeat("OPTIONS sip:x SIP/2.0\r\n\r\n", 100),
-		"OPTIONS sip:x SIP/2.0", // no terminator, EOF
-	}
-	for _, in := range inputs {
-		feed(t, sipTCPHandler, []byte(in))
-	}
-	for _, in := range hostileInputs() {
-		feed(t, sipTCPHandler, in)
-	}
-	res := feed(t, sipTCPHandler, []byte(strings.Repeat("OPTIONS sip:x SIP/2.0\r\n\r\n", 100)))
-	if strings.Count(res.Detail, "OPTIONS") > sipMaxMessages {
-		t.Errorf("served more than %d messages: %q", sipMaxMessages, res.Detail)
-	}
-}
-
-// ── UDP: memcached, NTP, SSDP ─────────────────────────────────────────────────
 
 func mcFrame(id uint16, cmd string) []byte {
 	return append([]byte{byte(id >> 8), byte(id), 0, 0, 0, 1, 0, 0}, cmd...)
 }
 
 func TestMemcachedUDP(t *testing.T) {
-	req := mcFrame(0x1234, "stats\r\n")
-	reply, res := memcachedUDP(req)
-	if len(reply) == 0 || len(reply) > len(req) || reply[0] != 0x12 || reply[1] != 0x34 || !bytes.HasSuffix(reply, []byte("END\r\n")) {
-		t.Fatalf("stats reply = %q (request %d bytes)", reply, len(req))
-	}
+	res := memcachedUDP(mcFrame(0x1234, "stats\r\n"))
 	if !hasTag(res.Tags, tagAmplification) {
 		t.Errorf("stats not tagged: %v", res.Tags)
 	}
 	metaHas(t, res.Meta, "memcached_cmd", "stats")
 	metaHas(t, res.Meta, "memcached_request_id", "1234")
-
 	for _, cmd := range []string{"get foo\r\n", "gets a b c d\r\n", "get " + strings.Repeat("k ", 500) + "\r\n"} {
-		r := mcFrame(1, cmd)
-		reply, res := memcachedUDP(r)
-		if len(reply) > len(r) || !hasTag(res.Tags, tagAmplification) {
-			t.Errorf("%.20q: reply %d vs request %d, tags %v", cmd, len(reply), len(r), res.Tags)
+		if res := memcachedUDP(mcFrame(1, cmd)); !hasTag(res.Tags, tagAmplification) {
+			t.Errorf("%.20q: tags %v", cmd, res.Tags)
 		}
 	}
-	// version: the preferred reply is longer than the request; must fall back.
-	r := mcFrame(2, "version\r\n")
-	if reply, _ := memcachedUDP(r); len(reply) > len(r) {
-		t.Errorf("version reply %d > request %d", len(reply), len(r))
-	}
 	// set is not an amplification vector
-	if _, res := memcachedUDP(mcFrame(3, "set k 0 0 5\r\nhello\r\n")); hasTag(res.Tags, tagAmplification) {
+	if res := memcachedUDP(mcFrame(3, "set k 0 0 5\r\nhello\r\n")); hasTag(res.Tags, tagAmplification) {
 		t.Error("set tagged as amplification")
 	}
 	for _, in := range append(hostileInputs(), mcFrame(0, ""), mcFrame(0, "\r\n"), mcFrame(0, strings.Repeat("A", 2000)), mcFrame(0, "\xff\xfe\x00")) {
-		reply, res := memcachedUDP(in)
-		if len(reply) > len(in) {
-			t.Errorf("reply %d > request %d", len(reply), len(in))
-		}
+		res := memcachedUDP(in)
 		checkBounded(t, Result{Data: res.Data, Detail: res.Detail, Meta: res.Meta})
 	}
 }
@@ -717,173 +606,97 @@ func TestMemcachedUDP(t *testing.T) {
 func TestNTPUDP(t *testing.T) {
 	client := make([]byte, 48)
 	client[0] = 0x23 // LI 0, v4, mode 3
-	reply, res := ntpUDP(client)
-	if reply != nil {
-		t.Fatalf("NTP must never be answered (spoofable UDP), got % x", reply)
-	}
+	res := ntpUDP(client)
 	if hasTag(res.Tags, tagAmplification) {
 		t.Error("plain client request tagged as amplification")
 	}
 	metaHas(t, res.Meta, "ntp_mode", "3")
-
-	monlist := []byte{0x17, 0x00, 0x03, 0x2a, 0, 0, 0, 0}
-	if reply, res := ntpUDP(monlist); reply != nil || !hasTag(res.Tags, tagAmplification) || !strings.Contains(res.Detail, "monlist") {
-		t.Errorf("monlist: reply=%q res=%+v", reply, res)
+	if res := ntpUDP([]byte{0x17, 0x00, 0x03, 0x2a, 0, 0, 0, 0}); !hasTag(res.Tags, tagAmplification) || !strings.Contains(res.Detail, "monlist") {
+		t.Errorf("monlist: %+v", res)
 	}
-	readvar := []byte{0x16, 0x02, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0}
-	if reply, res := ntpUDP(readvar); reply != nil || !hasTag(res.Tags, tagAmplification) {
-		t.Errorf("mode 6: reply=%q tags=%v", reply, res.Tags)
+	if res := ntpUDP([]byte{0x16, 0x02, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0}); !hasTag(res.Tags, tagAmplification) {
+		t.Errorf("mode 6 tags=%v", res.Tags)
 	}
-	for n := 0; n < 48; n++ { // every truncation: captured, never answered, no panic
-		if reply, _ := ntpUDP(client[:n]); reply != nil {
-			t.Errorf("replied to %d-byte client packet", n)
-		}
+	for n := 0; n < 48; n++ { // every truncation: no panic
+		ntpUDP(client[:n])
 	}
 	for _, in := range hostileInputs() {
-		if reply, _ := ntpUDP(in); reply != nil {
-			t.Errorf("replied to hostile input of %d bytes", len(in))
-		}
+		ntpUDP(in)
 	}
 }
 
 func TestSSDPUDP(t *testing.T) {
 	req := []byte("M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 1\r\nST: ssdp:all\r\nUSER-AGENT: nmap/7\r\n\r\n")
-	reply, res := ssdpUDP(req)
-	if reply != nil {
-		t.Errorf("SSDP replied with %d bytes", len(reply))
-	}
+	res := ssdpUDP(req)
 	if !hasTag(res.Tags, tagAmplification) || !hasTag(res.Tags, "ssdp-scan") || !hasTag(res.Tags, "scanner:nmap") {
 		t.Errorf("tags = %v", res.Tags)
 	}
 	metaHas(t, res.Meta, "ssdp_st", "ssdp:all")
 	metaHas(t, res.Meta, "ssdp_method", "M-SEARCH")
-	if _, res := ssdpUDP([]byte("NOTIFY * HTTP/1.1\r\nNT: upnp:rootdevice\r\n\r\n")); hasTag(res.Tags, tagAmplification) {
+	if res := ssdpUDP([]byte("NOTIFY * HTTP/1.1\r\nNT: upnp:rootdevice\r\n\r\n")); hasTag(res.Tags, tagAmplification) {
 		t.Error("NOTIFY tagged as amplification")
 	}
 	for _, in := range append(hostileInputs(), []byte(strings.Repeat("M-SEARCH * HTTP/1.1\r\n", 1000)), []byte(strings.Repeat("A:", 5000))) {
-		if reply, _ := ssdpUDP(in); reply != nil {
-			t.Error("SSDP replied to hostile input")
-		}
+		ssdpUDP(in)
 	}
 }
 
-// Whatever the handlers produce, a reply is never larger than its request.
-func TestUDPHandlersNeverAmplify(t *testing.T) {
+// Handlers survive arbitrary input and never record more than they were sent.
+func TestUDPHandlersSurviveGarbage(t *testing.T) {
 	rng := rand.New(rand.NewSource(7))
 	samples := hostileInputs()
-	samples = append(samples, mcFrame(1, "stats\r\n"), mcFrame(1, "get a\r\n"), sipSample("OPTIONS", "x", ""),
-		sipSample("REGISTER", "x", ""), []byte{0x17, 0, 3, 0x2a}, make([]byte, 48), []byte("M-SEARCH * HTTP/1.1\r\n\r\n"))
+	samples = append(samples, mcFrame(1, "stats\r\n"), sipSample("OPTIONS", "x", ""),
+		[]byte{0x17, 0, 3, 0x2a}, make([]byte, 48), []byte("M-SEARCH * HTTP/1.1\r\n\r\n"))
 	for i := 0; i < 500; i++ {
 		b := make([]byte, rng.Intn(600))
 		rng.Read(b)
-		if i%3 == 0 && len(b) > 8 {
-			copy(b[8:], "stats\r\n")
-		}
-		if i%5 == 0 && len(b) > 0 {
-			b[0] = 0x23
-		}
 		samples = append(samples, b)
 	}
 	for port, h := range udpHandlers {
 		for _, in := range samples {
-			reply, res := safeUDP(h, in)
-			if reply != nil && !replyAllowed(reply, in) {
-				t.Fatalf("port %d: %d-byte reply to %d-byte request", port, len(reply), len(in))
-			}
-			if len(res.Data) > len(in) {
+			if res := safeUDP(h, in); len(res.Data) > len(in) {
 				t.Fatalf("port %d: result data longer than packet", port)
 			}
 		}
 	}
 }
 
-func TestServeUDPRepliesAreGuarded(t *testing.T) {
+// UDP source addresses can be forged, so a UDP listener must never write
+// anything back, whatever the handler and datagram.
+func TestServeUDPNeverReplies(t *testing.T) {
 	e, cs := newEnv(t)
-	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go func() { <-ctx.Done(); pc.Close() }()
-	// A misbehaving handler that tries to amplify must have its reply dropped.
-	bad := func(pkt []byte) ([]byte, Result) { return bytes.Repeat([]byte{'x'}, len(pkt)+1), Result{Detail: "bad"} }
-	good := func(pkt []byte) ([]byte, Result) { return pkt[:1], Result{Detail: "good", Tags: []string{"t"}} }
-	var useGood atomic.Bool
-	hsel := func(pkt []byte) ([]byte, Result) {
-		if useGood.Load() {
-			return good(pkt)
+	for port, h := range map[int]udpHandler{
+		123: ntpUDP, 1900: ssdpUDP, 5060: sipUDP, 11211: memcachedUDP, 53: nil,
+	} {
+		pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
 		}
-		return bad(pkt)
-	}
-	go e.serveUDP(ctx, pc, 4242, hsel)
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		go func() { <-ctx.Done(); pc.Close() }()
+		go e.serveUDP(ctx, pc, port, h)
 
-	cli, err := net.Dial("udp", pc.LocalAddr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cli.Close()
-	cli.Write([]byte("hello"))
-	cs.wait(t)
-	cli.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-	if n, err := cli.Read(make([]byte, 64)); err == nil {
-		t.Fatalf("oversized reply of %d bytes was sent", n)
-	}
-
-	useGood.Store(true)
-	cli.Write([]byte("hello"))
-	got := cs.wait(t)
-	if got.Detail != "good" || got.Protocol != "udp" || got.DstPort != "4242" || string(got.Data) != "hello" {
-		t.Errorf("capture = %+v", got)
-	}
-	cli.SetReadDeadline(time.Now().Add(2 * time.Second))
-	buf := make([]byte, 64)
-	if n, err := cli.Read(buf); err != nil || n != 1 {
-		t.Fatalf("expected a 1-byte reply, got %d, %v", n, err)
-	}
-	// Rate limit: a burst yields at most udpReplyBurst replies in total, but
-	// every datagram is still captured.
-	replies := 1
-	for i := 0; i < 30; i++ {
-		cli.Write([]byte("hello"))
-	}
-	for i := 0; i < 30; i++ {
-		cs.wait(t)
-	}
-	for {
-		cli.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
-		if _, err := cli.Read(buf); err != nil {
-			break
+		cli, err := net.Dial("udp", pc.LocalAddr().String())
+		if err != nil {
+			t.Fatal(err)
 		}
-		replies++
-	}
-	if replies > udpReplyBurst {
-		t.Errorf("got %d replies, limit is %d", replies, udpReplyBurst)
-	}
-}
-
-func TestReplyLimiter(t *testing.T) {
-	var l replyLimiter
-	now := time.Now()
-	for i := 0; i < udpReplyBurst; i++ {
-		if !l.allow("a", now) {
-			t.Fatalf("reply %d refused", i)
+		defer cli.Close()
+		probes := [][]byte{
+			mcFrame(1, "stats\r\n"), sipSample("OPTIONS", "x", ""), sipSample("REGISTER", "x", ""),
+			append([]byte{0x23}, make([]byte, 47)...), []byte("M-SEARCH * HTTP/1.1\r\nST: ssdp:all\r\n\r\n"), []byte("hello"),
 		}
-	}
-	if l.allow("a", now) {
-		t.Error("burst exceeded")
-	}
-	if !l.allow("b", now) {
-		t.Error("other source affected")
-	}
-	if !l.allow("a", now.Add(udpReplyWindow+time.Second)) {
-		t.Error("window did not reset")
-	}
-	for i := 0; i < udpLimiterMax*2; i++ { // table stays bounded
-		l.allow(string(rune(i))+"x", now)
-	}
-	if len(l.m) > udpLimiterMax {
-		t.Errorf("limiter table grew to %d", len(l.m))
+		for _, p := range probes {
+			cli.Write(p)
+			got := cs.wait(t)
+			if got.Protocol != "udp" || got.DstPort != strconv.Itoa(port) {
+				t.Errorf("port %d capture = %+v", port, got)
+			}
+		}
+		cli.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
+		if n, err := cli.Read(make([]byte, 2048)); err == nil {
+			t.Errorf("port %d: sensor sent a %d-byte UDP reply", port, n)
+		}
 	}
 }
 

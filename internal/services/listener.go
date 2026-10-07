@@ -159,10 +159,10 @@ func (e *Env) serveTCP(ctx context.Context, ln net.Listener, portStr, name strin
 	}
 }
 
-// ServeUDP records every datagram received on port. Ports with an entry in
-// udpHandlers are also answered (see emu_udp.go: replies are never larger than
-// the request and are rate limited); the rest never reply. Bans are not
-// consulted (UDP is connectionless; the source can be spoofed).
+// ServeUDP records every datagram received on port and never replies: UDP
+// source addresses can be forged, so any answer could be reflected at a
+// victim. Ports with an entry in udpHandlers get their datagrams parsed (see
+// emu_udp.go). Bans are not consulted (the source can be spoofed).
 func (e *Env) ServeUDP(ctx context.Context, port int) {
 	pc, err := net.ListenPacket("udp", fmt.Sprintf(":%d", port))
 	if err != nil {
