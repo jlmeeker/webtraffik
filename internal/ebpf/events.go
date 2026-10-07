@@ -2,9 +2,11 @@ package ebpf
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"time"
 
 	"github.com/cilium/ebpf/perf"
@@ -89,8 +91,8 @@ func (m *Manager) startEventReader(ch chan<- Event) {
 	for {
 		rec, err := m.eventsReader.Read()
 		if err != nil {
-			// perf.ErrClosed is the expected shutdown signal.
-			if err.Error() != "perf reader closed" {
+			// Closed reader is the expected shutdown signal.
+			if !errors.Is(err, perf.ErrClosed) && !errors.Is(err, os.ErrClosed) {
 				log.Printf("ebpf: perf reader error: %v", err)
 			}
 			return

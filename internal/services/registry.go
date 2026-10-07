@@ -1,7 +1,8 @@
 package services
 
 import (
-	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -103,19 +104,131 @@ var tcpServiceNames = map[int]string{
 	25565: "Minecraft",
 }
 
-// serviceEntry describes a TCP service the app impersonates.
+// serviceEntry describes a banner-only TCP service the app impersonates.
 type serviceEntry struct {
 	Port   int
 	Banner func() []byte // returns the bytes to write immediately after accept
 }
 
-// PortServiceName returns a human-readable service name for a given port number
-// string, used by the history API to annotate events.
-func PortServiceName(port string) string {
-	for p, name := range tcpServiceNames {
-		if fmt.Sprintf("%d", p) == port {
-			return name
+// ── Port registry ─────────────────────────────────────────────────────────────
+//
+// The registry is the single source of truth for every port webTraffik binds.
+// The firewall port sets (`webtraffik ports`), the /api/services listing, the
+// metrics labels and the Run() listener set are all derived from it.
+
+// Kind selects how a port is served.
+type Kind uint8
+
+const (
+	KindHTTP   Kind = iota + 1 // plain HTTP honeypot
+	KindHTTPS                  // TLS-terminating HTTP honeypot (JA3/JA4 capture)
+	KindBanner                 // send a canned banner, read a little, close
+	KindCustom                 // interactive protocol emulator (see customHandlers)
+	KindUDP                    // datagram capture
+)
+
+// Spec describes one listener.
+type Spec struct {
+	Port  int    `json:"port"`
+	Proto string `json:"proto"` // "tcp" or "udp"
+	Name  string `json:"name"`
+	Kind  Kind   `json:"kind"`
+}
+
+// httpPorts are the plain-HTTP capture ports.
+var httpPorts = []int{
+	80, 8080, 8000, 8008, 8081, 8088, 8090, 8888,
+	3000, 3001, 3128, 4000, 4200, 5000, 5001, 9000, 9090,
+}
+
+// tlsPorts terminate TLS and serve the HTTP honeypot.
+var tlsPorts = []int{443, 8443}
+
+// customTCPPorts have interactive emulators; Env.customHandlers must provide a
+// handler for each (enforced by a test).
+var customTCPPorts = []int{21, 22, 23, 25, 110, 5900, 6379, 9735, 25565}
+
+// nameByPort is the precomputed port → service name lookup.
+var nameByPort = func() map[string]string {
+	m := make(map[string]string, len(tcpServiceNames))
+	for p, n := range tcpServiceNames {
+		m[strconv.Itoa(p)] = n
+	}
+	return m
+}()
+
+func isIn(list []int, p int) bool {
+	for _, v := range list {
+		if v == p {
+			return true
 		}
+	}
+	return false
+}
+
+// All returns every listener spec, sorted by port then protocol.
+func All() []Spec {
+	var specs []Spec
+	add := func(port int, proto string, k Kind) {
+		specs = append(specs, Spec{Port: port, Proto: proto, Name: tcpServiceNames[port], Kind: k})
+	}
+	for _, p := range httpPorts {
+		add(p, "tcp", KindHTTP)
+	}
+	for _, p := range tlsPorts {
+		add(p, "tcp", KindHTTPS)
+	}
+	for _, p := range customTCPPorts {
+		add(p, "tcp", KindCustom)
+	}
+	for _, svc := range tcpServices {
+		if isIn(httpPorts, svc.Port) || isIn(tlsPorts, svc.Port) || isIn(customTCPPorts, svc.Port) {
+			continue
+		}
+		add(svc.Port, "tcp", KindBanner)
+	}
+	for _, p := range udpServicePorts {
+		add(p, "udp", KindUDP)
+	}
+	sort.Slice(specs, func(i, j int) bool {
+		if specs[i].Port != specs[j].Port {
+			return specs[i].Port < specs[j].Port
+		}
+		return specs[i].Proto < specs[j].Proto
+	})
+	return specs
+}
+
+// Ports returns the sorted, de-duplicated ports for proto ("tcp" or "udp"),
+// excluding any in disabled.
+func Ports(proto string, disabled map[int]bool) []int {
+	var out []int
+	seen := map[int]bool{}
+	for _, s := range All() {
+		if s.Proto == proto && !disabled[s.Port] && !seen[s.Port] {
+			seen[s.Port] = true
+			out = append(out, s.Port)
+		}
+	}
+	return out
+}
+
+// ListenedPorts is the set of ports (any protocol) that Go listeners serve.
+func ListenedPorts(disabled map[int]bool) map[int]bool {
+	m := map[int]bool{}
+	for _, s := range All() {
+		if !disabled[s.Port] {
+			m[s.Port] = true
+		}
+	}
+	return m
+}
+
+// PortServiceName returns a human-readable service name for a port string,
+// or the port itself when unknown.
+func PortServiceName(port string) string {
+	if n, ok := nameByPort[port]; ok {
+		return n
 	}
 	return port
 }
@@ -123,22 +236,24 @@ func PortServiceName(port string) string {
 // PortsForService returns all port number strings whose service name matches
 // the given name (case-insensitive). Used by the history query filter.
 func PortsForService(serviceName string) []string {
-	upper := strings.ToUpper(serviceName)
 	var result []string
 	for p, name := range tcpServiceNames {
-		if strings.ToUpper(name) == upper {
-			result = append(result, fmt.Sprintf("%d", p))
+		if strings.EqualFold(name, serviceName) {
+			result = append(result, strconv.Itoa(p))
 		}
 	}
+	sort.Strings(result)
 	return result
 }
 
-// AllServiceNames returns a map of service name → list of ports,
-// aggregated from tcpServiceNames. Used by the /api/services endpoint.
+// AllServiceNames returns a map of service name → ports, used by /api/services.
 func AllServiceNames() map[string][]int {
 	seen := map[string][]int{}
 	for port, name := range tcpServiceNames {
 		seen[name] = append(seen[name], port)
+	}
+	for _, ports := range seen {
+		sort.Ints(ports)
 	}
 	return seen
 }

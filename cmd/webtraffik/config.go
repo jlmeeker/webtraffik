@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"errors"
-	"log"
+	"io"
+	"log/slog"
 	"os"
 
 	"gopkg.in/yaml.v3"
+
+	"webtraffik/internal/geo"
 )
 
 // defaultConfigPaths is the ordered list of paths checked when no -config flag
@@ -16,54 +20,90 @@ var defaultConfigPaths = []string{
 }
 
 // Config holds all configurable settings. Each field maps 1-to-1 with a CLI
-// flag. CLI flags always take precedence over config file values.
-//
-// YAML tags use the same names as the CLI flags (hyphens → same spelling).
+// flag of the same name. Precedence: CLI flag > config file > default.
 type Config struct {
-	// DisablePorts is a comma-separated list of ports to skip binding.
-	// Equivalent to -disable-ports.
-	DisablePorts string `yaml:"disable-ports"`
+	// ── capture ───────────────────────────────────────────────────────────────
+	CaptureMode   string `yaml:"capture-mode"`    // "hybrid", "ebpf-only", "go-only"
+	EBPFIface     string `yaml:"ebpf-iface"`      // network interface for XDP attach
+	MgmtPorts     string `yaml:"mgmt-ports"`      // ports that bypass eBPF bans/telemetry
+	MgmtAllowFile string `yaml:"mgmt-allow-file"` // IPs that bypass eBPF bans (SIGHUP reloads)
+	DisablePorts  string `yaml:"disable-ports"`   // ports to skip binding
+	MaxConns      int    `yaml:"max-conns"`       // concurrent emulated connections
 
-	// DisableRgeo skips loading the rgeo reverse geocoder.
-	// Equivalent to -disable-rgeo.
-	DisableRgeo bool `yaml:"disable-rgeo"`
+	// ── dashboard ─────────────────────────────────────────────────────────────
+	DashboardListen   string `yaml:"dashboard-listen"`
+	DashboardUser     string `yaml:"dashboard-user"`
+	DashboardPass     string `yaml:"dashboard-pass"`
+	DashboardPassFile string `yaml:"dashboard-pass-file"`
+	AllowedOrigins    string `yaml:"allowed-origins"` // extra Origin hosts (reverse proxy), comma separated
 
-	// CaptureMode selects the capture strategy: "hybrid", "ebpf-only", "go-only".
-	// Equivalent to -capture-mode.
-	CaptureMode string `yaml:"capture-mode"`
+	// ── data ──────────────────────────────────────────────────────────────────
+	DataDir       string `yaml:"data-dir"`       // database, geo files, host keys (default: working dir)
+	RetentionDays int    `yaml:"retention-days"` // delete events older than this; 0 keeps everything
+	ExportJSONL   string `yaml:"export-jsonl"`   // append events as JSON lines to this file
+	ExportMaxMB   int    `yaml:"export-max-mb"`  // rotate the export file at this size
+	PublicIP      string `yaml:"public-ip"`      // override auto-discovery; "none" skips it
 
-	// EBPFIface is the network interface for XDP attach.
-	// Equivalent to -ebpf-iface.
-	EBPFIface string `yaml:"ebpf-iface"`
+	// ── geolocation ───────────────────────────────────────────────────────────
+	DisableRgeo   bool   `yaml:"disable-rgeo"`
+	DisableASN    bool   `yaml:"disable-asn"`
+	GeoCityURL    string `yaml:"geo-city-url"`
+	GeoASNURL     string `yaml:"geo-asn-url"`
+	GeoCitySHA256 string `yaml:"geo-city-sha256"` // pin the City DB download
+	GeoRefresh    string `yaml:"geo-refresh"`     // e.g. "168h"; "0" disables refresh
 
-	// MgmtPorts is a comma-separated list of management ports that bypass
-	// eBPF ban enforcement and telemetry.
-	// Equivalent to -mgmt-ports.
-	MgmtPorts string `yaml:"mgmt-ports"`
+	// ── logging ───────────────────────────────────────────────────────────────
+	LogLevel  string `yaml:"log-level"`  // debug, info, warn, error
+	LogFormat string `yaml:"log-format"` // text or json
+}
 
-	// MgmtAllowFile is the path to a file listing allowed management IPs.
-	// Equivalent to -mgmt-allow-file.
-	MgmtAllowFile string `yaml:"mgmt-allow-file"`
+// defaultConfig returns the compiled-in defaults.
+func defaultConfig() Config {
+	return Config{
+		CaptureMode:     "hybrid",
+		MaxConns:        4096,
+		DashboardListen: ":8999",
+		RetentionDays:   90,
+		ExportMaxMB:     100,
+		GeoCityURL:      geo.DefaultCityURL,
+		GeoASNURL:       geo.DefaultASNURL,
+		GeoRefresh:      "168h",
+		LogLevel:        "info",
+		LogFormat:       "text",
+	}
 }
 
 // loadConfig reads a YAML config file from path and returns the parsed Config.
 // Missing fields in the file are left as zero values (caller applies defaults).
 // Returns a zero Config (not an error) if the file does not exist.
 func loadConfig(path string) (Config, error) {
+	var cfg Config
+	if err := loadConfigInto(path, &cfg); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+// loadConfigInto overlays the YAML file at path onto cfg: keys present in the
+// file override cfg, absent keys leave it untouched. A missing file is not an
+// error. Unknown keys are rejected so typos do not silently do nothing.
+func loadConfigInto(path string, cfg *Config) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return Config{}, nil
+			return nil
 		}
-		return Config{}, err
+		return err
 	}
-
-	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return Config{}, err
+	overlay := *cfg
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&overlay); err != nil && !errors.Is(err, io.EOF) {
+		return err
 	}
-	log.Printf("config: loaded from %s", path)
-	return cfg, nil
+	*cfg = overlay
+	slog.Info("config loaded", "path", path)
+	return nil
 }
 
 // resolveConfigPath returns the config file path to use:

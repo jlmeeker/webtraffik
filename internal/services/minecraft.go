@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"time"
 )
@@ -23,38 +22,6 @@ import (
 
 // MinecraftPort is the default Minecraft Java Edition server port.
 const MinecraftPort = 25565
-
-// StartMinecraftListener binds to MinecraftPort and emulates a Java Edition
-// server-list-ping handshake.
-func StartMinecraftListener(isBanned IsBannedFunc, capture CaptureFunc) {
-	portStr := "25565"
-	addr := ":25565"
-
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		log.Printf("Minecraft listener on %s failed: %v", addr, err)
-		return
-	}
-	log.Printf("Minecraft listener on %s", addr)
-
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			log.Printf("Minecraft accept on %s: %v", addr, err)
-			time.Sleep(time.Second)
-			continue
-		}
-		go func(c net.Conn) {
-			srcIP := extractConnIP(c.RemoteAddr())
-			if isBanned(srcIP, portStr) {
-				c.Close()
-				return
-			}
-			clientData := handleMinecraftConn(c)
-			go capture(srcIP, portStr, "tcp", clientData)
-		}(conn)
-	}
-}
 
 // mcReadVarInt reads a Minecraft VarInt from the connection.
 func mcReadVarInt(r io.Reader) (int32, error) {
