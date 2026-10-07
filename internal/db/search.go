@@ -11,6 +11,7 @@ import (
 // Cond is one parsed search condition: a SQL fragment, its arguments and
 // whether it is negated. Conditions are AND-ed together.
 type Cond struct {
+	Key  string // search key; repeated positive terms of one key are OR-ed
 	SQL  string
 	Args []any
 	Neg  bool
@@ -98,7 +99,7 @@ func ParseQuery(q string, now time.Time) ([]Cond, error) {
 		if err != nil {
 			return nil, err
 		}
-		c.Neg = neg
+		c.Neg, c.Key = neg, key
 		conds = append(conds, c)
 	}
 	return conds, nil
@@ -198,15 +199,34 @@ func parseTime(v string, now time.Time) (string, error) {
 	return "", fmt.Errorf("expected a duration like 24h/7d or a date like 2025-01-31")
 }
 
-// whereFor renders conditions into AND-ed SQL.
+// whereFor renders conditions into AND-ed SQL. Repeated positive terms of the
+// same key (ip:1.2.3.4 ip:5.6.7.8) are OR-ed, so a campaign's address list can
+// be searched in one query; negated and free-text terms always AND.
 func whereFor(conds []Cond) (sql []string, args []any) {
+	groups := map[string][]Cond{}
+	var order []string
 	for _, c := range conds {
-		s := c.SQL
-		if c.Neg {
-			s = "NOT (" + s + ")"
+		if c.Key == "" || c.Neg {
+			s := c.SQL
+			if c.Neg {
+				s = "NOT (" + s + ")"
+			}
+			sql = append(sql, s)
+			args = append(args, c.Args...)
+			continue
 		}
-		sql = append(sql, s)
-		args = append(args, c.Args...)
+		if _, ok := groups[c.Key]; !ok {
+			order = append(order, c.Key)
+		}
+		groups[c.Key] = append(groups[c.Key], c)
+	}
+	for _, k := range order {
+		var parts []string
+		for _, c := range groups[k] {
+			parts = append(parts, "("+c.SQL+")")
+			args = append(args, c.Args...)
+		}
+		sql = append(sql, "("+strings.Join(parts, " OR ")+")")
 	}
 	return
 }

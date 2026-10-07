@@ -55,6 +55,8 @@ func TestParseQueryAndSearch(t *testing.T) {
 		{"kind:observed", 1},
 		{"asn:AS64500 -cc:CN", 1},
 		{"ip:3.3", 1},
+		{"ip:3.3 ip:2.2", 2},
+		{"ip:3.3 port:22", 0},
 	}
 	for _, c := range cases {
 		conds, err := ParseQuery(c.q, now)
