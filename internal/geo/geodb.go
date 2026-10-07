@@ -54,7 +54,7 @@ func Ensure(src Source) (string, error) {
 		return "", fmt.Errorf("geo: %s not found and no download URL configured", src.Path)
 	}
 	slog.Info("geo: database not found, downloading", "path", src.Path, "url", src.URL)
-	if _, err := fetch(src, false); err != nil {
+	if _, err := fetch(context.Background(), src, false); err != nil {
 		return "", fmt.Errorf("geo: download %s: %w", src.Path, err)
 	}
 	return src.Path, nil
@@ -64,8 +64,8 @@ func Ensure(src Source) (string, error) {
 // against src.SHA256 when set), then atomically replaces src.Path. When force is
 // false and validators from a previous download exist, a conditional request is
 // made and (false, nil) is returned if the file is unchanged.
-func fetch(src Source, conditional bool) (updated bool, err error) {
-	req, err := http.NewRequest(http.MethodGet, src.URL, nil)
+func fetch(ctx context.Context, src Source, conditional bool) (updated bool, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, src.URL, nil)
 	if err != nil {
 		return false, err
 	}
@@ -146,6 +146,12 @@ func RefreshLoop(ctx context.Context, src Source, every time.Duration, onUpdate 
 	if every <= 0 || src.URL == "" {
 		return
 	}
+	if src.SHA256 != "" {
+		// A pinned digest only matches one specific file; refreshing would
+		// fail the check as soon as upstream publishes a newer database.
+		slog.Info("geo: refresh disabled because a SHA-256 pin is set", "path", src.Path)
+		return
+	}
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
@@ -153,7 +159,7 @@ func RefreshLoop(ctx context.Context, src Source, every time.Duration, onUpdate 
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			updated, err := fetch(src, true)
+			updated, err := fetch(ctx, src, true)
 			switch {
 			case err != nil && !errors.Is(err, context.Canceled):
 				slog.Warn("geo: refresh failed", "path", src.Path, "err", err)

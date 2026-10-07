@@ -149,10 +149,9 @@ func (g *GeoLocator) LoadASN(path string) error {
 
 // Close releases the database file handle.
 func (g *GeoLocator) Close() {
-	if r := g.city.Swap(nil); r != nil {
-		r.Close()
-	}
-	if r := g.asn.Swap(nil); r != nil {
-		r.Close()
-	}
+	// Lookups racing with shutdown (dashboard handlers still running) must not
+	// touch an unmapped file: detach first (they then get an error) and unmap
+	// after a grace period.
+	swap(&g.city, nil)
+	swap(&g.asn, nil)
 }

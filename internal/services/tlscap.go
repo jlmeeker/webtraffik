@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -309,9 +310,11 @@ type tlsListener struct {
 	port string
 	cfg  *tls.Config
 
-	ch   chan net.Conn
-	errc chan error
-	err  error
+	ch    chan net.Conn
+	errc  chan error
+	done  chan struct{}
+	close sync.Once
+	err   error
 }
 
 func (e *Env) newTLSListener(inner net.Listener, port string) (net.Listener, error) {
@@ -328,6 +331,7 @@ func (e *Env) newTLSListener(inner net.Listener, port string) (net.Listener, err
 		},
 		ch:   make(chan net.Conn),
 		errc: make(chan error, 1),
+		done: make(chan struct{}),
 	}
 	go l.acceptLoop()
 	return l, nil
@@ -337,6 +341,17 @@ func (l *tlsListener) acceptLoop() {
 	for {
 		c, err := l.Listener.Accept()
 		if err != nil {
+			// Transient errors (EMFILE, ECONNABORTED…) must not kill the
+			// listener: back off and keep accepting.
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Timeout() || isTemporary(err) {
+				select {
+				case <-time.After(50 * time.Millisecond):
+					continue
+				case <-l.done:
+					return
+				}
+			}
 			l.errc <- err
 			return
 		}
@@ -390,7 +405,24 @@ func (l *tlsListener) prepare(c net.Conn) {
 		return
 	}
 	c.SetReadDeadline(time.Time{})
-	l.ch <- &fpConn{Conn: tls.Server(&peekConn{Conn: c, r: br}, l.cfg), fp: fp}
+	select {
+	case l.ch <- &fpConn{Conn: tls.Server(&peekConn{Conn: c, r: br}, l.cfg), fp: fp}:
+	case <-l.done:
+		c.Close() // listener closed while we were fingerprinting
+	}
+}
+
+// Close stops the listener and releases connections still being fingerprinted.
+func (l *tlsListener) Close() error {
+	l.close.Do(func() { close(l.done) })
+	return l.Listener.Close()
+}
+
+// isTemporary reports errors worth retrying (net.Error.Temporary is
+// deprecated but is how EMFILE/ENFILE surface from Accept).
+func isTemporary(err error) bool {
+	var t interface{ Temporary() bool }
+	return errors.As(err, &t) && t.Temporary()
 }
 
 func (l *tlsListener) recordConnectOnly(c net.Conn) {

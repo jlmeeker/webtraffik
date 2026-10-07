@@ -332,3 +332,32 @@ func TestGracefulShutdownPersistsEvents(t *testing.T) {
 		t.Errorf("persisted %d events after shutdown, want 200", len(got))
 	}
 }
+
+func TestDNSRebindingHostCheckWhenUnauthenticated(t *testing.T) {
+	h := start(t, server.Config{AllowedOrigins: []string{"dash.example.org"}})
+	for host, want := range map[string]int{
+		"127.0.0.1:8999": 200, "localhost:8999": 200, "[::1]:8999": 200,
+		"192.168.1.5:8999": 200, "dash.example.org": 200,
+		"evil.example.com:8999": 403, "attacker.test": 403,
+	} {
+		req, _ := http.NewRequest("GET", h.ts.URL+"/api/self", nil)
+		req.Host = host
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != want {
+			t.Errorf("Host %q = %d, want %d", host, resp.StatusCode, want)
+		}
+	}
+	// With auth enabled the Host restriction is not applied.
+	h2 := start(t, server.Config{User: "u", Pass: "p"})
+	req, _ := http.NewRequest("GET", h2.ts.URL+"/healthz", nil)
+	req.Host = "anything.example"
+	resp, _ := http.DefaultClient.Do(req)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("auth-enabled host = %d", resp.StatusCode)
+	}
+}

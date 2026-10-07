@@ -137,7 +137,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/ebpf/stats", s.app.EBPF.StatsHandler())
 	mux.HandleFunc("/ws", s.handleWS)
 
-	return recoverMW(securityHeaders(s.originCheck(s.basicAuth(mux))))
+	return recoverMW(securityHeaders(s.hostCheck(s.originCheck(s.basicAuth(mux)))))
 }
 
 // ── middleware ────────────────────────────────────────────────────────────────
@@ -191,6 +191,45 @@ func (s *Server) basicAuth(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// hostCheck defends an unauthenticated dashboard against DNS rebinding: a
+// hostile page can make its own domain resolve to the dashboard's IP, which
+// would make Origin == Host and defeat the origin checks. Requests must
+// therefore name the server by IP literal, "localhost", or an allowed host.
+// When Basic auth is enabled the browser will not send credentials to the
+// attacker's domain, so no host restriction is applied.
+func (s *Server) hostCheck(next http.Handler) http.Handler {
+	if s.AuthEnabled() {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.hostAllowed(r.Host) {
+			http.Error(w, "unrecognised Host header", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) hostAllowed(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if _, err := netip.ParseAddr(host); err == nil {
+		return true
+	}
+	for _, a := range s.cfg.AllowedOrigins {
+		if strings.EqualFold(a, host) || strings.EqualFold(a, hostport) {
+			return true
+		}
+	}
+	return false
 }
 
 // originCheck blocks cross-site state-changing requests: any request carrying

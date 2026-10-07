@@ -300,8 +300,8 @@ func readRESPCommand(br *bufio.Reader) (args []string, raw []byte, err error) {
 			return args, raw, fmt.Errorf("bad RESP bulk length")
 		}
 		buf := make([]byte, l+2)
-		if _, err := io.ReadFull(br, buf); err != nil {
-			raw = append(raw, buf...)
+		if n, err := io.ReadFull(br, buf); err != nil {
+			raw = append(raw, buf[:n]...)
 			return args, raw, err
 		}
 		raw = append(raw, buf...)

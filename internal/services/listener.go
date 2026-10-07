@@ -146,6 +146,10 @@ func (e *Env) serveTCP(ctx context.Context, ln net.Listener, portStr, name strin
 			}()
 			srcIP := extractConnIP(c.RemoteAddr())
 			c.SetDeadline(time.Now().Add(connDeadline))
+			// On shutdown, unblock handlers stuck in reads/sleeps promptly
+			// instead of waiting out the session deadline.
+			stop := context.AfterFunc(ctx, func() { c.SetDeadline(time.Unix(1, 0)) })
+			defer stop()
 			res := h(ctx, c, srcIP)
 			e.Capture(Capture{
 				SrcIP: srcIP, DstPort: portStr, Protocol: "tcp",

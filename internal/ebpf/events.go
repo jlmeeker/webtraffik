@@ -63,7 +63,7 @@ func parseEvent(rec perf.Record) (Event, error) {
 		return Event{}, fmt.Errorf("ebpf: short event record: %d bytes", len(b))
 	}
 	//   bytes 0-15:  src_ip   (16 bytes, network order, v4-mapped for IPv4)
-	//   bytes 16-17: dst_port (uint16 host/little-endian)
+	//   bytes 16-17: dst_port (uint16, host byte order)
 	//   byte  18:    dropped
 	//   byte  19:    protocol
 	ip := make(net.IP, 16)
@@ -73,7 +73,7 @@ func parseEvent(rec perf.Record) (Event, error) {
 	}
 	return Event{
 		SrcIP:    ip,
-		DstPort:  binary.LittleEndian.Uint16(b[16:18]),
+		DstPort:  binary.NativeEndian.Uint16(b[16:18]),
 		Dropped:  b[18] != 0,
 		Protocol: protoString(b[19]),
 		Time:     time.Now(),

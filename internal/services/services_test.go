@@ -403,3 +403,63 @@ func TestConnectionLimitAndBans(t *testing.T) {
 	}
 	close(release)
 }
+
+// ── regression tests for review findings ─────────────────────────────────────
+
+func TestMinecraftRejectsHugePacketLength(t *testing.T) {
+	cli, srv := net.Pipe()
+	defer cli.Close()
+	done := make(chan []byte, 1)
+	go func() { done <- handleMinecraftConn(srv) }()
+	// handshake (len 1, id 0) then a status packet claiming 0x7fffffff bytes
+	cli.Write([]byte{0x01, 0x00, 0xff, 0xff, 0xff, 0xff, 0x07})
+	select {
+	case <-done: // returned without allocating 2 GiB or blocking
+	case <-time.After(3 * time.Second):
+		t.Fatal("handler did not reject the oversized length")
+	}
+}
+
+func TestShutdownUnblocksIdleHandlers(t *testing.T) {
+	e, _ := newEnv(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	go func() { <-ctx.Done(); ln.Close() }()
+	finished := make(chan struct{})
+	go func() {
+		e.serveTCP(ctx, ln, "9999", "idle", func(ctx context.Context, c net.Conn, ip string) Result {
+			c.Read(make([]byte, 1)) // client never sends: would block until connDeadline (30s)
+			return Result{}
+		})
+		close(finished)
+	}()
+	c, _ := net.Dial("tcp", ln.Addr().String())
+	defer c.Close()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	select {
+	case <-finished:
+	case <-time.After(3 * time.Second):
+		t.Fatal("serveTCP did not return promptly after cancel")
+	}
+}
+
+func TestRESPShortBulkDoesNotPadRaw(t *testing.T) {
+	_, raw, err := readRESPCommand(bufio.NewReader(strings.NewReader("*1\r\n$4000\r\nabc")))
+	if err == nil {
+		t.Error("expected an error on truncated bulk")
+	}
+	if len(raw) > 30 {
+		t.Errorf("raw contains %d bytes; zero padding leaked", len(raw))
+	}
+}
+
+func TestListenedPortsAreProtocolAware(t *testing.T) {
+	l := ListenedPorts(nil)
+	if !l[PortKey{"tcp", 443}] || l[PortKey{"udp", 443}] {
+		t.Error("TCP/443 is listened, UDP/443 is not")
+	}
+	if !l[PortKey{"udp", 53}] || l[PortKey{"tcp", 53}] {
+		t.Error("UDP/53 is listened, TCP/53 is not")
+	}
+}

@@ -213,12 +213,19 @@ func Ports(proto string, disabled map[int]bool) []int {
 	return out
 }
 
-// ListenedPorts is the set of ports (any protocol) that Go listeners serve.
-func ListenedPorts(disabled map[int]bool) map[int]bool {
-	m := map[int]bool{}
+// PortKey identifies a listener by protocol and port.
+type PortKey struct {
+	Proto string // "tcp" or "udp"
+	Port  int
+}
+
+// ListenedPorts is the set of (protocol, port) pairs that Go listeners serve.
+// Protocol matters: TCP/443 has a listener but UDP/443 (QUIC) does not.
+func ListenedPorts(disabled map[int]bool) map[PortKey]bool {
+	m := map[PortKey]bool{}
 	for _, s := range All() {
 		if !disabled[s.Port] {
-			m[s.Port] = true
+			m[PortKey{s.Proto, s.Port}] = true
 		}
 	}
 	return m

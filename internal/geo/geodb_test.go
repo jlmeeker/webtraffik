@@ -1,6 +1,7 @@
 package geo
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,7 +18,7 @@ func TestFetchRejectsBadDownloads(t *testing.T) {
 		w.Write([]byte("<html>rate limited</html>"))
 	}))
 	defer small.Close()
-	if _, err := fetch(Source{Path: dest, URL: small.URL}, false); err == nil || !strings.Contains(err.Error(), "too small") {
+	if _, err := fetch(context.Background(), Source{Path: dest, URL: small.URL}, false); err == nil || !strings.Contains(err.Error(), "too small") {
 		t.Errorf("small download: err = %v", err)
 	}
 
@@ -25,11 +26,11 @@ func TestFetchRejectsBadDownloads(t *testing.T) {
 		w.Write([]byte(strings.Repeat("x", minDBSize+1)))
 	}))
 	defer notMMDB.Close()
-	if _, err := fetch(Source{Path: dest, URL: notMMDB.URL}, false); err == nil || !strings.Contains(err.Error(), "not a valid database") {
+	if _, err := fetch(context.Background(), Source{Path: dest, URL: notMMDB.URL}, false); err == nil || !strings.Contains(err.Error(), "not a valid database") {
 		t.Errorf("garbage download: err = %v", err)
 	}
 
-	if _, err := fetch(Source{Path: dest, URL: notMMDB.URL, SHA256: "00"}, false); err == nil || !strings.Contains(err.Error(), "sha256") {
+	if _, err := fetch(context.Background(), Source{Path: dest, URL: notMMDB.URL, SHA256: "00"}, false); err == nil || !strings.Contains(err.Error(), "sha256") {
 		t.Errorf("sha mismatch: err = %v", err)
 	}
 
@@ -52,7 +53,7 @@ func TestFetchNotModified(t *testing.T) {
 		w.WriteHeader(http.StatusNotModified)
 	}))
 	defer srv.Close()
-	updated, err := fetch(Source{Path: dest, URL: srv.URL}, true)
+	updated, err := fetch(context.Background(), Source{Path: dest, URL: srv.URL}, true)
 	if err != nil || updated {
 		t.Errorf("updated=%v err=%v, want false,nil", updated, err)
 	}

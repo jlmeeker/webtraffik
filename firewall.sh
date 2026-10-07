@@ -85,10 +85,10 @@ fi
 
 CAPTURE_PORTS_TCP="$("$WEBTRAFFIK_BIN" ports -proto tcp -format nft -disable "${DISABLE_PORTS:-}")"
 CAPTURE_PORTS_UDP="$("$WEBTRAFFIK_BIN" ports -proto udp -format nft -disable "${DISABLE_PORTS:-}")"
-if [[ -z "$CAPTURE_PORTS_TCP" || -z "$CAPTURE_PORTS_UDP" ]]; then
-    echo "error: 'webtraffik ports' returned an empty port set" >&2
-    exit 1
-fi
+# A protocol with every port disabled yields an empty list; nft rejects empty
+# sets, so use port 0 (never seen on the wire) as a harmless placeholder.
+[[ -z "$CAPTURE_PORTS_TCP" ]] && CAPTURE_PORTS_TCP="0"
+[[ -z "$CAPTURE_PORTS_UDP" ]] && CAPTURE_PORTS_UDP="0"
 [[ -n "${DISABLE_PORTS:-}" ]] && echo "  disabled ports    : $DISABLE_PORTS"
 
 # ── Substitute tokens and write the live config ───────────────────────────────
@@ -119,7 +119,7 @@ else
 fi
 
 # ── Validate the generated ruleset before applying ────────────────────────────
-if ! nft -c -f "$CONF_OUT" 2>/dev/null; then
+if ! nft -c -f "$CONF_OUT"; then
     echo "error: nft syntax check failed — ruleset NOT applied" >&2
     echo "       check $CONF_OUT" >&2
     exit 1

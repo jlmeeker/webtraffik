@@ -332,7 +332,7 @@ func (a *App) process(q queued) {
 
 // pumpEBPF feeds XDP-observed connection attempts into the pipeline. Ports with
 // a Go listener are skipped (the listener reports them with richer detail).
-func (a *App) pumpEBPF(ctx context.Context, listened map[int]bool) {
+func (a *App) pumpEBPF(ctx context.Context, listened map[services.PortKey]bool) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -341,7 +341,7 @@ func (a *App) pumpEBPF(ctx context.Context, listened map[int]bool) {
 			if !ok {
 				return
 			}
-			if ev.Dropped || listened[int(ev.DstPort)] {
+			if ev.Dropped || listened[services.PortKey{Proto: ev.Protocol, Port: int(ev.DstPort)}] {
 				continue // dropped = banned at XDP; listened = reported by its listener
 			}
 			a.Submit(services.Capture{

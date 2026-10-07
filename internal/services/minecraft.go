@@ -129,7 +129,7 @@ func handleMinecraftConn(c net.Conn) []byte {
 
 	// Packet 2: Status Request
 	pktLen2, err := mcReadVarInt(c)
-	if err != nil || pktLen2 < 1 {
+	if err != nil || pktLen2 < 1 || pktLen2 > 512 {
 		return clientData
 	}
 	pktData2 := make([]byte, pktLen2)
